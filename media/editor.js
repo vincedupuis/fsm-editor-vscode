@@ -1236,14 +1236,14 @@ ${scene(true)}
   }
 
   svg.addEventListener('pointerdown', (e) => {
-    if (!model || e.button === 2) return;
+    if (!model) return;
     svg.focus();
     commitInlineEdit();
     hideProblems();
     const p = toWorld(e);
     const hit = hitTarget(e.target);
 
-    if (e.button === 1 || spaceDown) {
+    if (e.button === 1 || e.button === 2 || spaceDown) {
       drag = { kind: 'pan', sx: e.clientX, sy: e.clientY, vx: view.x, vy: view.y };
       svg.classList.add('panning');
       capture(e);
@@ -1519,13 +1519,16 @@ ${scene(true)}
   svg.addEventListener('wheel', (e) => {
     e.preventDefault();
     const r = svg.getBoundingClientRect();
-    if (e.ctrlKey || e.metaKey) {
-      zoomAt(Math.exp(-e.deltaY * 0.0022), e.clientX - r.left, e.clientY - r.top);
-    } else {
-      view.x -= e.shiftKey && !e.deltaX ? e.deltaY : e.deltaX;
-      view.y -= e.shiftKey && !e.deltaX ? 0 : e.deltaY;
+    // The wheel zooms around the pointer; a horizontal scroll (trackpad, tilt wheel) still pans.
+    const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? r.height : 1;
+    const dx = e.deltaX * unit;
+    const dy = e.deltaY * unit;
+    if (Math.abs(dx) > Math.abs(dy)) {
+      view.x -= dx;
       saveView();
       scheduleRender();
+    } else if (dy) {
+      zoomAt(Math.exp(-dy * 0.0022), e.clientX - r.left, e.clientY - r.top);
     }
   }, { passive: false });
 
@@ -1865,7 +1868,7 @@ ${scene(true)}
         ['Drag', 'the ⊕ handle of a selected element to draw a transition.'],
         ['Double-click', 'a transition to add a bend point, a bend point to remove it.'],
         ['Drop', 'an element into a region to nest it.'],
-        ['Space+drag', 'or middle-drag pans; Ctrl/Cmd+wheel zooms; F fits.'],
+        ['Right-drag', 'Space+drag or middle-drag pans; the wheel zooms; F fits.'],
         ['Shift+click', 'a tool keeps it active.'],
         ['Label syntax', model.kind === 'protocol' ? '[isReady()] event / [isDone()]' : 'event, after(2s) [isReady() && !isBusy()] / doIt(); log()'],
         ['Behaviors', 'are calls without arguments, e.g. start(); there are no variables.'],
