@@ -1,0 +1,127 @@
+{
+  "name": "fsm-editor",
+  "displayName": "FSM Editor — UML State Machines",
+  "description": "Visual editor to create, edit and visualize UML 2.5.1 state machines (composite/orthogonal states, submachines with connection point references, all pseudostates, protocol state machines) stored as standard XMI with UML DI layout, with a toolbox, validation and SVG export.",
+  "version": "0.1.0",
+  "publisher": "fsm-editor",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vincedupuis/fsm-editor.git"
+  },
+  "bugs": {
+    "url": "https://github.com/vincedupuis/fsm-editor/issues"
+  },
+  "homepage": "https://github.com/vincedupuis/fsm-editor#readme",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Visualization",
+    "Other"
+  ],
+  "keywords": [
+    "uml",
+    "state machine",
+    "fsm",
+    "statechart",
+    "diagram",
+    "xmi",
+    "umldi"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "fsmEditor.stateMachine",
+        "displayName": "FSM Editor",
+        "selector": [
+          {
+            "filenamePattern": "*.fsm"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
+    "languages": [
+      {
+        "id": "xml",
+        "extensions": [
+          ".fsm"
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "command": "fsmEditor.new",
+        "title": "New State Machine",
+        "category": "FSM"
+      },
+      {
+        "command": "fsmEditor.exportSvg",
+        "title": "Export as SVG",
+        "category": "FSM"
+      },
+      {
+        "command": "fsmEditor.openAsText",
+        "title": "Open as XMI Text",
+        "category": "FSM",
+        "icon": "$(json)"
+      },
+      {
+        "command": "fsmEditor.openDiagram",
+        "title": "Open in FSM Editor",
+        "category": "FSM",
+        "icon": "$(type-hierarchy)"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "fsmEditor.openAsText",
+          "when": "activeCustomEditorId == fsmEditor.stateMachine",
+          "group": "navigation"
+        },
+        {
+          "command": "fsmEditor.openDiagram",
+          "when": "resourceExtname == .fsm && !activeCustomEditorId",
+          "group": "navigation"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "fsmEditor.new",
+          "when": "explorerResourceIsFolder",
+          "group": "navigation@10"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "fsmEditor.exportSvg",
+          "when": "activeCustomEditorId == fsmEditor.stateMachine"
+        },
+        {
+          "command": "fsmEditor.openAsText",
+          "when": "activeCustomEditorId == fsmEditor.stateMachine"
+        },
+        {
+          "command": "fsmEditor.openDiagram",
+          "when": "resourceExtname == .fsm"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "check:webview": "node --check media/editor.js",
+    "package": "npx @vscode/vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0"
+  }
+}
