@@ -1,7 +1,7 @@
-import * as path from 'path';
 import * as vscode from 'vscode';
 import { FsmEditorProvider } from './fsmEditorProvider';
 import { defaultModel } from './model';
+import { basename, encodeText, extname } from './util';
 import { toXmi } from './xmi';
 
 export function activate(context: vscode.ExtensionContext) {
@@ -33,7 +33,7 @@ export function activate(context: vscode.ExtensionContext) {
       } catch {
         // does not exist yet
       }
-      await vscode.workspace.fs.writeFile(uri, Buffer.from(toXmi(defaultModel(name)), 'utf8'));
+      await vscode.workspace.fs.writeFile(uri, encodeText(toXmi(defaultModel(name))));
       await vscode.commands.executeCommand('vscode.openWith', uri, FsmEditorProvider.viewType);
     }),
 
@@ -67,13 +67,13 @@ function noEditor() {
 }
 
 async function saveExport(source: vscode.Uri, ext: string, filters: Record<string, string[]>, content: string) {
-  const base = path.basename(source.path, path.extname(source.path));
+  const base = basename(source.path, extname(source.path));
   const target = await vscode.window.showSaveDialog({
     defaultUri: vscode.Uri.joinPath(source, '..', base + ext),
     filters,
   });
   if (!target) return;
-  await vscode.workspace.fs.writeFile(target, Buffer.from(content, 'utf8'));
-  const open = await vscode.window.showInformationMessage(`Exported to ${path.basename(target.path)}.`, 'Open');
+  await vscode.workspace.fs.writeFile(target, encodeText(content));
+  const open = await vscode.window.showInformationMessage(`Exported to ${basename(target.path)}.`, 'Open');
   if (open) await vscode.commands.executeCommand('vscode.open', target);
 }

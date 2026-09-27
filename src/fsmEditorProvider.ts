@@ -1,7 +1,7 @@
-import * as path from 'path';
 import * as vscode from 'vscode';
 import { ConnectionPointInfo, FsmModel, MachineInfo, SubmachineInfo, defaultModel, machineConnectionPoints, normalizeModel } from './model';
 import { Issue, validate } from './validation';
+import { basename, decodeText, dirname, relative } from './util';
 import { fromXmi, toXmi } from './xmi';
 
 interface ActiveEditor {
@@ -68,7 +68,7 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
     panel.webview.options = { enableScripts: true, localResourceRoots: [media] };
     panel.webview.html = this.html(panel.webview);
 
-    let timer: NodeJS.Timeout | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     let generation = 0;
     const ctx: EditorContext = { document, sync: () => scheduleSync() };
     const sync = async () => {
@@ -86,7 +86,7 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
           text = ctx.echo.json;
           model = normalizeModel(JSON.parse(text));
         } else {
-          model = xmi.trim() ? fromXmi(xmi) : defaultModel(path.basename(document.uri.path, '.fsm'));
+          model = xmi.trim() ? fromXmi(xmi) : defaultModel(basename(document.uri.path, '.fsm'));
           text = JSON.stringify(model, null, 2) + '\n';
         }
         machines = await this.listMachines(document);
@@ -189,7 +189,7 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
     let summary: MachineSummary | null = null;
     try {
       // Prefer the open (possibly unsaved) document over the file on disk.
-      const text = open ? open.getText() : Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8');
+      const text = open ? open.getText() : decodeText(await vscode.workspace.fs.readFile(uri));
       const m = fromXmi(text);
       summary = { id: m.id ?? 'sm', name: m.name, points: machineConnectionPoints(m) };
     } catch {
@@ -201,7 +201,7 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
 
   /** href of `target` as seen from `document`, e.g. `sub/Payment.fsm`. */
   private relative(document: vscode.TextDocument, target: vscode.Uri): string {
-    return path.posix.relative(path.posix.dirname(document.uri.path), target.path);
+    return relative(dirname(document.uri.path), target.path);
   }
 
   private resolveHref(document: vscode.TextDocument, href: string): { uri: vscode.Uri; id: string } {

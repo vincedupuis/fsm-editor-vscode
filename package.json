@@ -35,6 +35,7 @@
     "umldi"
   ],
   "main": "./out/extension.js",
+  "browser": "./out/web/extension.js",
   "activationEvents": [],
   "contributes": {
     "customEditors": [
@@ -119,14 +120,21 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./",
+    "compile": "tsc -p ./ && node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
     "check:webview": "node --check media/editor.js",
-    "package": "npx @vscode/vsce package"
+    "package": "npx @vscode/vsce package",
+    "test:web": "tsc -p ./ && node esbuild.mjs --test && node test/web/run.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
+    "@vscode/test-web": "^0.0.81",
+    "esbuild": "^0.28.2",
     "typescript": "^5.4.0"
+  },
+  "allowScripts": {
+    "@playwright/browser-chromium@1.63.0": true,
+    "esbuild@0.28.2": true
   }
 }

@@ -7,3 +7,7 @@ tsconfig.json
 media/*.d.ts
 images/*.png
 !images/icon.png
+test/**
+esbuild.mjs
+out/test/**
+.vscode-test-web/**

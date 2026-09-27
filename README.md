@@ -4,6 +4,8 @@
 
 A visual editor for UML 2.5.1 state machines. Open any `*.fsm` file to get a canvas with a toolbox, a properties panel, live validation and SVG export. Files are standard XMI 2.5.1: the UML model plus its diagram layout in UML DI, in the same file.
 
+It also works in VS Code for the Web: open a repository on [github.dev](https://github.dev) (press `.` on any GitHub repository) or a folder on [vscode.dev](https://vscode.dev), install FSM Editor from the Extensions view, and open a `.fsm` file.
+
 ![The FSM Editor showing a media player state machine with composite and orthogonal states, the toolbox on the left and the properties panel on the right](images/overview.png)
 
 ## UML support
@@ -45,7 +47,8 @@ Commands (Command Palette → "FSM"): *New State Machine*, *Export as SVG*, *Ope
 
 ```sh
 npm install
-npm run compile      # or: npm run watch
+npm run compile      # type-check, then bundle for desktop and web; or: npm run watch
+npm run test:web     # smoke test in VS Code for the Web (Chromium)
 ```
 
 Press F5 in VS Code to launch an Extension Development Host with the `examples` folder open, then open `examples/MediaPlayer.fsm`, or `examples/Order.fsm` for a submachine with connection point references (it uses `examples/Payment.fsm`).
@@ -54,11 +57,13 @@ Package with `npm run package`, which produces a `.vsix` file.
 
 ### Layout
 
-- `src/extension.ts`: commands and registration
+- `src/extension.ts`: commands and registration (bundled by `esbuild.mjs` into `out/extension.js` for desktop and `out/web/extension.js` for the web)
 - `src/fsmEditorProvider.ts`: custom text editor; syncs the document and the webview and publishes diagnostics
 - `src/model.ts`: the in-memory model the diagram editor works on
 - `src/xmi.ts`, `src/xml.ts`: reading and writing `.fsm` files (XMI with UML DI)
 - `src/validation.ts`: UML well-formedness rules
 - `media/editor.js`, `media/editor.css`: the diagram editor webview (no dependencies)
 - `media/expressions.js`: grammar of behaviors, conditions and triggers, shared by the webview and the validator
+- `src/util.ts`: path and text helpers that work in both the desktop and web extension hosts
+- `test/web/`: browser smoke test run by `npm run test:web`
 - `docs/UML-CONFORMANCE.md`: supported UML features, deviations, validation rules and export mappings
