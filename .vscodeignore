@@ -5,3 +5,5 @@ node_modules/**
 tsconfig.json
 **/*.map
 media/*.d.ts
+images/*.png
+!images/icon.png

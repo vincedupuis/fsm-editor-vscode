@@ -2,11 +2,21 @@
 
 A visual editor for UML 2.5.1 state machines. Open any `*.fsm` file to get a canvas with a toolbox, a properties panel, live validation and SVG export. Files are standard XMI 2.5.1: the UML model plus its diagram layout in UML DI, in the same file.
 
+![The FSM Editor showing a media player state machine with composite and orthogonal states, the toolbox on the left and the properties panel on the right](images/overview.png)
+
 ## UML support
 
 The editor covers UML 2.5.1 state machines: composite, orthogonal and submachine states, all pseudostates, connection point references, entry/exit/do behaviors, deferrable events, the external, local and internal transition kinds, time triggers, and protocol state machines. A validator checks the well-formedness rules as you edit.
 
 Behaviors and conditions are argument-less function calls (`rewind(); showTime()`, `hasDisc() && !isJammed()`), and triggers are event names or `after(2s)`.
+
+Submachine states reuse another state machine file. They're entered and left through connection point references bound to that machine's entry and exit points:
+
+![A submachine state Payment with retry, failed and cancelled connection point references, and the properties panel listing the referenced machine's points](images/submachine.png)
+
+Text that breaks the rules is refused as you type, and the validator flags problems on the diagram and in VS Code's Problems panel:
+
+![A guard 'volume > 3' refused with an explanation, and a warning that the state Standby can never be entered](images/validation.png)
 
 See **[docs/UML-CONFORMANCE.md](docs/UML-CONFORMANCE.md)** for:
 - the supported features and the text syntax;
