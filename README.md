@@ -41,14 +41,28 @@ See **[docs/UML-CONFORMANCE.md](docs/UML-CONFORMANCE.md)** for:
 - **Editing**: Delete removes the selection. Ctrl/Cmd+C/X/V copies, cuts and pastes, including between diagrams. Ctrl/Cmd+D duplicates. Arrow keys nudge (Shift for 10px). Undo and redo are VS Code's own.
 - **Shortcuts**: S state, X final, I initial, H history, C choice, J junction, N comment, T transition, R region, V/Esc select. Shift+click a tool to keep it active.
 
-Commands (Command Palette → "FSM"): *New State Machine*, *Export as SVG*, *Open as XMI Text*, *Open in FSM Editor*.
+Commands (Command Palette → "FSM"): *New State Machine*, *Generate Code…*, *Export as SVG*, *Open as XMI Text*, *Open in FSM Editor*.
+
+## Code generation
+
+*Generate Code…* (the **Code** toolbar button, or the Explorer context menu of a `.fsm` file) turns a machine into source code with a [Handlebars](https://handlebarsjs.com/) template. One template can write several files per machine. A TypeScript template is bundled: it writes a dependency-free class with run-to-completion semantics, plus an actions interface for you to implement.
+
+The same generator is a command-line tool, available as a standalone executable (no Node.js needed) for Windows, macOS and Linux:
+
+```sh
+fsm "models/**/*.fsm" --template ts --out src/generated
+```
+
+See **[docs/CODEGEN.md](docs/CODEGEN.md)** for the command line, the TypeScript template, writing templates for other languages, and the code model they receive.
 
 ## Development
 
 ```sh
 npm install
-npm run compile      # type-check, then bundle for desktop and web; or: npm run watch
+npm run compile      # type-check, then bundle for desktop, web and the CLI; or: npm run watch
+npm run test:unit    # code generation tests (Node)
 npm run test:web     # smoke test in VS Code for the Web (Chromium)
+npm run build:bin    # standalone fsm executables in dist/ (uses Bun)
 ```
 
 Press F5 in VS Code to launch an Extension Development Host with the `examples` folder open, then open `examples/MediaPlayer.fsm`, or `examples/Order.fsm` for a submachine with connection point references (it uses `examples/Payment.fsm`).
@@ -65,5 +79,10 @@ Package with `npm run package`, which produces a `.vsix` file.
 - `media/editor.js`, `media/editor.css`: the diagram editor webview (no dependencies)
 - `media/expressions.js`: grammar of behaviors, conditions and triggers, shared by the webview and the validator
 - `src/util.ts`: path and text helpers that work in both the desktop and web extension hosts
+- `src/codegen/`: code generation (`codeModel.ts` builds the code model, `render.ts`, `helpers.ts` and `languages.ts` run templates, `generate.ts` is the whole pipeline); `src/codegenCommand.ts` is the VS Code command and `src/cli.ts` the `fsm` tool
+- `templates/`: bundled code templates
+- `scripts/build-bin.mjs`: builds the standalone executables
+- `test/unit/`: code generation tests run by `npm run test:unit`
 - `test/web/`: browser smoke test run by `npm run test:web`
 - `docs/UML-CONFORMANCE.md`: supported UML features, deviations, validation rules and export mappings
+- `docs/CODEGEN.md`: code generation, templates and the code model

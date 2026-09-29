@@ -36,6 +36,9 @@
   ],
   "main": "./out/extension.js",
   "browser": "./out/web/extension.js",
+  "bin": {
+    "fsm": "./out/cli.js"
+  },
   "activationEvents": [],
   "contributes": {
     "customEditors": [
@@ -70,6 +73,11 @@
         "category": "FSM"
       },
       {
+        "command": "fsmEditor.generateCode",
+        "title": "Generate Code…",
+        "category": "FSM"
+      },
+      {
         "command": "fsmEditor.openAsText",
         "title": "Open as XMI Text",
         "category": "FSM",
@@ -100,9 +108,18 @@
           "command": "fsmEditor.new",
           "when": "explorerResourceIsFolder",
           "group": "navigation@10"
+        },
+        {
+          "command": "fsmEditor.generateCode",
+          "when": "resourceExtname == .fsm",
+          "group": "navigation@11"
         }
       ],
       "commandPalette": [
+        {
+          "command": "fsmEditor.generateCode",
+          "when": "activeCustomEditorId == fsmEditor.stateMachine || resourceExtname == .fsm"
+        },
         {
           "command": "fsmEditor.exportSvg",
           "when": "activeCustomEditorId == fsmEditor.stateMachine"
@@ -124,13 +141,16 @@
     "watch": "node esbuild.mjs --watch",
     "check:webview": "node --check media/editor.js",
     "package": "npx @vscode/vsce package",
-    "test:web": "tsc -p ./ && node esbuild.mjs --test && node test/web/run.mjs"
+    "test:web": "tsc -p ./ && node esbuild.mjs --test && node test/web/run.mjs",
+    "test:unit": "node test/unit/run.mjs",
+    "build:bin": "node esbuild.mjs && node scripts/build-bin.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
     "@vscode/test-web": "^0.0.81",
     "esbuild": "^0.28.2",
+    "handlebars": "^4.7.9",
     "typescript": "^5.4.0"
   },
   "allowScripts": {

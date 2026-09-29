@@ -14,6 +14,7 @@ const WEBVIEW_COMMANDS = new Set([
   'undo',
   'redo',
   'fsmEditor.exportSvg',
+  'fsmEditor.generateCode',
   'fsmEditor.openAsText',
 ]);
 

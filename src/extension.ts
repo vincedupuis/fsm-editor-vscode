@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { GenerateArgs, generateCode } from './codegenCommand';
 import { FsmEditorProvider } from './fsmEditorProvider';
 import { defaultModel } from './model';
 import { basename, encodeText, extname } from './util';
@@ -45,6 +46,14 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('fsmEditor.openDiagram', async (uri?: vscode.Uri) => {
       const target = uri ?? vscode.window.activeTextEditor?.document.uri;
       if (target) await vscode.commands.executeCommand('vscode.openWith', target, FsmEditorProvider.viewType);
+    }),
+
+    vscode.commands.registerCommand('fsmEditor.generateCode', (uri?: vscode.Uri | GenerateArgs, args?: GenerateArgs) => {
+      // A keybinding passes its "args" as the only argument.
+      if (uri && !(uri instanceof vscode.Uri)) [uri, args] = [undefined, uri];
+      const active = vscode.window.activeTextEditor?.document.uri;
+      const source = uri ?? provider.activeEditor?.document.uri ?? (active?.path.endsWith('.fsm') ? active : undefined);
+      return generateCode(context, source, args);
     }),
 
     vscode.commands.registerCommand('fsmEditor.exportSvg', async () => {

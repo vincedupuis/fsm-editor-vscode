@@ -1,6 +1,6 @@
 # UML Conformance
 
-FSM Editor implements the state machine part of **UML 2.5.1** (OMG formal/17-12-05, chapter 14 "StateMachines"). This document lists what is supported, where the tool deliberately differs from the specification, which rules the validator checks, how files are stored, and what the SVG export contains.
+FSM Editor implements the state machine part of **UML 2.5.1** (OMG formal/17-12-05, chapter 14 "StateMachines"). This document lists what is supported, where the tool deliberately differs from the specification, which rules the validator checks, how files are stored, what the SVG export contains, and how generated code executes.
 
 - [Supported features](#supported-features)
 - [Text syntax](#text-syntax)
@@ -9,6 +9,7 @@ FSM Editor implements the state machine part of **UML 2.5.1** (OMG formal/17-12-
 - [Deviations from UML 2.5.1](#deviations-from-uml-251)
 - [Validation rules](#validation-rules)
 - [SVG export](#svg-export)
+- [Code generation](#code-generation)
 
 ## Supported features
 
@@ -111,7 +112,7 @@ Coordinates are rounded to 0.1 px when saved.
 
 - The diagram frame with the machine's name in its header isn't drawn. The name, with `{protocol}` for protocol state machines, appears in the editor toolbar and as the SVG export's title.
 - Composite states always show their contents. The "hidden decomposition" icon for collapsed composite states isn't supported. Submachine states show the submachine icon.
-- The editor doesn't execute or simulate machines, so run-to-completion semantics, transition priority and conflict resolution aren't modelled. Only simple conflicts are flagged (several unguarded completion transitions).
+- The editor doesn't execute or simulate machines, and the validator flags only simple conflicts (several unguarded completion transitions). Run-to-completion semantics, transition priority and conflict resolution are implemented by the [generated code](#code-generation).
 
 ## Validation rules
 
@@ -160,3 +161,20 @@ Beyond the [text syntax](#text-syntax), the validator checks the following. ✕ 
 ## SVG export
 
 *Export as SVG* writes a standalone drawing of the diagram exactly as shown, cropped to its content, in a light theme whatever the editor theme.
+
+## Code generation
+
+*Generate Code…* and the `fsm` command-line tool generate source code from Handlebars templates, and FSM Editor bundles a TypeScript template. Generation stops when the validator reports an error. The generated code follows UML's run-to-completion semantics, with these choices where UML leaves room or the tool simplifies:
+
+| UML | Generated code |
+| --- | --- |
+| Conflicting transitions in orthogonal regions: the choice among them isn't specified | The first transition selected fires; a transition whose source has been left meanwhile is skipped. |
+| Order of the actions of orthogonal regions isn't specified | Regions are exited and entered in document order. |
+| Junction: static conditional branch | Expanded into one transition per path with the guards combined, so a transition only fires when a complete path is enabled. |
+| Choice with no enabled branch: ill-formed | The generated code throws an error. |
+| Guards on the transitions leaving an entry point | Ignored: all of them are taken, like a fork. |
+| A region last exited through its final state, re-entered through history | Default entry, as if there were no history. |
+| Protocol violations are left to the implementation | `onConstraintViolation('precondition', …)` when an event finds no transition because a precondition is false. Postconditions are checked after the transition, invariants after every step. |
+| Do activities run concurrently with the state | `start…()`/`stop…()` calls. Their end is reported with `activityDone()`, which completes the state. |
+
+See [CODEGEN.md](CODEGEN.md) for the templates, the command line and the code model.

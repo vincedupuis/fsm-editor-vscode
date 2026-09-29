@@ -86,6 +86,17 @@ export async function run(): Promise<void> {
   assert(saved.transitions.find((t) => t.id === 't7')?.guard === 'isReady()', 'the saved file has the fixed guard');
   console.log('✓ saves the file as XMI');
 
+  // 6. Code generation runs in the browser (Handlebars, workspace.fs); the submachine is read but not generated.
+  const out = file('generated');
+  const written: vscode.Uri[] = await vscode.commands.executeCommand('fsmEditor.generateCode', file('Order.fsm'), {
+    template: vscode.Uri.joinPath(ext.extensionUri, 'templates/ts.hbs'),
+    out,
+  });
+  const names = written.map((u) => u.path.slice(u.path.lastIndexOf('/') + 1)).sort();
+  assert(names.includes('Order.ts') && !names.includes('Payment.ts'), `generates Order only: ${names.join(', ')}`);
+  assert((await read('generated/Order.ts')).includes('export class Order'), 'the generated class is written');
+  console.log('✓ generates code from a template');
+
   // Let VS Code finish re-reading the saved file and close the editors, so
   // closing the browser doesn't cancel work in flight (logged as errors).
   await new Promise((r) => setTimeout(r, 1000));

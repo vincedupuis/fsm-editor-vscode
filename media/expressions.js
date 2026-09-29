@@ -76,6 +76,9 @@
       return this.tokens[this.i++];
     }
     call() {
+      return `${this.callName()}()`;
+    }
+    callName() {
       const tok = this.next();
       if (!tok || tok.t !== 'name') {
         throw new SyntaxProblem(tok ? `Expected a function call, found '${tok.t}'.` : 'Expected a function call.');
@@ -88,7 +91,7 @@
       if (!close || close.t !== ')') {
         throw new SyntaxProblem(`Functions take no arguments: write ${tok.v}().`);
       }
-      return `${tok.v}()`;
+      return tok.v;
     }
     or() {
       const parts = [this.and()];
@@ -121,6 +124,38 @@
       }
       return this.call();
     }
+    // Same grammar as or/and/unary, building a tree instead of normalized text.
+    orTree() {
+      const args = [this.andTree()];
+      while (this.peek() && this.peek().t === '||') {
+        this.next();
+        args.push(this.andTree());
+      }
+      return args.length === 1 ? args[0] : { op: 'or', args };
+    }
+    andTree() {
+      const args = [this.unaryTree()];
+      while (this.peek() && this.peek().t === '&&') {
+        this.next();
+        args.push(this.unaryTree());
+      }
+      return args.length === 1 ? args[0] : { op: 'and', args };
+    }
+    unaryTree() {
+      const tok = this.peek();
+      if (tok && tok.t === '!') {
+        this.next();
+        return { op: 'not', arg: this.unaryTree() };
+      }
+      if (tok && tok.t === '(') {
+        this.next();
+        const inner = this.orTree();
+        const close = this.next();
+        if (!close || close.t !== ')') throw new SyntaxProblem('Missing closing parenthesis.');
+        return inner;
+      }
+      return { op: 'call', name: this.callName() };
+    }
     end() {
       const tok = this.peek();
       if (tok) throw new SyntaxProblem(`Unexpected '${tok.v ?? tok.t}'.`);
@@ -146,6 +181,28 @@
       p.end();
       return ok(value);
     });
+  }
+
+  /**
+   * Condition as a tree: { op: 'call', name } | { op: 'not', arg } | { op: 'and' | 'or', args }.
+   * Empty text gives null (no condition).
+   */
+  function parseCondition(text) {
+    const s = String(text ?? '').trim();
+    if (!s) return ok(null);
+    return guarded(() => {
+      const p = new Parser(tokenize(s));
+      const value = p.orTree();
+      p.end();
+      return ok(value);
+    });
+  }
+
+  /** Names of the functions a behavior calls, in order. */
+  function parseActions(text) {
+    const r = checkActions(text);
+    if (!r.ok) return r;
+    return ok(r.value ? r.value.split('; ').map((c) => c.slice(0, -2)) : []);
   }
 
   /** Transition guard: a condition, or 'else' when `allowElse` is set. */
@@ -234,5 +291,16 @@
     return Number(m[1]) * factor;
   }
 
-  return { checkCondition, checkGuard, checkActions, checkEvent, checkName, checkTrigger, checkList, timeTriggerMs };
+  return {
+    checkCondition,
+    checkGuard,
+    checkActions,
+    checkEvent,
+    checkName,
+    checkTrigger,
+    checkList,
+    timeTriggerMs,
+    parseCondition,
+    parseActions,
+  };
 });

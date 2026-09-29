@@ -59,6 +59,7 @@
     fit: I('<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>'),
     export: I('<path d="M12 3v12M7 8l5-5 5 5"/><path d="M5 14v6h14v-6"/>'),
     json: I('<path d="M8 4c-2 0-2 2-2 4s-2 4-2 4 2 0 2 4 0 4 2 4M16 4c2 0 2 2 2 4s2 4 2 4-2 0-2 4 0 4-2 4"/>'),
+    code: I('<path d="M8 7l-5 5 5 5M16 7l5 5-5 5M14 4l-4 16"/>'),
     trash: I('<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>'),
   };
 
@@ -2205,6 +2206,7 @@ ${scene(true)}
       h('span', { className: 'sep' }),
       btn('trash', 'Delete selection (Del)', () => deleteSelection()),
       h('span', { className: 'spacer' }),
+      btn('code', 'Generate code from a template', cmd('fsmEditor.generateCode'), 'Code'),
       btn('export', 'Export as SVG', cmd('fsmEditor.exportSvg'), 'SVG'),
       h('span', { className: 'sep' }),
       btn('json', 'Open as XMI text', cmd('fsmEditor.openAsText'), 'XMI'),
