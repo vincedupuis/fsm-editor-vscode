@@ -15,6 +15,7 @@ const common = {
   bundle: true,
   external: ['vscode'],
   format: 'cjs',
+  minify: true,
   sourcemap: true,
   logLevel: 'info',
 };
