@@ -12,12 +12,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/vincedupuis/fsm-editor.git"
+    "url": "https://github.com/vincedupuis/fsm-editor-vscode.git"
   },
   "bugs": {
-    "url": "https://github.com/vincedupuis/fsm-editor/issues"
+    "url": "https://github.com/vincedupuis/fsm-editor-vscode/issues"
   },
-  "homepage": "https://github.com/vincedupuis/fsm-editor#readme",
+  "homepage": "https://github.com/vincedupuis/fsm-editor-vscode#readme",
   "engines": {
     "vscode": "^1.85.0"
   },
