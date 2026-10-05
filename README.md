@@ -1,12 +1,24 @@
-# FSM Editor — UML State Machines for VS Code
+# FSM Editor — UML State Machines & Code Generation for VS Code
 
 [![Visual Studio Marketplace version](https://badgen.net/vs-marketplace/v/VinceGoSoftware.fsm-editor)](https://marketplace.visualstudio.com/items?itemName=VinceGoSoftware.fsm-editor)
 
-A visual editor for UML 2.5.1 state machines. Open any `*.fsm` file to get a canvas with a toolbox, a properties panel, live validation and SVG export. Files are standard XMI 2.5.1: the UML model plus its diagram layout in UML DI, in the same file.
+A visual editor and code generator for UML 2.5.1 state machines. Draw a machine in any `*.fsm` file, with a toolbox, a properties panel, live validation and SVG export, then generate its source code from templates, in VS Code or with the standalone `fsm` command-line generator. Files are standard XMI 2.5.1: the UML model plus its diagram layout in UML DI, in the same file.
 
 It also works in VS Code for the Web: open a repository on [github.dev](https://github.dev) (press `.` on any GitHub repository) or a folder on [vscode.dev](https://vscode.dev), install FSM Editor from the Extensions view, and open a `.fsm` file.
 
 ![The FSM Editor showing a media player state machine with composite and orthogonal states, the toolbox on the left and the properties panel on the right](images/overview.png)
+
+## Code generation
+
+*Generate Code…* (the **Code** toolbar button, or the Explorer context menu of a `.fsm` file) turns a machine into source code with a [Handlebars](https://handlebarsjs.com/) template. One template can write several files per machine. A TypeScript template is bundled: it writes a dependency-free class with run-to-completion semantics, plus an actions interface for you to implement.
+
+The same generator is a command-line tool, available as a standalone executable (no Node.js needed) for Windows, macOS and Linux:
+
+```sh
+fsm "models/**/*.fsm" --template ts --out src/generated
+```
+
+See **[docs/CODEGEN.md](docs/CODEGEN.md)** for the command line, the TypeScript template, writing templates for other languages, and the code model they receive.
 
 ## UML support
 
@@ -42,18 +54,6 @@ See **[docs/UML-CONFORMANCE.md](docs/UML-CONFORMANCE.md)** for:
 - **Shortcuts**: S state, X final, I initial, H history, C choice, J junction, N comment, T transition, R region, V/Esc select. Shift+click a tool to keep it active.
 
 Commands (Command Palette → "FSM"): *New State Machine*, *Generate Code…*, *Export as SVG*, *Open as XMI Text*, *Open in FSM Editor*.
-
-## Code generation
-
-*Generate Code…* (the **Code** toolbar button, or the Explorer context menu of a `.fsm` file) turns a machine into source code with a [Handlebars](https://handlebarsjs.com/) template. One template can write several files per machine. A TypeScript template is bundled: it writes a dependency-free class with run-to-completion semantics, plus an actions interface for you to implement.
-
-The same generator is a command-line tool, available as a standalone executable (no Node.js needed) for Windows, macOS and Linux:
-
-```sh
-fsm "models/**/*.fsm" --template ts --out src/generated
-```
-
-See **[docs/CODEGEN.md](docs/CODEGEN.md)** for the command line, the TypeScript template, writing templates for other languages, and the code model they receive.
 
 ## Development
 

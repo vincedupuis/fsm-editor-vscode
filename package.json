@@ -1,7 +1,7 @@
 {
   "name": "fsm-editor",
-  "displayName": "FSM Editor — UML State Machines",
-  "description": "Visual editor to create, edit and visualize UML 2.5.1 state machines (composite/orthogonal states, submachines with connection point references, all pseudostates, protocol state machines) stored as standard XMI with UML DI layout, with a toolbox, validation and SVG export.",
+  "displayName": "FSM Editor — UML State Machines & Code Generation",
+  "description": "Visual editor and code generator for UML 2.5.1 state machines: draw composite/orthogonal states, submachines with connection point references, all pseudostates and protocol state machines, then generate source code from Handlebars templates (TypeScript bundled), in VS Code or with the standalone fsm command-line generator. Stored as standard XMI with UML DI layout, with validation and SVG export.",
   "version": "0.3.2",
   "publisher": "VinceGoSoftware",
   "icon": "images/icon.png",
@@ -32,7 +32,11 @@
     "statechart",
     "diagram",
     "xmi",
-    "umldi"
+    "umldi",
+    "code generation",
+    "code generator",
+    "codegen",
+    "handlebars"
   ],
   "main": "./out/extension.js",
   "browser": "./out/web/extension.js",
