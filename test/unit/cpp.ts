@@ -119,11 +119,16 @@ export async function build(cases: Case[], tools: Toolchain): Promise<string> {
   const units = [...machines, 'driver'];
   const pool = Math.max(2, Math.min(8, units.length));
   const queue = [...units];
+  const failures: string[] = [];
   await Promise.all(
     Array.from({ length: pool }, async () => {
-      for (let u = queue.shift(); u; u = queue.shift()) await run(tools.cxx, compileArgs(tools, u), dir);
+      for (let u = queue.shift(); u; u = queue.shift()) {
+        await run(tools.cxx, compileArgs(tools, u), dir).catch((e: Error) => failures.push(e.message));
+      }
     }),
   );
+  // Every file that fails, not only the first.
+  if (failures.length) throw new Error(failures.join('\n'));
   const exe = join(dir, tools.msvc ? 'driver.exe' : 'driver');
   if (tools.msvc) await run(tools.cxx, ['/nologo', ...units.map((u) => `${u}.obj`), '/Fedriver.exe'], dir);
   else await run(tools.cxx, [...units.map((u) => `${u}.o`), '-o', exe], dir);

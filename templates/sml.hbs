@@ -511,17 +511,12 @@ struct {{id name}};
         }
 {{#if ../exitPoints.length}}
         void onExitPoint({{../name}}ExitPoint point) override {
-            switch (point) {
+            (void)point;
 {{#each @root.tables.events}}
 {{#if (and (eq kind "exitPoint") (eq ref.index ../index))}}
-            case {{../../name}}ExitPoint::{{id point}}:
-                c.work.push_back({{index}});
-                break;
+            if (point == {{../../name}}ExitPoint::{{id point}}) c.work.push_back({{index}});
 {{/if}}
 {{/each}}
-            default:
-                break;
-            }
             c.run();
         }
 {{/if}}
@@ -943,6 +938,10 @@ struct Runtime final : Context {
     }
 
     bool dispatchSignal(int signal) {
+{{#unless signals.length}}
+        (void)signal;
+        return false;
+{{else}}
         switch (signal) {
 {{#each events}}
         case {{signalIndex}}:
@@ -955,6 +954,7 @@ struct Runtime final : Context {
         default:
             return false;
         }
+{{/unless}}
     }
 
     bool dispatchTable(int e) {
