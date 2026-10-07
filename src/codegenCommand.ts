@@ -104,8 +104,11 @@ export async function generateCode(context: vscode.ExtensionContext, source: vsc
     const where = vscode.workspace.asRelativePath(out);
     channel.appendLine(`${new Date().toLocaleTimeString()} ${result.machines.join(', ')} → ${where}: ${written.length} written`);
     for (const w of written) channel.appendLine(`  ${vscode.workspace.asRelativePath(w)}`);
+    const warnings = result.issues.filter((i) => i.severity === 'warning');
+    for (const i of warnings) channel.appendLine(`  ${i.file}: warning: ${i.message}`);
     if (!args.template || !args.out) {
-      void vscode.window.showInformationMessage(`Generated ${written.length} file${written.length === 1 ? '' : 's'} in ${where}.`, 'Show Output').then((a) => {
+      const also = warnings.length ? `, with ${warnings.length} warning${warnings.length === 1 ? '' : 's'}` : '';
+      void vscode.window.showInformationMessage(`Generated ${written.length} file${written.length === 1 ? '' : 's'} in ${where}${also}.`, 'Show Output').then((a) => {
         if (a) channel.show();
       });
     }

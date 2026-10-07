@@ -18,6 +18,7 @@
  */
 import * as expr from '../../media/expressions';
 import { FsmModel, ModelIndex, Transition, Vertex, isBorderVertex } from '../model';
+import { CodeTables, toTables } from './tables';
 
 export type Condition = expr.Condition;
 
@@ -57,6 +58,8 @@ export interface CodeModel {
   /** States with an invariant. */
   invariants: CodeState[];
   features: CodeFeatures;
+  /** The machine as nested transition tables, for frameworks without transitions across composite states (see tables.ts). */
+  tables: CodeTables;
 }
 
 export interface CodeMachine {
@@ -96,6 +99,8 @@ export type Completion = 'immediate' | 'activities' | 'regions' | 'submachine' |
 
 export interface CodeState {
   index: number;
+  /** xmi:id of the state. */
+  id: string;
   /** Unique identifier among the states. */
   name: string;
   displayName: string;
@@ -152,14 +157,25 @@ export interface CodeCandidate {
 
 export interface CodeTransition {
   index: number;
+  /** xmi:id of the transition leaving the source (of the join for joins). */
+  id: string;
   name: string;
   /** Readable description, e.g. `Paused -> Stopped (after(5m))`. */
   label: string;
+  /** Pseudostates the transition goes through (entry and exit points, forks, joins, history, choices, junctions), in the order reached. */
+  via: CodeVia[];
   kind: 'external' | 'internal' | 'local' | 'join' | 'exitPoint';
   /** Main source state; the transition is skipped when it is no longer active. */
   source: Ref;
   sourceIndex: number;
   steps: Step[];
+}
+
+export interface CodeVia {
+  kind: 'entryPoint' | 'exitPoint' | 'connectionPointRef' | 'fork' | 'join' | 'shallowHistory' | 'deepHistory' | 'choice' | 'junction';
+  /** Name of the pseudostate, or of the state owning an entry/exit point (`On.fault`). */
+  name: string;
+  id: string;
 }
 
 export interface CodeEvent {
@@ -191,6 +207,11 @@ export interface CodeSubmachine {
   name: string;
   href: string;
   events: string[];
+  /** Its own entry and exit points. */
+  entryPoints: string[];
+  exitPoints: string[];
+  /** It uses time events, itself or through its own submachines. */
+  timers: boolean;
   /** Submachine states using it. */
   states: Ref[];
 }
@@ -208,6 +229,10 @@ export interface CodeExitPoint {
 
 export interface CodeFeatures {
   timers: boolean;
+  /** A submachine uses time events, itself or through its own submachines. */
+  submachineTimers: boolean;
+  /** `timers` or `submachineTimers`: the machine needs a clock. */
+  anyTimers: boolean;
   activities: boolean;
   history: boolean;
   deferral: boolean;
@@ -236,7 +261,7 @@ export type Step =
   | { kind: 'enter'; state: string; stateIndex: number }
   | { kind: 'enterRegion'; region: string; regionIndex: number }
   | { kind: 'restoreHistory'; region: string; regionIndex: number; deep: boolean; defaultSteps: Step[] }
-  | { kind: 'choice'; label: string; branches: ChoiceBranch[]; hasElse: boolean }
+  | { kind: 'choice'; label: string; branches: ChoiceBranch[]; hasElse: boolean; region: string; regionIndex: number }
   | { kind: 'startSubmachine'; state: string; stateIndex: number; point: string | null }
   | { kind: 'stopSubmachine'; state: string; stateIndex: number }
   | { kind: 'exitMachine'; point: string }
@@ -251,9 +276,9 @@ export interface ChoiceBranch {
 }
 
 /** A choice step; `hasElse` tells whether the last branch is always taken. */
-function choice(label: string, branches: ChoiceBranch[]): Step {
+function choice(label: string, branches: ChoiceBranch[], region: Ref): Step {
   const last = branches[branches.length - 1];
-  return { kind: 'choice', label, branches, hasElse: !!last && (last.isElse || !last.guard) };
+  return { kind: 'choice', label, branches, hasElse: !!last && (last.isElse || !last.guard), region: region.name, regionIndex: region.index };
 }
 
 export interface ToCodeModelOptions {
@@ -363,6 +388,8 @@ class Builder {
   private fireCache = new Map<string, Fireable[]>();
   private features: CodeFeatures = {
     timers: false,
+    submachineTimers: false,
+    anyTimers: false,
     activities: false,
     history: false,
     deferral: false,
@@ -379,6 +406,8 @@ class Builder {
   };
   /** Junctions on the way being compiled, to report cycles. */
   private junctionPath: string[] = [];
+  /** Pseudostates reached while compiling a transition (see CodeTransition.via). */
+  private trail: CodeVia[] = [];
 
   constructor(
     private model: FsmModel,
@@ -434,6 +463,9 @@ class Builder {
     this.features.exitPoints = exitPoints.length > 0;
     this.features.submachines = subs.size > 0;
     this.features.timers = this.timers.length > 0;
+    const usesTimers = (sub: CodeModel) => sub.features.timers || sub.features.submachineTimers;
+    this.features.submachineTimers = [...subs.values()].some(usesTimers);
+    this.features.anyTimers = this.features.timers || this.features.submachineTimers;
     this.features.activities = this.activities.size > 0;
     this.features.constraints = this.features.invariants || this.features.preconditions || this.features.postconditions;
 
@@ -441,10 +473,13 @@ class Builder {
       name: sub.machine.name,
       href,
       events: sub.events.map((e) => e.name),
+      entryPoints: sub.entryPoints.map((p) => p.name),
+      exitPoints: sub.exitPoints.map((p) => p.name),
+      timers: usesTimers(sub),
       states: states.filter((s) => s.submachine?.href === href).map((s) => ({ name: s.name, index: s.index })),
     }));
 
-    return {
+    const code: Omit<CodeModel, 'tables'> = {
       machine: {
         name: ident(m.name, 'StateMachine'),
         displayName: m.name,
@@ -472,6 +507,7 @@ class Builder {
       invariants: states.filter((s) => s.invariant),
       features: this.features,
     };
+    return { ...code, tables: toTables(code) };
   }
 
   // -------------------------------------------------------------- names
@@ -678,10 +714,18 @@ class Builder {
     return { kind: 'exitRegion', region: r.name, regionIndex: r.index };
   }
 
-  private altsToSteps(alts: Alt[], label: string): Step[] {
+  /** `alts` as steps: a choice evaluated in `region` when there are several ways. */
+  private altsToSteps(alts: Alt[], label: string, region: string): Step[] {
     if (alts.length === 1 && !alts[0].guard) return alts[0].steps;
     this.features.choices = true;
-    return [choice(label, alts.map((a) => ({ guard: a.guard, isElse: false, steps: a.steps })))];
+    return [choice(label, alts.map((a) => ({ guard: a.guard, isElse: false, steps: a.steps })), this.regionRef(region))];
+  }
+
+  private via(v: Vertex): void {
+    if (this.trail.some((x) => x.id === v.id)) return;
+    const onBorder = v.type !== 'connectionPointRef' && isBorderVertex(v, this.ix.vertices);
+    const name = onBorder ? `${this.label(this.ix.vertices.get(v.parent))}.${this.label(v)}` : this.label(v);
+    this.trail.push({ kind: v.type as CodeVia['kind'], name, id: v.id });
   }
 
   /** Exits for a transition from `pos` whose domain is `domain`. */
@@ -732,6 +776,8 @@ class Builder {
   /** Arriving at `v`, which sits directly in `region`. */
   private reach(v: Vertex, region: string): Alt[] {
     const outs = this.ix.outgoing(v.id);
+    const machinePoint = (v.type === 'entryPoint' || v.type === 'exitPoint') && !this.ix.vertices.has(v.parent);
+    if (!['state', 'final', 'initial', 'terminate'].includes(v.type) && !machinePoint) this.via(v);
     switch (v.type) {
       case 'state': {
         let alts = one([this.enterStep(v)]);
@@ -770,9 +816,9 @@ class Builder {
         const branches: ChoiceBranch[] = ordered.map((t) => ({
           guard: this.guardOf(t),
           isElse: t.guard.trim() === 'else',
-          steps: this.altsToSteps(this.segment(v, t), label),
+          steps: this.altsToSteps(this.segment(v, t), label, region),
         }));
-        return one([choice(label, branches)]);
+        return one([choice(label, branches, this.regionRef(region))]);
       }
       case 'junction': {
         if (this.junctionPath.includes(v.id)) throw new CodeGenError('Junctions form a cycle.');
@@ -787,7 +833,7 @@ class Builder {
       case 'deepHistory': {
         this.features.history = true;
         const r = this.regionRef(region);
-        const def = outs.length ? this.altsToSteps(this.segment(v, outs[0]), 'history default') : [this.enterRegionStep(region)];
+        const def = outs.length ? this.altsToSteps(this.segment(v, outs[0]), 'history default', region) : [this.enterRegionStep(region)];
         return one([{ kind: 'restoreHistory', region: r.name, regionIndex: r.index, deep: v.type === 'deepHistory', defaultSteps: def }]);
       }
       case 'fork': {
@@ -850,7 +896,10 @@ class Builder {
   private fireables(key: string, t: Transition, pos: Vertex, prefix: Step[], kind: CodeTransition['kind'], label: string): Fireable[] {
     const cached = this.fireCache.get(key);
     if (cached) return cached;
+    this.trail = [];
+    if (!this.isState(pos)) this.via(pos);
     let alts = seq(one(prefix), this.segment(pos, t));
+    const via = this.trail;
     const post = this.model.kind === 'protocol' ? this.condition(t.postcondition, `Postcondition of ${label}`) : null;
     if (post) {
       this.features.postconditions = true;
@@ -863,8 +912,10 @@ class Builder {
     const list = alts.map((a, i): Fireable => {
       const tr: CodeTransition = {
         index: this.transitions.length,
+        id: t.id,
         name: this.transitionNames.take(alts.length > 1 ? `${base}_${i + 1}` : base),
         label,
+        via,
         kind,
         source,
         sourceIndex: source.index,
@@ -926,16 +977,21 @@ class Builder {
         }
       }
       const effects = [...incoming.flatMap((t) => this.effect(t)), ...(out ? this.effect(out) : [])];
+      this.trail = [];
+      this.via(j);
       const alts = seq(one([...exits, ...effects]), target ? this.enterDomain(domain, [target]) : one());
+      const via = this.trail;
       const source = requires[0];
       const tr: CodeTransition = {
         index: this.transitions.length,
+        id: j.id,
         name: this.transitionNames.take(ident(`join_${requires.map((r) => r.name).join('_')}`)),
         label,
+        via,
         kind: 'join',
         source,
         sourceIndex: source.index,
-        steps: this.altsToSteps(alts, label),
+        steps: this.altsToSteps(alts, label, domain ?? this.topRegionIds[0]),
       };
       this.transitions.push(tr);
       cached = [{ tr, guard: null }];
@@ -1028,6 +1084,7 @@ class Builder {
     const parent = owner ? this.stateRef(owner) : null;
     return {
       index,
+      id: v.id,
       name,
       displayName: v.name || (isFinal ? 'final' : name),
       kind,
@@ -1069,7 +1126,7 @@ class Builder {
         .map((v, i) => ({ v, i }))
         .filter(({ v }) => v.parent === r.id)
         .map(({ i }) => ({ name: this.stateNames[i], index: i })),
-      defaultSteps: initial && out ? this.altsToSteps(this.segment(initial, out), `initial of ${name}`) : [],
+      defaultSteps: initial && out ? this.altsToSteps(this.segment(initial, out), `initial of ${name}`, r.id) : [],
     };
   }
 
@@ -1084,6 +1141,6 @@ class Builder {
     const entered = new Set(outs.map((t) => this.chain(this.vertex(t.target))[0]));
     const others = this.topRegionIds.filter((r) => !entered.has(r)).map((r) => this.enterRegionStep(r));
     const name = ident(v.name, 'entry');
-    return { name, id: v.id, steps: [...this.altsToSteps(alts, `entry point ${name}`), ...others] };
+    return { name, id: v.id, steps: [...this.altsToSteps(alts, `entry point ${name}`, v.parent), ...others] };
   }
 }

@@ -5,7 +5,7 @@ import { describe, it } from 'node:test';
 import * as expr from '../../media/expressions';
 import { printCondition } from '../../src/codegen/helpers';
 import { LANGUAGES } from '../../src/codegen/languages';
-import { parseFrontMatter, parseTemplate, render } from '../../src/codegen/render';
+import { TemplateIssue, parseFrontMatter, parseTemplate, render } from '../../src/codegen/render';
 import { toCodeModel } from '../../src/codegen/codeModel';
 import { fromXmi } from '../../src/xmi';
 import { FakeClock, ModelBuilder, load, recorder, root } from './harness';
@@ -387,6 +387,25 @@ describe('templates', () => {
       { path: 'Traffic_Light.h', content: '// TRAFFIC_LIGHT\n' },
       { path: 'impl.c', content: 'Red;\n' },
     ]);
+  });
+
+  it('switch picks the first case listing the value, or the default, and drops the text between cases', () => {
+    const t = parseTemplate(
+      '{{#file "out.txt"}}{{#each states}}{{#switch name}}\n  {{#case "A" "B"}}ab;{{/case}}\n  {{#case "B"}}b;{{/case}}\n  {{#default}}{{name}};{{/default}}\n{{/switch}}{{/each}}{{/file}}',
+    );
+    const b = new ModelBuilder('M');
+    b.init(b.state('A'));
+    b.state('B');
+    b.state('C');
+    assert.deepEqual(render(t, toCodeModel(b.model)), [{ path: 'out.txt', content: 'ab;ab;C;' }]);
+  });
+
+  it('warn and error report issues; errors stop the generation', () => {
+    const b = new ModelBuilder('M');
+    const issues: TemplateIssue[] = [];
+    render(parseTemplate('{{warn "careful: " machine.name id="x"}}{{#file "a"}}a{{/file}}'), toCodeModel(b.model), issues);
+    assert.deepEqual(issues, [{ severity: 'warning', message: 'careful: M', id: 'x' }]);
+    assert.throws(() => render(parseTemplate('{{error "no"}}{{#file "a"}}a{{/file}}'), toCodeModel(b.model)), /no/);
   });
 
   it('rejects file names outside the output folder', () => {

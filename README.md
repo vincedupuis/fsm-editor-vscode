@@ -10,15 +10,19 @@ It also works in VS Code for the Web: open a repository on [github.dev](https://
 
 ## Code generation
 
-*Generate Code…* (the **Code** toolbar button, or the Explorer context menu of a `.fsm` file) turns a machine into source code with a [Handlebars](https://handlebarsjs.com/) template. One template can write several files per machine. A TypeScript template is bundled: it writes a dependency-free class with run-to-completion semantics, plus an actions interface for you to implement.
+*Generate Code…* (the **Code** toolbar button, or the Explorer context menu of a `.fsm` file) turns a machine into source code with a [Handlebars](https://handlebarsjs.com/) template. One template can write several files per machine. Two templates are bundled:
+
+- **`ts`**: a dependency-free TypeScript class with run-to-completion semantics, plus an actions interface for you to implement.
+- **`sml`**: C++17 with [Boost.SML](https://github.com/boost-ext/sml): a `.h`/`.cpp` pair per machine holding its Boost.SML transition tables, an events interface (what you send the machine) and an actions interface (what it needs from you: behaviors, conditions, timers). Boost.SML has no transitions across composite states, entry/exit points, forks, joins or UML history: the generated code works around them with a warning for each, and refuses what it cannot express.
 
 The same generator is a command-line tool, available as a standalone executable (no Node.js needed) for Windows, macOS and Linux:
 
 ```sh
 fsm "models/**/*.fsm" --template ts --out src/generated
+fsm "models/**/*.fsm" --template sml --out src/generated
 ```
 
-See **[docs/CODEGEN.md](docs/CODEGEN.md)** for the command line, the TypeScript template, writing templates for other languages, and the code model they receive.
+See **[docs/CODEGEN.md](docs/CODEGEN.md)** for the command line, the bundled templates, writing templates for other languages, and the code model they receive.
 
 ## UML support
 
@@ -60,7 +64,7 @@ Commands (Command Palette → "FSM"): *New State Machine*, *Generate Code…*, *
 ```sh
 npm install
 npm run compile      # type-check, then bundle for desktop, web and the CLI; or: npm run watch
-npm run test:unit    # code generation tests (Node)
+npm run test:unit    # code generation tests (Node; compiles the C++ of the sml template when a C++ compiler is found)
 npm run test:web     # smoke test in VS Code for the Web (Chromium)
 npm run build:bin    # standalone fsm executables in dist/ (uses Bun)
 ```

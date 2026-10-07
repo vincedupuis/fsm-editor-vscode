@@ -14,6 +14,13 @@ export interface OutputFile {
   content: string;
 }
 
+/** A warning or error a template reports with `{{warn}}` or `{{error}}`, about the element with xmi:id `id` ('' when none). */
+export interface TemplateIssue {
+  severity: 'warning' | 'error';
+  message: string;
+  id: string;
+}
+
 type Handlebars = typeof HandlebarsNamespace;
 type Options = HandlebarsNamespace.HelperOptions;
 
@@ -68,8 +75,8 @@ export function checkOutputPath(p: string): string {
   return parts.join('/');
 }
 
-/** Registers the helpers on `hb`; `files` receives the output of `{{#file}}` blocks. */
-export function registerHelpers(hb: Handlebars, lang: LanguageConfig, files: OutputFile[]): void {
+/** Registers the helpers on `hb`; `files` receives the output of `{{#file}}` blocks, `issues` what `{{warn}}` and `{{error}}` report. */
+export function registerHelpers(hb: Handlebars, lang: LanguageConfig, files: OutputFile[], issues: TemplateIssue[] = []): void {
   const args = (list: unknown[]) => list.slice(0, -1); // drop Handlebars' options argument
 
   hb.registerHelper('file', function (this: unknown, name: unknown, options: Options) {
@@ -101,4 +108,48 @@ export function registerHelpers(hb: Handlebars, lang: LanguageConfig, files: Out
   });
   /** A double-quoted string literal (valid in C, C++, Java, TypeScript and Python). */
   hb.registerHelper('quote', (s: unknown) => JSON.stringify(String(s ?? '')));
+  /**
+   * `{{#switch kind}}{{#case "a" "b"}}…{{/case}}{{#default}}…{{/default}}{{/switch}}`: the first case listing the
+   * value, or the default. Text between the cases is dropped.
+   */
+  const switches: { value: unknown; done: boolean }[] = [];
+  hb.registerHelper('switch', function (this: unknown, value: unknown, options: Options) {
+    switches.push({ value, done: false });
+    try {
+      return options.fn(this).replace(/\u0000([\s\S]*?)\u0001|[\s\S]/g, (_, chosen) => chosen ?? '');
+    } finally {
+      switches.pop();
+    }
+  });
+  hb.registerHelper('case', function (this: unknown, ...list: unknown[]) {
+    const options = list[list.length - 1] as Options;
+    const top = switches[switches.length - 1];
+    if (!top) throw new Error('{{#case}} must be inside {{#switch}}.');
+    if (top.done || !args(list).includes(top.value)) return '';
+    top.done = true;
+    return `\u0000${options.fn(this)}\u0001`;
+  });
+  hb.registerHelper('default', function (this: unknown, options: Options) {
+    const top = switches[switches.length - 1];
+    if (!top) throw new Error('{{#default}} must be inside {{#switch}}.');
+    if (top.done) return '';
+    top.done = true;
+    return `\u0000${options.fn(this)}\u0001`;
+  });
+  /** `{{#if (includes list value)}}`: whether a list holds a value. */
+  hb.registerHelper('includes', (list: unknown, value: unknown) => Array.isArray(list) && list.includes(value));
+
+  /**
+   * `{{warn "message" id=id}}` reports a warning; `{{error ...}}` an error, which stops the generation once the
+   * template has been rendered (so that every error is reported). Several arguments are joined, like `concat`.
+   */
+  const report = (severity: TemplateIssue['severity']) => (...list: unknown[]) => {
+    const options = list[list.length - 1] as Options;
+    const message = args(list).map((x) => String(x ?? '')).join('');
+    const id = String(options.hash?.id ?? '');
+    if (!issues.some((i) => i.severity === severity && i.message === message && i.id === id)) issues.push({ severity, message, id });
+    return '';
+  };
+  hb.registerHelper('warn', report('warning'));
+  hb.registerHelper('error', report('error'));
 }

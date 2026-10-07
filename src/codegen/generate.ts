@@ -8,7 +8,7 @@ import { FsmModel, SubmachineInfo, machineConnectionPoints } from '../model';
 import { Issue, validate } from '../validation';
 import { fromXmi } from '../xmi';
 import { CodeGenError, CodeModel, toCodeModel } from './codeModel';
-import { OutputFile, Template, render } from './render';
+import { OutputFile, Template, TemplateIssue, render } from './render';
 
 export interface GenerateHost {
   readFile(path: string): Promise<string>;
@@ -127,14 +127,24 @@ export async function generate(sources: string[], template: Template, host: Gene
   const files: OutputFile[] = [];
   const owner = new Map<string, string>();
   for (const path of [...new Set(targets)]) {
-    for (const f of render(template, codeOf(path))) {
+    const reported: TemplateIssue[] = [];
+    const rendered = render(template, codeOf(path), reported);
+    // What the template reports about this machine, as issues of its file.
+    for (const r of reported) issues.push({ file: display(path), id: r.id, severity: r.severity, message: r.message });
+    for (const f of rendered) {
       const other = owner.get(f.path);
       if (other) {
+        // A file shared by several machines (a common header) is written once, when they agree on its content.
+        if (files.find((x) => x.path === f.path)?.content === f.content) continue;
         throw new GenerateError(`${display(path)} and ${display(other)} both generate '${f.path}': give the state machines different names.`);
       }
       owner.set(f.path, path);
       files.push(f);
     }
+  }
+  const templateErrors = issues.filter((i) => i.severity === 'error');
+  if (templateErrors.length) {
+    throw new GenerateError(`The template reported ${templateErrors.length} error${templateErrors.length > 1 ? 's' : ''}; nothing was generated.`, issues);
   }
   return { files, issues, machines: [...new Set(targets)].map(display) };
 }

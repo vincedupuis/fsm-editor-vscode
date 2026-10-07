@@ -164,7 +164,7 @@ Beyond the [text syntax](#text-syntax), the validator checks the following. ✕ 
 
 ## Code generation
 
-*Generate Code…* and the `fsm` command-line tool generate source code from Handlebars templates, and FSM Editor bundles a TypeScript template. Generation stops when the validator reports an error. The generated code follows UML's run-to-completion semantics, with these choices where UML leaves room or the tool simplifies:
+*Generate Code…* and the `fsm` command-line tool generate source code from Handlebars templates, and FSM Editor bundles a TypeScript template and a C++ template for Boost.SML. Generation stops when the validator reports an error. The generated code follows UML's run-to-completion semantics, with these choices where UML leaves room or the tool simplifies:
 
 | UML | Generated code |
 | --- | --- |
@@ -176,5 +176,7 @@ Beyond the [text syntax](#text-syntax), the validator checks the following. ✕ 
 | A region last exited through its final state, re-entered through history | Default entry, as if there were no history. |
 | Protocol violations are left to the implementation | `onConstraintViolation('precondition', …)` when an event finds no transition because a precondition is false. Postconditions are checked after the transition, invariants after every step. |
 | Do activities run concurrently with the state | `start…()`/`stop…()` calls. Their end is reported with `activityDone()`, which completes the state. |
+
+The Boost.SML template keeps these semantics, with one exception: Boost.SML fires the transitions of orthogonal regions region after region, so when several regions react to the same event, a later region's guards are evaluated after the earlier regions' transitions fired. The template warns where this can happen.
 
 See [CODEGEN.md](CODEGEN.md) for the templates, the command line and the code model.

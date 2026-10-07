@@ -1,0 +1,29 @@
+# Runs the unit tests on Windows on every push and pull request, so that the
+# C++ of the Boost.SML template (templates/sml.hbs) is compiled with MSVC, the
+# compiler of FSM Editor for Visual Studio's users. The release workflow tests
+# on Linux with GCC.
+name: Test on Windows
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # Puts MSVC's cl on the PATH, which the tests pick first on Windows.
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - run: npm ci
+
+      - name: Test
+        run: npm run test:unit
