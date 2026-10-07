@@ -1236,6 +1236,9 @@ ${scene(true)}
     return null;
   }
 
+  /** Time and position of the last plain pointerdown, for double-click detection. */
+  let lastDown = null;
+
   svg.addEventListener('pointerdown', (e) => {
     if (!model) return;
     svg.focus();
@@ -1244,6 +1247,7 @@ ${scene(true)}
     const p = toWorld(e);
     const hit = hitTarget(e.target);
 
+    if (e.button === 1 || e.button === 2 || spaceDown || tool) lastDown = null;
     if (e.button === 1 || e.button === 2 || spaceDown) {
       drag = { kind: 'pan', sx: e.clientX, sy: e.clientY, vx: view.x, vy: view.y };
       svg.classList.add('panning');
@@ -1267,6 +1271,15 @@ ${scene(true)}
       } else if (def && def.create) {
         createVertex(tool, p);
       }
+      e.preventDefault();
+      return;
+    }
+
+    // Double-clicks are detected here: the render below replaces the element under the pointer,
+    // so the browser never fires dblclick on a diagram item.
+    const dbl = e.button === 0 && lastDown && e.timeStamp - lastDown.time < 500 && Math.hypot(e.clientX - lastDown.x, e.clientY - lastDown.y) < 5;
+    lastDown = dbl ? null : { time: e.timeStamp, x: e.clientX, y: e.clientY };
+    if (dbl && doubleClick(e, hit, p)) {
       e.preventDefault();
       return;
     }
@@ -1476,10 +1489,8 @@ ${scene(true)}
     }
   });
 
-  svg.addEventListener('dblclick', (e) => {
-    if (!model || tool) return;
-    const hit = hitTarget(e.target);
-    const p = toWorld(e);
+  /** Double-click actions; returns false when the target has none. */
+  function doubleClick(e, hit, p) {
     if (hit.kind === 'wp') {
       const t = T.get(hit.id);
       t.points.splice(hit.index, 1);
@@ -1495,8 +1506,9 @@ ${scene(true)}
       else startInlineEdit(v.id);
     } else if (hit.kind === 'empty') {
       createVertex('state', p);
-    }
-  });
+    } else return false;
+    return true;
+  }
 
   function addWaypoint(t, p) {
     const pts = route(t);
