@@ -72,6 +72,12 @@
         "category": "FSM"
       },
       {
+        "command": "fsmEditor.newUntitled",
+        "title": "New Untitled State Machine",
+        "shortTitle": "State Machine",
+        "category": "FSM"
+      },
+      {
         "command": "fsmEditor.exportSvg",
         "title": "Export as SVG",
         "category": "FSM"
@@ -95,6 +101,11 @@
       }
     ],
     "menus": {
+      "file/newFile": [
+        {
+          "command": "fsmEditor.newUntitled"
+        }
+      ],
       "editor/title": [
         {
           "command": "fsmEditor.openAsText",

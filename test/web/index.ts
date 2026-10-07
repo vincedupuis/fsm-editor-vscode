@@ -9,6 +9,7 @@
  */
 import * as vscode from 'vscode';
 import { fromXmi, toXmi } from '../../src/xmi';
+import { defaultModel } from '../../src/model';
 import { decodeText, encodeText } from '../../src/util';
 
 const VIEW_TYPE = 'fsmEditor.stateMachine';
@@ -96,6 +97,16 @@ export async function run(): Promise<void> {
   assert(names.includes('Order.ts') && !names.includes('Payment.ts'), `generates Order only: ${names.join(', ')}`);
   assert((await read('generated/Order.ts')).includes('export class Order'), 'the generated class is written');
   console.log('✓ generates code from a template');
+
+  // 7. File › New File… › State Machine opens an untitled machine in the diagram.
+  await vscode.commands.executeCommand('fsmEditor.newUntitled');
+  const untitled = vscode.workspace.textDocuments.find((d) => d.isUntitled && d.uri.path.endsWith('/StateMachine.fsm'));
+  assert(untitled, 'an untitled StateMachine.fsm is open');
+  assert(untitled.getText() === toXmi(defaultModel('StateMachine')), 'it holds the default machine');
+  const tab = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+  assert(tab instanceof vscode.TabInputCustom && tab.viewType === VIEW_TYPE, 'it opens in the diagram editor');
+  await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+  console.log('✓ creates an untitled state machine in the diagram');
 
   // Let VS Code finish re-reading the saved file and close the editors, so
   // closing the browser doesn't cancel work in flight (logged as errors).

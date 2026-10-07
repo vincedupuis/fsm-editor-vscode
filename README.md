@@ -57,7 +57,7 @@ See **[docs/UML-CONFORMANCE.md](docs/UML-CONFORMANCE.md)** for:
 - **Editing**: Delete removes the selection. Ctrl/Cmd+C/X/V copies, cuts and pastes, including between diagrams. Ctrl/Cmd+D duplicates. Arrow keys nudge (Shift for 10px). Undo and redo are VS Code's own.
 - **Shortcuts**: S state, X final, I initial, H history, C choice, J junction, N comment, T transition, R region, V/Esc select. Shift+click a tool to keep it active.
 
-Commands (Command Palette → "FSM"): *New State Machine*, *Generate Code…*, *Export as SVG*, *Open as XMI Text*, *Open in FSM Editor*.
+Commands (Command Palette → "FSM"): *New State Machine*, *New Untitled State Machine*, *Generate Code…*, *Export as SVG*, *Open as XMI Text*, *Open in FSM Editor*. *New Untitled State Machine* is also *State Machine* in **File › New File…**.
 
 ## Development
 

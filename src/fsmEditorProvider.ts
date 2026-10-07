@@ -207,7 +207,13 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
 
   private resolveHref(document: vscode.TextDocument, href: string): { uri: vscode.Uri; id: string } {
     const [file, id = ''] = href.split('#');
-    return { uri: vscode.Uri.joinPath(document.uri, '..', decodeURI(file)), id };
+    return { uri: vscode.Uri.joinPath(this.location(document), '..', decodeURI(file)), id };
+  }
+
+  /** Where `document` is, or for an untitled one, where it will be saved (its path in the workspace's file system). */
+  private location(document: vscode.TextDocument): vscode.Uri {
+    const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
+    return document.isUntitled && folder ? document.uri.with({ scheme: folder.scheme, authority: folder.authority }) : document.uri;
   }
 
   /** State machines in the workspace that `document` can use as submachines. */

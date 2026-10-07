@@ -38,6 +38,31 @@ export function activate(context: vscode.ExtensionContext) {
       await vscode.commands.executeCommand('vscode.openWith', uri, FsmEditorProvider.viewType);
     }),
 
+    vscode.commands.registerCommand('fsmEditor.newUntitled', async () => {
+      // An untitled document next to the workspace's files, so Save proposes that folder.
+      const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
+      const untitled = (name: string) =>
+        folder ? vscode.Uri.joinPath(folder, name).with({ scheme: 'untitled' }) : vscode.Uri.from({ scheme: 'untitled', path: name });
+      const taken = async (name: string) => {
+        if (vscode.workspace.textDocuments.some((d) => d.uri.toString() === untitled(name).toString())) return true;
+        if (!folder) return false;
+        try {
+          await vscode.workspace.fs.stat(vscode.Uri.joinPath(folder, name));
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      let name = 'StateMachine';
+      for (let n = 2; await taken(`${name}.fsm`); n++) name = `StateMachine${n}`;
+      const uri = untitled(`${name}.fsm`);
+      const document = await vscode.workspace.openTextDocument(uri);
+      const edit = new vscode.WorkspaceEdit();
+      edit.insert(uri, new vscode.Position(0, 0), toXmi(defaultModel(name)));
+      await vscode.workspace.applyEdit(edit);
+      await vscode.commands.executeCommand('vscode.openWith', document.uri, FsmEditorProvider.viewType);
+    }),
+
     vscode.commands.registerCommand('fsmEditor.openAsText', async () => {
       const uri = provider.activeEditor?.document.uri;
       if (uri) await vscode.commands.executeCommand('vscode.openWith', uri, 'default');
