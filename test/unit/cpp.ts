@@ -267,7 +267,7 @@ function driver(machines: string[], files: Map<string, string>): string {
     for (const a of enumValues(ev, `${m}Activity`)) out.push(`            else if (cmd == "done" && arg == "${a}") machine.activityDone(${m}Activity::${a});`);
     out.push('            else if (cmd == "set") log.conditions[arg] = value == "1";');
     out.push('            else if (cmd == "fire") {');
-    out.push('                auto timers = log.timers;', '                log.timers.clear();', '                for (auto& t : timers) t.second.second();', '            }');
+    out.push('                auto due = log.timers;', '                log.timers.clear();', '                for (auto& t : due) t.second.second();', '            }');
     out.push('            else if (cmd == "take") { std::cout << "take: " << join(log.calls) << "\\n"; log.calls.clear(); }');
     out.push('            else if (cmd == "clear") log.calls.clear();');
     out.push('            else if (cmd == "active") {');
