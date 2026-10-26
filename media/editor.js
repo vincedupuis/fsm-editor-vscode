@@ -459,6 +459,41 @@
     return `<text class="${cls}" x="${n1(x)}" y="${n1(y)}" text-anchor="${anchor}">${esc(text)}</text>`;
   }
 
+  let measureCtx;
+  /** Width of comment text, in the font of `.v-comment text`. */
+  function commentTextWidth(text) {
+    if (!measureCtx) {
+      measureCtx = document.createElement('canvas').getContext('2d');
+      measureCtx.font = '11px -apple-system,"Segoe UI",Helvetica,Arial,sans-serif';
+    }
+    return measureCtx.measureText(text).width;
+  }
+
+  /** Splits a comment's text into the lines drawn in its box, wrapping at spaces (or inside words too long for a line). */
+  function commentLines(text, width) {
+    const lines = [];
+    for (const para of text.split('\n')) {
+      let line = '';
+      for (const word of para.replace(/\r$/, '').split(' ')) {
+        const candidate = line ? `${line} ${word}` : word;
+        if (!line || commentTextWidth(candidate) <= width) {
+          line = candidate;
+        } else {
+          lines.push(line);
+          line = word;
+        }
+        while (line.length > 1 && commentTextWidth(line) > width) {
+          let k = line.length - 1;
+          while (k > 1 && commentTextWidth(line.slice(0, k)) > width) k--;
+          lines.push(line.slice(0, k));
+          line = line.slice(k);
+        }
+      }
+      lines.push(line);
+    }
+    return lines;
+  }
+
   function renderVertex(v, exporting) {
     const cls = ['vertex', `v-${v.type}`];
     if (!exporting) {
@@ -565,7 +600,7 @@
         const f = 12;
         s += `<path class="shape" d="M${x},${y} H${x + w - f} L${x + w},${y + f} V${y + h} H${x} Z"/>`;
         s += `<path class="stroke" d="M${x + w - f},${y} V${y + f} H${x + w}" style="stroke-width:1"/>`;
-        const lines = String(v.text ?? '').split('\n');
+        const lines = commentLines(String(v.text ?? ''), w - 16);
         lines.forEach((l, i) => {
           if (16 + i * 14 < h) s += textLine(x + 8, y + 17 + i * 14, '', l, 'start');
         });
