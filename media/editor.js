@@ -735,8 +735,8 @@
   function scene(exporting) {
     const parts = [];
     const sorted = sortedVertices();
-    for (const v of sorted) if (v.type === 'comment') parts.push(renderAnchors(v));
     for (const v of sorted) parts.push(renderVertex(v, exporting));
+    for (const v of sorted) if (v.type === 'comment') parts.push(renderAnchors(v));
     for (const t of model.transitions) parts.push(renderTransition(t, exporting));
     return parts.join('');
   }
