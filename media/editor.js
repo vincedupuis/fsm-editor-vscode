@@ -61,6 +61,11 @@
     json: I('<path d="M8 4c-2 0-2 2-2 4s-2 4-2 4 2 0 2 4 0 4 2 4M16 4c2 0 2 2 2 4s2 4 2 4-2 0-2 4 0 4-2 4"/>'),
     code: I('<path d="M8 7l-5 5 5 5M16 7l5 5-5 5M14 4l-4 16"/>'),
     trash: I('<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>'),
+    close: I('<path d="M7 7l10 10M17 7L7 17"/>'),
+    sideLeft: I('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/>'),
+    sideLeftOn: I('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M4 5h5v14H4z" fill="currentColor" stroke="none"/>'),
+    sideRight: I('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/>'),
+    sideRightOn: I('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 5h5v14h-5z" fill="currentColor" stroke="none"/>'),
   };
 
   // ---------------------------------------------------------------- toolbox
@@ -138,6 +143,14 @@
   const wrap = $('canvas-wrap');
   const toolboxEl = $('toolbox');
   const propsEl = $('props');
+  const PANES = { toolbox: $('toolbox-pane'), props: $('props-pane') };
+  /** Shown side panels, the same in every diagram editor (kept by the extension). */
+  let panels = { toolbox: true, props: true };
+  try {
+    panels = { ...panels, ...JSON.parse($('app').dataset.panels || '{}') };
+  } catch {
+    // keep both panels
+  }
   const statusEl = $('statusbar');
   const toolbarEl = $('toolbar');
   const problemsEl = $('problems');
@@ -788,7 +801,10 @@
 
   window.addEventListener('message', (e) => {
     const msg = e.data;
-    if (msg.type === 'update') {
+    if (msg.type === 'panels') {
+      panels = msg.panels;
+      renderPanels();
+    } else if (msg.type === 'update') {
       issues = msg.issues || [];
       submachines = msg.submachines || {};
       machines = msg.machines || [];
@@ -2231,6 +2247,7 @@ ${scene(true)}
 
   let zoomLabel;
   let titleLabel;
+  const panelToggles = {};
   function buildToolbar() {
     const btn = (icon, title, onclick, text) => {
       const b = h('button', { className: 'tbtn', title, onclick });
@@ -2257,7 +2274,27 @@ ${scene(true)}
       btn('export', 'Export as SVG', cmd('fsmEditor.exportSvg'), 'SVG'),
       h('span', { className: 'sep' }),
       btn('json', 'Open as XMI text', cmd('fsmEditor.openAsText'), 'XMI'),
+      h('span', { className: 'sep' }),
+      (panelToggles.toolbox = btn('sideLeft', 'Toggle Toolbox', () => setPanel('toolbox', !panels.toolbox))),
+      (panelToggles.props = btn('sideRight', 'Toggle Properties', () => setPanel('props', !panels.props))),
     );
+    for (const [p, title] of [['toolbox', 'Close Toolbox'], ['props', 'Close Properties']]) {
+      const b = btn('close', title, () => setPanel(p, false));
+      PANES[p].querySelector('.side-head').append(b);
+    }
+  }
+
+  // ---------------------------------------------------------------- side panels
+  function setPanel(p, shown) {
+    panels = { ...panels, [p]: shown };
+    renderPanels();
+    vscode.postMessage({ type: 'panels', panels });
+  }
+  function renderPanels() {
+    PANES.toolbox.hidden = !panels.toolbox;
+    PANES.props.hidden = !panels.props;
+    panelToggles.toolbox.innerHTML = ICONS[panels.toolbox ? 'sideLeftOn' : 'sideLeft'];
+    panelToggles.props.innerHTML = ICONS[panels.props ? 'sideRightOn' : 'sideRight'];
   }
 
   function renderToolbarState() {
@@ -2321,5 +2358,6 @@ ${scene(true)}
 
   buildToolbox();
   buildToolbar();
+  renderPanels();
   vscode.postMessage({ type: 'ready' });
 })();

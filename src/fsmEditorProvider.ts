@@ -18,6 +18,13 @@ const WEBVIEW_COMMANDS = new Set([
   'fsmEditor.openAsText',
 ]);
 
+/** Which side panels of the diagram editor are shown, the same for every editor. */
+interface PanelState {
+  toolbox: boolean;
+  props: boolean;
+}
+const PANELS_KEY = 'fsmEditor.panels';
+
 interface MachineSummary {
   id: string;
   name: string;
@@ -41,6 +48,8 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
   private nextRequest = 1;
   /** Re-sync callbacks of every open editor, run when any .fsm file changes (submachines may be affected). */
   private readonly resyncs = new Set<() => void>();
+  /** Every open diagram, to show or hide the side panels in all of them. */
+  private readonly webviews = new Set<vscode.Webview>();
   /** Parsed summaries of state machine files, keyed by URI, with the version they were read from. */
   private readonly summaries = new Map<string, { key: string; summary: MachineSummary | null }>();
 
@@ -105,6 +114,8 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
       timer = setTimeout(() => void sync(), 30);
     };
     this.resyncs.add(scheduleSync);
+    const webview = panel.webview;
+    this.webviews.add(webview);
 
     const subs: vscode.Disposable[] = [
       panel.onDidChangeViewState((e) => {
@@ -118,6 +129,7 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
     panel.onDidDispose(() => {
       if (timer) clearTimeout(timer);
       this.resyncs.delete(scheduleSync);
+      this.webviews.delete(webview);
       if (this.active?.panel === panel) this.active = undefined;
       subs.forEach((s) => s.dispose());
     });
@@ -129,6 +141,12 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
       case 'ready':
         ctx.sync();
         break;
+      case 'panels': {
+        const panels: PanelState = { toolbox: msg.panels?.toolbox !== false, props: msg.panels?.props !== false };
+        await this.context.globalState.update(PANELS_KEY, panels);
+        for (const w of this.webviews) void w.postMessage({ type: 'panels', panels });
+        break;
+      }
       case 'edit': {
         if (typeof msg.text !== 'string') break;
         let xmi: string;
@@ -290,6 +308,7 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
 
   private html(webview: vscode.Webview): string {
     const media = (f: string) => webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', f));
+    const panels = this.context.globalState.get<PanelState>(PANELS_KEY) ?? { toolbox: true, props: true };
     const nonce = [...Array(32)].map(() => Math.random().toString(36)[2]).join('');
     return /* html */ `<!DOCTYPE html>
 <html lang="en">
@@ -302,17 +321,17 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
   <title>FSM Editor</title>
 </head>
 <body>
-  <div id="app">
+  <div id="app" data-panels='${JSON.stringify(panels)}'>
     <div id="toolbar"></div>
     <div id="main">
-      <div id="toolbox"></div>
+      <aside id="toolbox-pane" class="side left"><div class="side-head"><span>Toolbox</span></div><div id="toolbox"></div></aside>
       <div id="canvas-wrap">
         <svg id="canvas" tabindex="0"><g id="world"></g></svg>
         <div id="problems" hidden></div>
         <div id="toast" hidden></div>
         <div id="parse-error" hidden></div>
       </div>
-      <div id="props"></div>
+      <aside id="props-pane" class="side right"><div class="side-head"><span>Properties</span></div><div id="props"></div></aside>
     </div>
     <div id="statusbar"></div>
   </div>
