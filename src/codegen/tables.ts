@@ -199,8 +199,17 @@ interface Origin {
    * leaving or entering a composite state from inside, which then needs no note of its own.
    */
   way: CodeVia[];
+  /** For a branch of a choice: its way, whether the origin notes its pseudostates or not. */
+  branchWay: CodeVia[] | null;
   /** Set while lowering, shared with the branches of its choices: it left a composite state from inside, it routed into one. */
   found: { left?: { from: string; through: string }; entered?: { state: string; target: string } };
+}
+
+/** What lowering found (see Origin.found), and the way that may explain it: null for that of the origin it is found for. */
+interface Finding {
+  left?: { from: string; through: string };
+  entered?: { state: string; target: string };
+  way: CodeVia[] | null;
 }
 
 class Lowering {
@@ -211,6 +220,10 @@ class Lowering {
   private hopsDone = new Set<string>();
   private routeKeys = new Map<string, number>();
   private routeCount = 2;
+  /** What lowering each route found, for the origins that take the route later. */
+  private routeFindings = new Map<number, Finding[]>();
+  /** The routes being lowered: the origin they are lowered for, and what they found so far. */
+  private routing: { origin: Origin; findings: Finding[] }[] = [];
   private choiceCount = 0;
   private seq = 0;
   private postconditions: CodeTables['postconditions'] = [];
@@ -263,7 +276,7 @@ class Lowering {
 
     // The machine's entry points.
     const entryPoints = cm.entryPoints.map((p) => {
-      const origin: Origin = { key: `entry point ${p.name}`, label: `entry point ${p.name}`, id: p.id, via: [], way: [], found: {} };
+      const origin: Origin = { key: `entry point ${p.name}`, label: `entry point ${p.name}`, id: p.id, via: [], way: [], branchWay: null, found: {} };
       const top = cm.topRegions.map((r) => r.index);
       const { actions, end } = this.routeRegions(top, p.steps, 0, origin);
       if (end < p.steps.length) this.problems.push({ kind: 'unexpected', id: p.id, element: origin.label, state: '', detail: p.steps[end].kind });
@@ -403,7 +416,7 @@ class Lowering {
     const region = cm.regions[r];
     const key = this.tableOfRegion(r);
     const init = this.init(r);
-    const origin: Origin = { key: `initial of ${region.name}`, label: `initial transition of ${region.displayName}`, id: '', via: [], way: [], found: {} };
+    const origin: Origin = { key: `initial of ${region.name}`, label: `initial transition of ${region.displayName}`, id: '', via: [], way: [], branchWay: null, found: {} };
     if (region.defaultSteps.length) this.lowerInit(r, [{ kind: 'defaults', region: r }], region.defaultSteps, origin);
     // Deep resume (resume(), deep history above): the region's last active state, or its default entry.
     for (const s of region.states) {
@@ -417,9 +430,15 @@ class Lowering {
   private route(r: number, steps: Step[], origin: Origin): number {
     const key = `${r}|${JSON.stringify(steps)}`;
     const known = this.routeKeys.get(key);
-    if (known !== undefined) return known;
+    if (known !== undefined) {
+      // A route lowered for another origin: what lowering it found applies to this one too.
+      for (const f of this.routeFindings.get(known) ?? []) this.find(origin, f);
+      return known;
+    }
     const route = this.routeCount++;
     this.routeKeys.set(key, route);
+    const findings: Finding[] = [];
+    this.routing.push({ origin, findings });
     const last = steps[steps.length - 1];
     if (last?.kind === 'restoreHistory') {
       const prefix = steps.slice(0, -1);
@@ -443,7 +462,19 @@ class Lowering {
     } else {
       this.lowerInit(r, [{ kind: 'routed', region: r, route }], steps, origin);
     }
+    this.routing.pop();
+    this.routeFindings.set(route, findings);
     return route;
+  }
+
+  /** Records what lowering for `origin` found, unless a pseudostate on the way explains it; the routes being lowered keep it too. */
+  private find(origin: Origin, f: Finding): void {
+    const way = f.way === null ? origin.way : f.way.filter((v) => origin.via.some((x) => x.id === v.id));
+    const explained = (...kinds: CodeVia['kind'][]) => way.some((v) => kinds.includes(v.kind));
+    if (f.left && !explained('exitPoint', 'join')) origin.found.left = f.left;
+    if (f.entered && !origin.found.entered && !explained('entryPoint', 'fork', 'shallowHistory', 'deepHistory')) origin.found.entered = f.entered;
+    // For a route, the way of a branch of its origin's choices is that branch's.
+    for (const r of this.routing) r.findings.push(f.way === null && origin.key !== r.origin.key ? { ...f, way: origin.branchWay } : f);
   }
 
   /** An anonymous row of the region's initial pseudostate doing `steps`. */
@@ -499,7 +530,7 @@ class Lowering {
       if (c.requires.length) guard.push({ kind: 'requires', states: c.requires });
       if (c.guard) guard.push({ kind: 'condition', condition: c.guard });
       if (c.precondition) guard.push({ kind: 'precondition', condition: c.precondition, label: c.label });
-      const origin: Origin = { key: `t${tr.index}`, label: tr.label, id: tr.id, via: tr.via, way: wayVia(tr.via, tr.steps), found: {} };
+      const origin: Origin = { key: `t${tr.index}`, label: tr.label, id: tr.id, via: tr.via, way: wayVia(tr.via, tr.steps), branchWay: null, found: {} };
       if (!local) {
         this.lowerFire(this.stateOf(s.index), this.tableOfState(s.index), trigger, guard, tr.steps, origin, 1);
       } else {
@@ -589,7 +620,7 @@ class Lowering {
       const next = this.continuation(origin, 0);
       // A pseudostate (choice) has to be left, or it would be taken again.
       this.add(key, { source: src, initial: false, trigger, guard, actions: [...first, { kind: 'continue', event: next }], target: src.kind === 'state' ? null : this.exiting(key), comment }, rank);
-      if (!explains(origin, 'exitPoint', 'join')) origin.found.left = { from: src.kind === 'state' ? src.name : 'a choice', through: this.cm.states[hops[hops.length - 1].exit].name };
+      this.find(origin, { left: { from: src.kind === 'state' ? src.name : 'a choice', through: this.cm.states[hops[hops.length - 1].exit].name }, way: null });
     }
     for (let k = from; k < hops.length; k++) this.hop(origin, hops, k, entries);
   }
@@ -740,7 +771,7 @@ class Lowering {
       }
       // The region's own default entry needs no route.
       if (!pre.length && JSON.stringify(regionSteps) === JSON.stringify(cm.regions[r].defaultSteps)) continue;
-      if (state && !origin.found.entered && !explains(origin, 'entryPoint', 'fork', 'shallowHistory', 'deepHistory')) origin.found.entered = { state: state.name, target: st.kind === 'enter' ? st.state : st.kind === 'choice' ? 'a choice' : 'its history' };
+      if (state) this.find(origin, { entered: { state: state.name, target: st.kind === 'enter' ? st.state : st.kind === 'choice' ? 'a choice' : 'its history' }, way: null });
       const history = st.kind === 'restoreHistory' ? (st.deep ? 2 : 1) : 0;
       actions.push({ kind: 'route', region: r, route: this.route(r, [...pre, ...regionSteps], origin), history });
     }
@@ -778,8 +809,9 @@ class Lowering {
       const guard: GuardTerm[] = b.guard ? [{ kind: 'condition', condition: b.guard }] : [];
       // Each branch is a way of its own. Only pseudostates the origin notes count (default entries and the machine's
       // entry points note none).
-      const way = wayVia(origin.via.filter((v) => b.via.some((x) => x.id === v.id)), b.steps);
-      this.lowerFire(p, key, null, guard, b.steps, { ...origin, key: `${origin.key}|${p.name}.${n}`, way }, 1);
+      const branchWay = wayVia(b.via, b.steps);
+      const way = branchWay.filter((v) => origin.via.some((x) => x.id === v.id));
+      this.lowerFire(p, key, null, guard, b.steps, { ...origin, key: `${origin.key}|${p.name}.${n}`, way, branchWay }, 1);
     });
     if (!st.hasElse) this.add(key, { source: p, initial: false, trigger: null, guard: [], actions: [{ kind: 'noBranch', label: st.label }], target: null, comment: 'no branch can be taken' }, 1);
     return p;
@@ -852,11 +884,6 @@ function wayVia(via: CodeVia[], steps: Step[]): CodeVia[] {
   };
   visit(steps);
   return via.filter((v) => !branches.has(v.id));
-}
-
-/** Whether the way `origin` is lowering goes through a pseudostate of one of `kinds`. */
-function explains(origin: Origin, ...kinds: CodeVia['kind'][]): boolean {
-  return origin.way.some((v) => kinds.includes(v.kind));
 }
 
 function pseudo(name: string, role: TableState['role']): TableState {

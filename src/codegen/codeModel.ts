@@ -17,7 +17,7 @@
  * are implemented by a small runtime in the template; see docs/CODEGEN.md.
  */
 import * as expr from '../../media/expressions';
-import { FsmModel, ModelIndex, Transition, Vertex, isBorderVertex } from '../model';
+import { FsmModel, ModelIndex, Transition, Vertex, VertexType, isBorderVertex } from '../model';
 import { CodeTables, toTables } from './tables';
 
 export type Condition = expr.Condition;
@@ -331,6 +331,21 @@ function or(list: Condition[]): Condition | null {
 
 const not = (c: Condition): Condition => (c.op === 'not' ? c.arg : { op: 'not', arg: c });
 
+/** The kinds of pseudostates in `cycle`, for its error: `Junctions`, `Junctions and choices`, ... */
+function cycleKinds(cycle: Vertex[]): string {
+  const kinds: [string, VertexType[]][] = [
+    ['junctions', ['junction']],
+    ['choices', ['choice']],
+    ['history pseudostates', ['shallowHistory', 'deepHistory']],
+    ['entry points', ['entryPoint']],
+    ['exit points', ['exitPoint']],
+    ['forks', ['fork']],
+  ];
+  const found = kinds.filter(([, types]) => cycle.some((v) => types.includes(v.type))).map(([name]) => name);
+  const text = found.length > 1 ? `${found.slice(0, -1).join(', ')} and ${found[found.length - 1]}` : (found[0] ?? 'pseudostates');
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
 /** A compiled transition, taken when `guard` holds. */
 interface Fireable {
   tr: CodeTransition;
@@ -418,8 +433,8 @@ class Builder {
     postconditions: false,
     constraints: false,
   };
-  /** Junctions on the way being compiled, to report cycles. */
-  private junctionPath: string[] = [];
+  /** Pseudostates on the way being compiled, to report cycles. */
+  private pseudostatePath: Vertex[] = [];
 
   constructor(
     private model: FsmModel,
@@ -787,11 +802,18 @@ class Builder {
 
   /** Arriving at `v`, which sits directly in `region`: every way on from it goes through it. */
   private reach(v: Vertex, region: string): Alt[] {
-    const alts = this.arrive(v, region);
     const machinePoint = (v.type === 'entryPoint' || v.type === 'exitPoint') && !this.ix.vertices.has(v.parent);
-    if (['state', 'final', 'initial', 'terminate'].includes(v.type) || machinePoint) return alts;
-    const own = [this.viaOf(v)];
-    return alts.map((a) => ({ ...a, via: joinVia(own, a.via) }));
+    if (['state', 'final', 'initial', 'terminate'].includes(v.type) || machinePoint) return this.arrive(v, region);
+    // Reaching a pseudostate again on its own way would never end.
+    const cycle = this.pseudostatePath.findIndex((x) => x.id === v.id);
+    if (cycle >= 0) throw new CodeGenError(`${cycleKinds(this.pseudostatePath.slice(cycle))} form a cycle.`);
+    this.pseudostatePath.push(v);
+    try {
+      const own = [this.viaOf(v)];
+      return this.arrive(v, region).map((a) => ({ ...a, via: joinVia(own, a.via) }));
+    } finally {
+      this.pseudostatePath.pop();
+    }
   }
 
   /** The ways on from `v` (see reach()). */
@@ -840,15 +862,8 @@ class Builder {
         // One way through the choice, going through the pseudostates of all its branches.
         return [{ guard: null, steps: [choice(label, branches, this.regionRef(region))], via: unionVia(branches) }];
       }
-      case 'junction': {
-        if (this.junctionPath.includes(v.id)) throw new CodeGenError('Junctions form a cycle.');
-        this.junctionPath.push(v.id);
-        try {
-          return this.branches(v, outs);
-        } finally {
-          this.junctionPath.pop();
-        }
-      }
+      case 'junction':
+        return this.branches(v, outs);
       case 'shallowHistory':
       case 'deepHistory': {
         this.features.history = true;
