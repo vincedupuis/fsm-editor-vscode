@@ -20,8 +20,18 @@ jobs:
           node-version: 22
           cache: npm
 
-      # Puts MSVC's cl on the PATH, which the tests pick first on Windows.
-      - uses: ilammy/msvc-dev-cmd@v1
+      # Puts MSVC's cl on the PATH, which the tests pick first on Windows: runs
+      # vcvars64.bat and passes the variables it changes on to the next steps.
+      - name: Set up MSVC
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw "No Visual Studio with the C++ tools found." }
+          cmd /c "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" >nul && set" | ForEach-Object {
+            if ($_ -match '^([^=]+)=(.*)$' -and [Environment]::GetEnvironmentVariable($Matches[1]) -ne $Matches[2]) {
+              "$($Matches[1])=$($Matches[2])" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            }
+          }
 
       - run: npm ci
 
