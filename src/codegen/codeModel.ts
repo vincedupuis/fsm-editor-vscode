@@ -1111,6 +1111,8 @@ class Builder {
   }
 
   private region(r: { id: string; name: string; owner: Vertex | null }, index: number): CodeRegion {
+    // The default entry belongs to no transition: a trail of its own keeps its pseudostates out of the last transition's via.
+    this.trail = [];
     const initial = this.ix.initialOf(r.id);
     const out = initial ? this.ix.outgoing(initial.id)[0] : undefined;
     const owner = r.owner ? this.stateRef(r.owner) : null;
@@ -1135,6 +1137,8 @@ class Builder {
   }
 
   private entryPoint(v: Vertex): CodeEntryPoint {
+    // Like a default entry, the machine's entry point belongs to no transition (see region()).
+    this.trail = [];
     const outs = this.ix.outgoing(v.id);
     let alts = one();
     for (const t of outs) alts = seq(alts, this.segment(v, t));
