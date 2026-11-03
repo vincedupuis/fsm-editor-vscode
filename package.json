@@ -1,7 +1,7 @@
 {
   "name": "fsm-editor",
   "displayName": "FSM Editor — UML State Machines & Code Generation",
-  "description": "Visual editor and code generator for UML 2.5.1 state machines: draw composite/orthogonal states, submachines with connection point references, all pseudostates and protocol state machines, then generate source code from Handlebars templates (TypeScript and Boost.SML C++ bundled), in VS Code or with the standalone fsm command-line generator. Stored as standard XMI with UML DI layout, with validation and SVG export.",
+  "description": "Visual editor and code generator for UML 2.5.1 state machines: draw composite/orthogonal states, submachines with connection point references, all pseudostates and protocol state machines, then generate source code from Handlebars or Jinja templates (TypeScript and Boost.SML C++ bundled), in VS Code or with the standalone fsm command-line generator. Stored as standard XMI with UML DI layout, with validation and SVG export.",
   "version": "0.4.5",
   "publisher": "VinceGoSoftware",
   "icon": "images/icon.png",
@@ -36,7 +36,8 @@
     "code generation",
     "code generator",
     "codegen",
-    "handlebars"
+    "handlebars",
+    "jinja"
   ],
   "main": "./out/extension.js",
   "browser": "./out/web/extension.js",
@@ -148,6 +149,17 @@
           "when": "resourceExtname == .fsm"
         }
       ]
+    },
+    "configuration": {
+      "title": "FSM Editor",
+      "properties": {
+        "fsmEditor.codegen.generatorPath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "markdownDescription": "Path of `fsm-generator`, the code generator that runs Jinja templates (`.jinja`). Leave empty to use the one bundled with the extension, or else one found on the PATH. Not available in VS Code for the Web."
+        }
+      }
     }
   },
   "scripts": {

@@ -10,7 +10,7 @@ It also works in VS Code for the Web: open a repository on [github.dev](https://
 
 ## Code generation
 
-*Generate Code…* (the **Code** toolbar button, or the Explorer context menu of a `.fsm` file) turns a machine into source code with a [Handlebars](https://handlebarsjs.com/) template. One template can write several files per machine. Two templates are bundled:
+*Generate Code…* (the **Code** toolbar button, or the Explorer context menu of a `.fsm` file) turns a machine into source code with a [Handlebars](https://handlebarsjs.com/) template, or with a [Jinja](https://jinja.palletsprojects.com/) template run by [fsm-generator](https://github.com/vincedupuis/fsm-generator), which the extension bundles (desktop VS Code only). One template can write several files per machine. Two templates are bundled, in both languages:
 
 - **`ts`**: a dependency-free TypeScript class with run-to-completion semantics, plus an actions interface for you to implement.
 - **`sml`**: C++17 with [Boost.SML](https://github.com/boost-ext/sml): a `.h`/`.cpp` pair per machine holding its Boost.SML transition tables, an events interface (what you send the machine) and an actions interface (what it needs from you: behaviors, conditions, timers). Boost.SML has no transitions across composite states, entry/exit points, forks, joins or UML history: the generated code works around them with a warning for each, and refuses what it cannot express.

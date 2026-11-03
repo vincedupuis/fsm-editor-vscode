@@ -6,6 +6,7 @@
 //   --test also bundles the browser smoke test (test/web/index.ts → out/test/web/index.js).
 import * as esbuild from 'esbuild';
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 const watch = process.argv.includes('--watch');
 const test = process.argv.includes('--test');
@@ -20,9 +21,17 @@ const common = {
   logLevel: 'info',
 };
 
+// The web build can't run executables: it gets src/fsmGenerator.web.ts in place of src/fsmGenerator.ts.
+const webGenerator = {
+  name: 'web-generator',
+  setup(build) {
+    build.onResolve({ filter: /\/fsmGenerator$/ }, (args) => ({ path: join(args.resolveDir, args.path + '.web.ts') }));
+  },
+};
+
 const builds = [
   { ...common, entryPoints: ['src/extension.ts'], outfile: 'out/extension.js', platform: 'node', target: 'node18' },
-  { ...common, entryPoints: ['src/extension.ts'], outfile: 'out/web/extension.js', platform: 'browser', target: 'es2022' },
+  { ...common, entryPoints: ['src/extension.ts'], outfile: 'out/web/extension.js', platform: 'browser', target: 'es2022', plugins: [webGenerator] },
   {
     ...common,
     entryPoints: ['src/cli.ts'],

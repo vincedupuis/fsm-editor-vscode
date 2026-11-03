@@ -2,12 +2,17 @@
 # generators, attaches them to the GitHub Release of that tag, and publishes the
 # VSIX to the Visual Studio Marketplace when the VSCE_PAT secret is set (an Azure
 # DevOps token with the Marketplace > Manage scope). FSM Editor for Visual Studio
-# and for JetBrains IDEs download their `fsm` from these releases.
+# and for JetBrains IDEs download their `fsm` from these releases. The VSIX
+# bundles fsm-generator, which runs the Jinja templates on desktop.
 name: Release
 
 on:
   push:
     tags: ['v*']
+
+env:
+  # Release of fsm-generator (github.com/vincedupuis/fsm-generator) the VSIX bundles.
+  FSM_GENERATOR_VERSION: 0.1.0
 
 jobs:
   release:
@@ -35,6 +40,24 @@ jobs:
       - uses: oven-sh/setup-bun@v2
 
       - run: npm ci
+
+      - name: Fetch fsm-generator
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "v$FSM_GENERATOR_VERSION" -R vincedupuis/fsm-generator -p "fsm-generator-$FSM_GENERATOR_VERSION-*" -D "$RUNNER_TEMP/generator"
+          for archive in "$RUNNER_TEMP"/generator/*; do
+            case "$archive" in
+              *.zip) unzip -q "$archive" -d "$RUNNER_TEMP/generator" ;;
+              *.tar.gz) tar xzf "$archive" -C "$RUNNER_TEMP/generator" ;;
+            esac
+          done
+          for dir in "$RUNNER_TEMP"/generator/fsm-generator-$FSM_GENERATOR_VERSION-*/; do
+            platform=$(basename "$dir" | sed "s/^fsm-generator-$FSM_GENERATOR_VERSION-//")
+            mkdir -p generator
+            cp -R "$dir" "generator/$platform"
+          done
+          ls generator
 
       - name: Test
         run: npm run test:unit

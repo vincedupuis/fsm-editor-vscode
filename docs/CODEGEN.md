@@ -28,10 +28,12 @@ Templates are data: they can't contain JavaScript, and every helper is built in.
 
 Run **FSM: Generate Code…** from the diagram toolbar (**Code**), the Command Palette, or the context menu of a `.fsm` file in the Explorer. Then:
 
-1. Pick a template: a bundled one (`ts`, `sml`), any `*.hbs` file in the workspace, or **Browse…**.
+1. Pick a template: a bundled one (`ts`, `sml`), any `*.hbs` or `*.jinja` file in the workspace, or **Browse…**.
 2. Pick the output folder.
 
-The last template and output folder are remembered. Unsaved changes in open `.fsm` files are used. The **FSM Code Generation** output channel lists the files written, the template's warnings and any problems.
+The last template and output folder are remembered. Unsaved changes in open `.fsm` files are used.
+
+**Jinja templates.** A `.jinja` template is run by [fsm-generator](https://github.com/vincedupuis/fsm-generator), the same code generator in Rust with Jinja templates ([MiniJinja](https://github.com/mitsuhiko/minijinja)): same code model, same messages, and its bundled `ts.jinja` and `sml.jinja` generate the same files as `ts.hbs` and `sml.hbs`. The extension bundles it, and lists its templates as *bundled Jinja template*. It is an executable, so Jinja templates are only offered in desktop VS Code, not on vscode.dev or github.dev. It reads the files on disk: open `.fsm` files with unsaved changes are saved first. The `fsmEditor.codegen.generatorPath` setting points at another `fsm-generator`; when it is empty, the bundled one is used, or else one on the PATH. The **FSM Code Generation** output channel lists the files written, the template's warnings and any problems.
 
 The command also takes arguments, to skip the prompts from a keybinding. It uses the open or selected `.fsm` file. Paths are absolute, or relative to the first workspace folder:
 

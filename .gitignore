@@ -3,3 +3,6 @@ out/
 *.vsix
 .vscode-test-web/
 dist/
+
+# fsm-generator, downloaded by the release workflow
+generator/
