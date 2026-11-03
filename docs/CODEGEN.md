@@ -245,7 +245,7 @@ Top level:
 | `timers` | One per `after(...)` and source state: `name` (`Paused_after_5m`), `index`, `signalIndex`, `ms`, `trigger`, `state`, `stateIndex` |
 | `signals` | Events then timers, numbered from 0: `name`, `index`, `kind` (`event`/`timer`) |
 | `actions`, `conditions`, `activities` | Names of the functions called by behaviors, by conditions, and by do activities. |
-| `transitions` | Everything that can fire: `index`, `id` (of the UML transition, or of the join), `name`, `label`, `kind` (`external`/`internal`/`local`/`join`/`exitPoint`), `source`/`sourceIndex`, `steps`, `via` (the pseudostates it goes through, in order: `kind`, `name`, `id`) |
+| `transitions` | Everything that can fire: `index`, `id` (of the UML transition, or of the join), `name`, `label`, `kind` (`external`/`internal`/`local`/`join`/`exitPoint`), `source`/`sourceIndex`, `steps`, `via` (the pseudostates it goes through, in order: `kind`, `name`, `id`; those of its own way through junctions, and those of every branch of its choices) |
 | `submachines` | Distinct machines used by submachine states: `name`, `href`, `events`, `entryPoints` and `exitPoints` (names), `timers` (it uses time events, itself or in its submachines), `states` |
 | `entryPoints`, `exitPoints` | The machine's own connection points: `name`, `id`, and `steps` for entry points. |
 | `start` | Steps of the default entry. |
@@ -285,7 +285,7 @@ A **condition** is `{ op: "call", name }`, `{ op: "not", arg }`, or `{ op: "and"
 | `enter` | `state`, `stateIndex` | Make the state active and run its `entry` steps, but not its regions: they get their own steps. |
 | `enterRegion` | `region`, `regionIndex` | Default entry of the region (run its `defaultSteps`). |
 | `restoreHistory` | `region`, `regionIndex`, `deep`, `defaultSteps` | Re-enter the region's last active state (and, for deep history, theirs, recursively), or run `defaultSteps` when there is none. |
-| `choice` | `label`, `branches` (`guard`, `isElse`, `steps`), `hasElse`, `region`/`regionIndex` | Evaluate the guards now and take the first enabled branch. `region` is where the choice is evaluated. |
+| `choice` | `label`, `branches` (`guard`, `isElse`, `steps`, `via`: the pseudostates the branch goes through after the choice), `hasElse`, `region`/`regionIndex` | Evaluate the guards now and take the first enabled branch. `region` is where the choice is evaluated. |
 | `startSubmachine` | `state`, `stateIndex`, `point` | Start the submachine by default, or through its entry point `point`. |
 | `stopSubmachine` | `state`, `stateIndex` | Exit all states of the submachine. |
 | `exitMachine` | `point` | Leave through the machine's exit point: exit every state, then tell the parent machine. |

@@ -192,7 +192,13 @@ interface Origin {
   key: string;
   label: string;
   id: string;
+  /** The pseudostates it goes through, each noted. */
   via: CodeVia[];
+  /**
+   * Those of `via` on the way being lowered, without the branches of its choices (each a way of its own): they explain
+   * leaving or entering a composite state from inside, which then needs no note of its own.
+   */
+  way: CodeVia[];
   /** Set while lowering, shared with the branches of its choices: it left a composite state from inside, it routed into one. */
   found: { left?: { from: string; through: string }; entered?: { state: string; target: string } };
 }
@@ -257,7 +263,7 @@ class Lowering {
 
     // The machine's entry points.
     const entryPoints = cm.entryPoints.map((p) => {
-      const origin: Origin = { key: `entry point ${p.name}`, label: `entry point ${p.name}`, id: p.id, via: [], found: {} };
+      const origin: Origin = { key: `entry point ${p.name}`, label: `entry point ${p.name}`, id: p.id, via: [], way: [], found: {} };
       const top = cm.topRegions.map((r) => r.index);
       const { actions, end } = this.routeRegions(top, p.steps, 0, origin);
       if (end < p.steps.length) this.problems.push({ kind: 'unexpected', id: p.id, element: origin.label, state: '', detail: p.steps[end].kind });
@@ -397,7 +403,7 @@ class Lowering {
     const region = cm.regions[r];
     const key = this.tableOfRegion(r);
     const init = this.init(r);
-    const origin: Origin = { key: `initial of ${region.name}`, label: `initial transition of ${region.displayName}`, id: '', via: [], found: {} };
+    const origin: Origin = { key: `initial of ${region.name}`, label: `initial transition of ${region.displayName}`, id: '', via: [], way: [], found: {} };
     if (region.defaultSteps.length) this.lowerInit(r, [{ kind: 'defaults', region: r }], region.defaultSteps, origin);
     // Deep resume (resume(), deep history above): the region's last active state, or its default entry.
     for (const s of region.states) {
@@ -493,7 +499,7 @@ class Lowering {
       if (c.requires.length) guard.push({ kind: 'requires', states: c.requires });
       if (c.guard) guard.push({ kind: 'condition', condition: c.guard });
       if (c.precondition) guard.push({ kind: 'precondition', condition: c.precondition, label: c.label });
-      const origin: Origin = { key: `t${tr.index}`, label: tr.label, id: tr.id, via: tr.via, found: {} };
+      const origin: Origin = { key: `t${tr.index}`, label: tr.label, id: tr.id, via: tr.via, way: wayVia(tr.via, tr.steps), found: {} };
       if (!local) {
         this.lowerFire(this.stateOf(s.index), this.tableOfState(s.index), trigger, guard, tr.steps, origin, 1);
       } else {
@@ -583,7 +589,7 @@ class Lowering {
       const next = this.continuation(origin, 0);
       // A pseudostate (choice) has to be left, or it would be taken again.
       this.add(key, { source: src, initial: false, trigger, guard, actions: [...first, { kind: 'continue', event: next }], target: src.kind === 'state' ? null : this.exiting(key), comment }, rank);
-      origin.found.left = { from: src.kind === 'state' ? src.name : 'a choice', through: this.cm.states[hops[hops.length - 1].exit].name };
+      if (!explains(origin, 'exitPoint', 'join')) origin.found.left = { from: src.kind === 'state' ? src.name : 'a choice', through: this.cm.states[hops[hops.length - 1].exit].name };
     }
     for (let k = from; k < hops.length; k++) this.hop(origin, hops, k, entries);
   }
@@ -734,7 +740,7 @@ class Lowering {
       }
       // The region's own default entry needs no route.
       if (!pre.length && JSON.stringify(regionSteps) === JSON.stringify(cm.regions[r].defaultSteps)) continue;
-      if (state && !origin.found.entered) origin.found.entered = { state: state.name, target: st.kind === 'enter' ? st.state : st.kind === 'choice' ? 'a choice' : 'its history' };
+      if (state && !origin.found.entered && !explains(origin, 'entryPoint', 'fork', 'shallowHistory', 'deepHistory')) origin.found.entered = { state: state.name, target: st.kind === 'enter' ? st.state : st.kind === 'choice' ? 'a choice' : 'its history' };
       const history = st.kind === 'restoreHistory' ? (st.deep ? 2 : 1) : 0;
       actions.push({ kind: 'route', region: r, route: this.route(r, [...pre, ...regionSteps], origin), history });
     }
@@ -770,7 +776,10 @@ class Lowering {
     this.draft(key).table.pseudostates.push(p);
     st.branches.forEach((b, n) => {
       const guard: GuardTerm[] = b.guard ? [{ kind: 'condition', condition: b.guard }] : [];
-      this.lowerFire(p, key, null, guard, b.steps, { ...origin, key: `${origin.key}|${p.name}.${n}` }, 1);
+      // Each branch is a way of its own. Only pseudostates the origin notes count (default entries and the machine's
+      // entry points note none).
+      const way = wayVia(origin.via.filter((v) => b.via.some((x) => x.id === v.id)), b.steps);
+      this.lowerFire(p, key, null, guard, b.steps, { ...origin, key: `${origin.key}|${p.name}.${n}`, way }, 1);
     });
     if (!st.hasElse) this.add(key, { source: p, initial: false, trigger: null, guard: [], actions: [{ kind: 'noBranch', label: st.label }], target: null, comment: 'no branch can be taken' }, 1);
     return p;
@@ -782,7 +791,7 @@ class Lowering {
 
   // -------------------------------------------------------------- notes
 
-  /** What lowering `origin` worked around, named after the pseudostates it went through when there are some. */
+  /** What lowering `origin` worked around: the pseudostates it went through, and what none of them explains. */
   private noteOrigin(origin: Origin): void {
     const viaOf = (...kinds: CodeVia['kind'][]) => origin.via.filter((v) => kinds.includes(v.kind));
     const note = (kind: TableNote['kind'], id: string, element: string, state: string, detail = '') => this.notes.push({ kind, id, element, state, detail });
@@ -792,8 +801,8 @@ class Lowering {
       note(kind as TableNote['kind'], v.id, v.name, '', v.kind === 'deepHistory' ? 'deep' : v.kind === 'shallowHistory' ? 'shallow' : '');
     }
     const { left, entered } = origin.found;
-    if (left && !viaOf('exitPoint', 'join').length) note('leave', origin.id, origin.label, left.from, left.through);
-    if (entered && !viaOf('entryPoint', 'fork', 'shallowHistory', 'deepHistory').length) note('enter', origin.id, origin.label, entered.state, entered.target);
+    if (left) note('leave', origin.id, origin.label, left.from, left.through);
+    if (entered) note('enter', origin.id, origin.label, entered.state, entered.target);
   }
 
   /** Orthogonal regions that react to the same signal run one after the other: a later region's guards see the earlier ones' effects. */
@@ -830,6 +839,24 @@ class Lowering {
       }
     }
   }
+}
+
+/** The pseudostates of `via` on the way through `steps`, without those of the branches of its choices. */
+function wayVia(via: CodeVia[], steps: Step[]): CodeVia[] {
+  const branches = new Set<string>();
+  const visit = (list: Step[]): void => {
+    for (const st of list) {
+      if (st.kind === 'choice') for (const b of st.branches) for (const v of b.via) branches.add(v.id);
+      else if (st.kind === 'restoreHistory') visit(st.defaultSteps);
+    }
+  };
+  visit(steps);
+  return via.filter((v) => !branches.has(v.id));
+}
+
+/** Whether the way `origin` is lowering goes through a pseudostate of one of `kinds`. */
+function explains(origin: Origin, ...kinds: CodeVia['kind'][]): boolean {
+  return origin.way.some((v) => kinds.includes(v.kind));
 }
 
 function pseudo(name: string, role: TableState['role']): TableState {
