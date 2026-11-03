@@ -99,10 +99,11 @@ export async function generate(sources: string[], template: Template, host: Gene
   const roots: string[] = [];
   for (const s of sources) roots.push(await load(s));
 
-  const errors = issues.filter((i) => i.severity === 'error');
-  if (errors.length) {
-    throw new GenerateError(`${errors.length} error${errors.length > 1 ? 's' : ''} in the state machine${loaded.size > 1 ? 's' : ''}; nothing was generated.`, issues);
-  }
+  const failed = () => {
+    const n = issues.filter((i) => i.severity === 'error').length;
+    return new GenerateError(`${n} error${n > 1 ? 's' : ''} in the state machine${loaded.size > 1 ? 's' : ''}; nothing was generated.`, issues);
+  };
+  if (issues.some((i) => i.severity === 'error')) throw failed();
 
   // Code models, submachines first.
   const building = new Set<string>();
@@ -116,8 +117,10 @@ export async function generate(sources: string[], template: Template, host: Gene
     try {
       l.code = toCodeModel(l.model, { submachines, sourceFile: display(path) });
     } catch (e) {
-      if (e instanceof CodeGenError) throw new GenerateError(`${display(path)}: ${e.message}`);
-      throw e;
+      if (!(e instanceof CodeGenError)) throw e;
+      // Reported at the element it is about, as a validation error would be.
+      issues.push({ file: display(path), id: e.id, severity: 'error', message: e.message });
+      throw failed();
     }
     building.delete(path);
     return l.code;

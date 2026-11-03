@@ -22,7 +22,15 @@ import { CodeTables, toTables } from './tables';
 
 export type Condition = expr.Condition;
 
-export class CodeGenError extends Error {}
+/** A model the code generator can't handle; `id` is the xmi:id of the element it is about. */
+export class CodeGenError extends Error {
+  constructor(
+    message: string,
+    readonly id: string,
+  ) {
+    super(message);
+  }
+}
 
 // ------------------------------------------------------------------ code model
 
@@ -571,13 +579,13 @@ class Builder {
 
   private stateRef(v: Vertex): { name: string; index: number } {
     const index = this.stateIndex.get(v.id);
-    if (index === undefined) throw new CodeGenError(`${this.label(v)} is not in a region of the state machine.`);
+    if (index === undefined) throw new CodeGenError(`${this.label(v)} is not in a region of the state machine.`, v.id);
     return { name: this.stateNames[index], index };
   }
 
   private regionRef(id: string): { name: string; index: number } {
     const index = this.regionIndex.get(id);
-    if (index === undefined) throw new CodeGenError(`Unknown region '${id}'.`);
+    if (index === undefined) throw new CodeGenError(`Unknown region '${id}'.`, id);
     return { name: this.regionNames[index], index };
   }
 
@@ -637,16 +645,18 @@ class Builder {
 
   // -------------------------------------------------------------- text
 
-  private calls(text: string | undefined, what: string, into: Set<string>): string[] {
+  /** The calls of a behavior of the element `id`. */
+  private calls(text: string | undefined, what: string, id: string, into: Set<string>): string[] {
     const r = expr.parseActions(text);
-    if (!r.ok) throw new CodeGenError(`${what}: ${r.error}`);
+    if (!r.ok) throw new CodeGenError(`${what}: ${r.error}`, id);
     for (const c of r.value) into.add(c);
     return r.value;
   }
 
-  private condition(text: string | undefined, what: string): Condition | null {
+  /** A constraint of the element `id`. */
+  private condition(text: string | undefined, what: string, id: string): Condition | null {
     const r = expr.parseCondition(text);
-    if (!r.ok) throw new CodeGenError(`${what}: ${r.error}`);
+    if (!r.ok) throw new CodeGenError(`${what}: ${r.error}`, id);
     const visit = (c: Condition) => {
       if (c.op === 'call') this.conditions.add(c.name);
       else if (c.op === 'not') visit(c.arg);
@@ -658,11 +668,11 @@ class Builder {
 
   private guardOf(t: Transition): Condition | null {
     if (t.guard.trim() === 'else') return null;
-    return this.condition(t.guard, `Guard of ${this.transitionLabel(t)}`);
+    return this.condition(t.guard, `Guard of ${this.transitionLabel(t)}`, t.id);
   }
 
   private effect(t: Transition): Step[] {
-    return this.calls(t.effect, `Effect of ${this.transitionLabel(t)}`, this.actions).map((action) => ({ kind: 'call', action }));
+    return this.calls(t.effect, `Effect of ${this.transitionLabel(t)}`, t.id, this.actions).map((action) => ({ kind: 'call', action }));
   }
 
   private transitionLabel(t: Transition): string {
@@ -675,7 +685,7 @@ class Builder {
 
   private vertex(id: string): Vertex {
     const v = this.ix.vertices.get(id);
-    if (!v) throw new CodeGenError(`Unknown vertex '${id}'.`);
+    if (!v) throw new CodeGenError(`Unknown vertex '${id}'.`, id);
     return v;
   }
 
@@ -712,7 +722,7 @@ class Builder {
     const inRegion = (x: Vertex) => (region === null ? this.topRegionIds.includes(this.regionOf(x)) : this.regionOf(x) === region);
     if (inRegion(v)) return v;
     for (const a of this.ix.ancestors(v)) if (inRegion(a)) return a;
-    throw new CodeGenError(`${this.label(v)} is not inside the expected region.`);
+    throw new CodeGenError(`${this.label(v)} is not inside the expected region.`, v.id);
   }
 
   private isState(v: Vertex) {
@@ -804,9 +814,9 @@ class Builder {
   private reach(v: Vertex, region: string): Alt[] {
     const machinePoint = (v.type === 'entryPoint' || v.type === 'exitPoint') && !this.ix.vertices.has(v.parent);
     if (['state', 'final', 'initial', 'terminate'].includes(v.type) || machinePoint) return this.arrive(v, region);
-    // Reaching a pseudostate again on its own way would never end.
+    // Reaching a pseudostate again on its own way would never end. Reported at that pseudostate.
     const cycle = this.pseudostatePath.findIndex((x) => x.id === v.id);
-    if (cycle >= 0) throw new CodeGenError(`${cycleKinds(this.pseudostatePath.slice(cycle))} form a cycle.`);
+    if (cycle >= 0) throw new CodeGenError(`${cycleKinds(this.pseudostatePath.slice(cycle))} form a cycle.`, v.id);
     this.pseudostatePath.push(v);
     try {
       const own = [this.viaOf(v)];
@@ -913,7 +923,7 @@ class Builder {
     for (const v of this.stateList) {
       if (!v.submachine || out.has(v.submachine)) continue;
       const sub = this.options.submachines?.[v.submachine];
-      if (!sub) throw new CodeGenError(`The state machine '${v.submachine}' used by ${this.label(v)} was not provided.`);
+      if (!sub) throw new CodeGenError(`The state machine '${v.submachine}' used by ${this.label(v)} was not provided.`, v.id);
       out.set(v.submachine, sub);
     }
     return out;
@@ -923,7 +933,7 @@ class Builder {
     const sub = this.options.submachines?.[owner.submachine ?? ''];
     const points = kind === 'entry' ? sub?.entryPoints : sub?.exitPoints;
     const p = points?.find((x) => x.id === ref.ref);
-    if (!p) throw new CodeGenError(`${this.label(owner)} references ${kind} point '${ref.ref}', which '${owner.submachine}' does not have.`);
+    if (!p) throw new CodeGenError(`${this.label(owner)} references ${kind} point '${ref.ref}', which '${owner.submachine}' does not have.`, ref.id);
     return p.name;
   }
 
@@ -935,7 +945,7 @@ class Builder {
     if (cached) return cached;
     const own = this.isState(pos) ? [] : [this.viaOf(pos)];
     let alts = seq(one(prefix), this.segment(pos, t));
-    const post = this.model.kind === 'protocol' ? this.condition(t.postcondition, `Postcondition of ${label}`) : null;
+    const post = this.model.kind === 'protocol' ? this.condition(t.postcondition, `Postcondition of ${label}`, t.id) : null;
     if (post) {
       this.features.postconditions = true;
       alts = seq(alts, one([{ kind: 'check', constraint: 'postcondition', element: label, condition: post }]));
@@ -966,7 +976,7 @@ class Builder {
   private ownerStateOf(pos: Vertex): Ref {
     if (this.isState(pos)) return this.stateRef(pos);
     const owner = this.ix.ownerState(pos);
-    if (!owner) throw new CodeGenError(`${this.label(pos)} has no owning state.`);
+    if (!owner) throw new CodeGenError(`${this.label(pos)} has no owning state.`, pos.id);
     return this.stateRef(owner);
   }
 
@@ -974,7 +984,7 @@ class Builder {
     const label = this.transitionLabel(t);
     const guard = this.guardOf(t);
     const protocol = this.model.kind === 'protocol';
-    const pre = protocol ? this.condition(t.precondition, `Precondition of ${label}`) : null;
+    const pre = protocol ? this.condition(t.precondition, `Precondition of ${label}`, t.id) : null;
     if (pre) this.features.preconditions = true;
     const k = kind ?? (t.kind === 'internal' ? 'internal' : t.kind === 'local' ? 'local' : 'external');
     return this.fireables(`${t.id}|${pos.id}`, t, pos, prefix, k, label).map(({ tr, guard: g }) => ({
@@ -1042,12 +1052,12 @@ class Builder {
     const isFinal = v.type === 'final';
     const owner = this.ix.regionOwner.get(v.parent) ?? null;
     const regions = (v.regions ?? []).map((r) => this.regionRef(r.id));
-    const activities = isFinal ? [] : this.calls(v.doActivity, `do of ${what}`, this.activities);
+    const activities = isFinal ? [] : this.calls(v.doActivity, `do of ${what}`, v.id, this.activities);
     const timers = this.timers.filter((t) => t.stateIndex === index).map((t) => ({ name: t.name, index: t.index }));
     const timerSteps = this.timers.filter((t) => t.stateIndex === index);
 
     const entry: Step[] = [
-      ...this.calls(v.entry, `entry of ${what}`, this.actions).map((action): Step => ({ kind: 'call', action })),
+      ...this.calls(v.entry, `entry of ${what}`, v.id, this.actions).map((action): Step => ({ kind: 'call', action })),
       ...activities.map((activity): Step => ({ kind: 'startActivity', activity })),
       ...timerSteps.map((t): Step => ({ kind: 'startTimer', timer: t.name, timerIndex: t.index, ms: t.ms })),
     ];
@@ -1055,7 +1065,7 @@ class Builder {
       ...(v.submachine ? [{ kind: 'stopSubmachine', state: name, stateIndex: index } as Step] : []),
       ...timerSteps.map((t): Step => ({ kind: 'cancelTimer', timer: t.name, timerIndex: t.index })),
       ...[...activities].reverse().map((activity): Step => ({ kind: 'stopActivity', activity })),
-      ...this.calls(v.exit, `exit of ${what}`, this.actions).map((action): Step => ({ kind: 'call', action })),
+      ...this.calls(v.exit, `exit of ${what}`, v.id, this.actions).map((action): Step => ({ kind: 'call', action })),
     ];
 
     const deferred = (v.deferrable ?? []).map((d) => {
@@ -1063,7 +1073,7 @@ class Builder {
       return { name: e.name, index: e.signalIndex };
     });
     if (deferred.length) this.features.deferral = true;
-    const invariant = isFinal ? null : this.condition(v.invariant, `Invariant of ${what}`);
+    const invariant = isFinal ? null : this.condition(v.invariant, `Invariant of ${what}`, v.id);
     if (invariant) this.features.invariants = true;
 
     // Transitions leaving the state.

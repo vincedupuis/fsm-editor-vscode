@@ -55,7 +55,7 @@ fsm <files...> --template <template> [--out <folder>] [options]
 | `-t, --template <file>` | Template file. A bare name such as `ts` means `templates/ts.hbs` next to the program. |
 | `-o, --out <folder>` | Output folder (default: current folder). |
 
-Exit codes: `0` success, `1` errors in the machines or the template, `2` bad usage. Problems, including the warnings and errors a template reports, are printed to stderr as `file:line: severity: message`, which VS Code problem matchers and CI logs understand.
+Exit codes: `0` success, `1` errors in the machines or the template, `2` bad usage. Problems, including the errors found while building the code model (such as pseudostates forming a cycle) and the warnings and errors a template reports, are printed to stderr as `file:line: severity: message`, which VS Code problem matchers and CI logs understand.
 
 The command works the same in bash, zsh, PowerShell and cmd:
 

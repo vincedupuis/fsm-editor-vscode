@@ -605,6 +605,108 @@ describe('Boost.SML: warnings and errors', () => {
     ]);
   });
 
+  /** P with regions A1 -a-> A2 and B1, entered at A1 and B1 by default. */
+  function ortho(name: string): ModelBuilder {
+    const b = new ModelBuilder(name);
+    b.state('P', 'r_root', { entry: 'enterP()' }, 2);
+    b.state('A1', 'P_r0');
+    b.state('A2', 'P_r0');
+    b.state('B1', 'P_r1');
+    b.init('A1', 'P_r0');
+    b.init('B1', 'P_r1');
+    b.t('A1', 'A2', { triggers: ['a'] });
+    return b;
+  }
+
+  it("warns about each transition's own way, not about default entries it does not take", async () => {
+    // The machine's default entry goes through a fork; X -> A2 enters P's inside without it.
+    const b = ortho('ForkInitDive');
+    b.state('X');
+    const split = b.vertex('fork', 'r_root', { name: 'split' });
+    b.t(b.vertex('initial'), split);
+    b.t(split, 'A2', { effect: 'toA()' });
+    b.t(split, 'B1', { effect: 'toB()' });
+    b.t('P', 'X', { triggers: ['go'] });
+    b.t('X', 'A2', { triggers: ['dive'] });
+    const { warnings } = await generateSml({ 'ForkInitDive.fsm': b.model });
+    assert.deepEqual(warnings, [
+      "Transition 'initial transition of Root': Boost.SML has no transitions into a composite state's inside; it enters P, whose initial pseudostate leads on to A2",
+      "Transition 'X -> A2 (dive)': Boost.SML has no transitions into a composite state's inside; it enters P, whose initial pseudostate leads on to A2",
+    ]);
+  });
+
+  for (const kind of ['junction', 'choice'] as const) {
+    it(`warns about a ${kind}'s way into a composite state's inside when another way goes through a fork`, async () => {
+      const b = ortho('Ways');
+      b.state('S');
+      b.init('S');
+      const p = b.vertex(kind, 'r_root', { name: 'p' });
+      const f = b.vertex('fork', 'r_root', { name: 'f' });
+      b.t('S', p, { triggers: ['e'] });
+      b.t(p, f, { guard: 'deep()' });
+      b.t(p, 'A2', { guard: 'else' });
+      b.t(f, 'A2');
+      b.t(f, 'B1');
+      const { warnings } = await generateSml({ 'Ways.fsm': b.model });
+      assert.deepEqual(warnings, [
+        "Fork 'f': Boost.SML has no forks; transitions to it enter the composite state, whose initial pseudostates lead to the fork's targets",
+        "Transition 'S -> p (e)': Boost.SML has no transitions into a composite state's inside; it enters P, whose initial pseudostate leads on to A2",
+      ]);
+    });
+  }
+
+  it('warns about every transition sharing a route, not only the first', async () => {
+    // A and B both enter C at choice ch, whose else branch leaves C.
+    const b = new ModelBuilder('RouteShare');
+    b.state('A');
+    b.state('B');
+    b.state('X');
+    b.state('C', 'r_root', {}, 1);
+    b.state('C1', 'C_r0');
+    b.init('A');
+    b.init('C1', 'C_r0');
+    const ch = b.vertex('choice', 'C_r0', { name: 'ch' });
+    b.t('A', ch, { triggers: ['e1'] });
+    b.t('B', ch, { triggers: ['e2'] });
+    b.t(ch, 'C1', { guard: 'ok()' });
+    b.t(ch, 'X', { guard: 'else' });
+    b.t('A', 'B', { triggers: ['n'] });
+    const { warnings } = await generateSml({ 'RouteShare.fsm': b.model });
+    assert.deepEqual(warnings, [
+      "Transition 'A -> ch (e1)': Boost.SML has no transitions out of a composite state's inside; a choice takes the event and C is left through an internal event",
+      "Transition 'A -> ch (e1)': Boost.SML has no transitions into a composite state's inside; it enters C, whose initial pseudostate leads on to a choice",
+      "Transition 'B -> ch (e2)': Boost.SML has no transitions out of a composite state's inside; a choice takes the event and C is left through an internal event",
+      "Transition 'B -> ch (e2)': Boost.SML has no transitions into a composite state's inside; it enters C, whose initial pseudostate leads on to a choice",
+    ]);
+  });
+
+  it("warns about a region's default entry on its initial transition, not on the entry points routing through it", async () => {
+    // The machine's entry points in1 and in2 go to C's entry point cin, which enters C's second region at Y1 with an
+    // effect; C's first region then takes its default entry after that effect, straight to D2 inside D.
+    const b = new ModelBuilder('EntryPointsShare');
+    const in1 = b.vertex('entryPoint', 'r_root', { name: 'in1' });
+    const in2 = b.vertex('entryPoint', 'r_root', { name: 'in2' });
+    b.state('A');
+    b.state('C', 'r_root', {}, 2);
+    b.state('D', 'C_r0', {}, 1);
+    b.state('D1', 'D_r0');
+    b.state('D2', 'D_r0');
+    b.state('Y1', 'C_r1');
+    b.init('A');
+    b.init('D2', 'C_r0');
+    b.init('D1', 'D_r0');
+    b.init('Y1', 'C_r1');
+    const cin = b.vertex('entryPoint', 'C', { name: 'cin' });
+    b.t(in1, cin);
+    b.t(in2, cin);
+    b.t(cin, 'Y1', { effect: 'fx()' });
+    b.t('A', 'C', { triggers: ['go'] });
+    const { warnings } = await generateSml({ 'EntryPointsShare.fsm': b.model });
+    assert.deepEqual(warnings, [
+      "Transition 'initial transition of C_region1': Boost.SML has no transitions into a composite state's inside; it enters D, whose initial pseudostate leads on to D2",
+    ]);
+  });
+
   it('warns when orthogonal regions react to the same event with guards', async () => {
     const b = new ModelBuilder('Ortho');
     const p = b.state('P', 'r_root', {}, 2);

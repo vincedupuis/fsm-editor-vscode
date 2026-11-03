@@ -224,6 +224,12 @@ class Lowering {
   private routeFindings = new Map<number, Finding[]>();
   /** The routes being lowered: the origin they are lowered for, and what they found so far. */
   private routing: { origin: Origin; findings: Finding[] }[] = [];
+  /**
+   * While a region's default entry is lowered for an origin that enters the region after calls (an entry point's effects):
+   * the number of routes being lowered outside it, else -1. What lowering it finds is the default entry's, noted on the
+   * region's initial transition, not on the origin nor kept by those routes.
+   */
+  private inDefault = -1;
   private choiceCount = 0;
   private seq = 0;
   private postconditions: CodeTables['postconditions'] = [];
@@ -471,10 +477,12 @@ class Lowering {
   private find(origin: Origin, f: Finding): void {
     const way = f.way === null ? origin.way : f.way.filter((v) => origin.via.some((x) => x.id === v.id));
     const explained = (...kinds: CodeVia['kind'][]) => way.some((v) => kinds.includes(v.kind));
-    if (f.left && !explained('exitPoint', 'join')) origin.found.left = f.left;
-    if (f.entered && !origin.found.entered && !explained('entryPoint', 'fork', 'shallowHistory', 'deepHistory')) origin.found.entered = f.entered;
+    if (this.inDefault < 0) {
+      if (f.left && !explained('exitPoint', 'join')) origin.found.left = f.left;
+      if (f.entered && !origin.found.entered && !explained('entryPoint', 'fork', 'shallowHistory', 'deepHistory')) origin.found.entered = f.entered;
+    }
     // For a route, the way of a branch of its origin's choices is that branch's.
-    for (const r of this.routing) r.findings.push(f.way === null && origin.key !== r.origin.key ? { ...f, way: origin.branchWay } : f);
+    for (const r of this.routing.slice(Math.max(this.inDefault, 0))) r.findings.push(f.way === null && origin.key !== r.origin.key ? { ...f, way: origin.branchWay } : f);
   }
 
   /** An anonymous row of the region's initial pseudostate doing `steps`. */
@@ -766,7 +774,12 @@ class Lowering {
       const pre = first ? prefix : [];
       first = false;
       if (st.kind === 'enterRegion') {
-        if (pre.length) actions.push({ kind: 'route', region: r, route: this.route(r, [...pre, ...cm.regions[r].defaultSteps], origin), history: 0 });
+        if (pre.length) {
+          const was = this.inDefault;
+          this.inDefault = this.routing.length;
+          actions.push({ kind: 'route', region: r, route: this.route(r, [...pre, ...cm.regions[r].defaultSteps], origin), history: 0 });
+          this.inDefault = was;
+        }
         continue;
       }
       // The region's own default entry needs no route.

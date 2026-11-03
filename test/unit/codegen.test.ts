@@ -6,7 +6,7 @@ import * as expr from '../../media/expressions';
 import { printCondition } from '../../src/codegen/helpers';
 import { LANGUAGES } from '../../src/codegen/languages';
 import { TemplateIssue, parseFrontMatter, parseTemplate, render } from '../../src/codegen/render';
-import { toCodeModel } from '../../src/codegen/codeModel';
+import { CodeGenError, CodeVia, toCodeModel } from '../../src/codegen/codeModel';
 import { fromXmi } from '../../src/xmi';
 import { FakeClock, ModelBuilder, load, recorder, root } from './harness';
 
@@ -199,6 +199,31 @@ describe('semantics', () => {
     assert.deepEqual(m.activeStates, ['Y']);
   });
 
+  // The validator rejects these models first (validation.test.ts); toCodeModel still refuses them on its own.
+  for (const kind of ['junction', 'choice'] as const) {
+    it(`a cycle of ${kind}s is a code generation error at the ${kind} reached again`, () => {
+      const b = new ModelBuilder('Cycle');
+      const s = b.state('S');
+      const x = b.state('X');
+      const p1 = b.vertex(kind, 'r_root', { name: 'p1' });
+      const p2 = b.vertex(kind, 'r_root', { name: 'p2' });
+      b.init(s);
+      b.t(s, p1, { triggers: ['e'] });
+      b.t(p1, p2, { guard: 'a()' });
+      b.t(p1, x, { guard: 'else' });
+      b.t(p2, p1, { guard: 'b()' });
+      b.t(p2, x, { guard: 'else' });
+      assert.throws(
+        () => toCodeModel(b.model),
+        (e: unknown) => {
+          assert.ok(e instanceof CodeGenError);
+          assert.deepEqual([e.id, e.message], [p1, `${kind === 'junction' ? 'Junctions' : 'Choices'} form a cycle.`]);
+          return true;
+        },
+      );
+    });
+  }
+
   it('local transitions do not leave their composite state; external ones do', async () => {
     const b = new ModelBuilder('Local');
     const c = b.state('C', 'r_root', { entry: 'enterC()', exit: 'exitC()' }, 1);
@@ -356,6 +381,83 @@ describe('semantics', () => {
     rec.conditions.isClosed = false;
     m.dispatch('close');
     assert.deepEqual(rec.take(), ['isClosed', '!invariant: Closed']);
+  });
+});
+
+describe('code model: via', () => {
+  const names = (via: CodeVia[]) => via.map((v) => `${v.kind}:${v.name}`);
+
+  /** P with regions A1 -a-> A2 and B1, S entered first, and the pseudostate `kind` 'p' with S -e-> p, [deep()] fork f into A2 and B1, [else] A2. */
+  function waysInside(kind: 'junction' | 'choice') {
+    const b = new ModelBuilder('Ways');
+    b.state('P', 'r_root', {}, 2);
+    b.state('A1', 'P_r0');
+    b.state('A2', 'P_r0');
+    b.state('B1', 'P_r1');
+    b.state('S');
+    b.init('S');
+    b.init('A1', 'P_r0');
+    b.init('B1', 'P_r1');
+    b.t('A1', 'A2', { triggers: ['a'] });
+    const p = b.vertex(kind, 'r_root', { name: 'p' });
+    const f = b.vertex('fork', 'r_root', { name: 'f' });
+    b.t('S', p, { triggers: ['e'] });
+    b.t(p, f, { guard: 'deep()' });
+    b.t(p, 'A2', { guard: 'else' });
+    b.t(f, 'A2');
+    b.t(f, 'B1');
+    return toCodeModel(b.model);
+  }
+
+  it('a default entry through a fork adds nothing to the via of other transitions', () => {
+    const b = new ModelBuilder('ForkInit');
+    b.state('P', 'r_root', {}, 2);
+    b.state('A1', 'P_r0');
+    b.state('A2', 'P_r0');
+    b.state('B1', 'P_r1');
+    b.state('X');
+    b.init('A1', 'P_r0');
+    b.init('B1', 'P_r1');
+    const split = b.vertex('fork', 'r_root', { name: 'split' });
+    b.t(b.vertex('initial'), split);
+    b.t(split, 'A2');
+    b.t(split, 'B1');
+    b.t('P', 'X', { triggers: ['go'] });
+    b.t('X', 'A2', { triggers: ['dive'] });
+    const cm = toCodeModel(b.model);
+    assert.deepEqual(
+      cm.transitions.map((t) => [t.label, names(t.via)]),
+      [
+        ['P -> X (go)', []],
+        ['X -> A2 (dive)', []],
+      ],
+    );
+  });
+
+  it('each way through a junction has its own via', () => {
+    const cm = waysInside('junction');
+    assert.deepEqual(
+      cm.transitions.filter((t) => t.label === 'S -> p (e)').map((t) => [t.name, names(t.via)]),
+      [
+        ['S_e_p_1', ['junction:p', 'fork:f']],
+        ['S_e_p_2', ['junction:p']],
+      ],
+    );
+  });
+
+  it('a choice has the via of all its branches, and each branch its own', () => {
+    const cm = waysInside('choice');
+    const t = cm.transitions.find((x) => x.label === 'S -> p (e)')!;
+    assert.deepEqual(names(t.via), ['choice:p', 'fork:f']);
+    const choice = t.steps.find((s) => s.kind === 'choice');
+    assert.ok(choice?.kind === 'choice');
+    assert.deepEqual(
+      choice.branches.map((br) => [br.isElse, names(br.via)]),
+      [
+        [false, ['fork:f']],
+        [true, []],
+      ],
+    );
   });
 });
 

@@ -291,9 +291,76 @@ export function validate(model: FsmModel, submachines: SubmachineInfo = {}): Iss
     }
   }
 
+  checkPseudostateCycles(model, ix, add, name);
   checkText(model, ix, add, name);
   checkReachability(model, ix, add, name);
   return issues;
+}
+
+/**
+ * Pseudostates that transitions go through in a cycle: a compound transition taking the cycle would never reach a
+ * state, and the code generator can't express it. One error per group of pseudostates linked by cycles, on its first
+ * vertex, naming the shortest cycle through it.
+ */
+function checkPseudostateCycles(
+  model: FsmModel,
+  ix: ModelIndex,
+  add: (id: string, severity: Severity, message: string) => void,
+  name: (v: Vertex | undefined) => string,
+) {
+  // The pseudostates a compound transition goes on from (the machine's own entry and exit points end it).
+  const passes = (v: Vertex | undefined): v is Vertex =>
+    !!v &&
+    (['junction', 'choice', 'shallowHistory', 'deepHistory', 'fork'].includes(v.type) ||
+      ((v.type === 'entryPoint' || v.type === 'exitPoint') && ix.vertices.has(v.parent)));
+  const next = (v: Vertex) =>
+    ix.outgoing(v.id).filter((t) => t.kind !== 'internal').map((t) => ix.vertices.get(t.target)).filter(passes);
+  const previous = (v: Vertex) =>
+    ix.incoming(v.id).filter((t) => t.kind !== 'internal').map((t) => ix.vertices.get(t.source)).filter(passes);
+  /** `start` and every vertex reached from it through `step`, breadth first, with the vertex each was reached from. */
+  const walk = (start: Vertex, step: (v: Vertex) => Vertex[]) => {
+    const from = new Map<Vertex, Vertex | null>([[start, null]]);
+    const queue = [start];
+    for (let i = 0; i < queue.length; i++) {
+      for (const w of step(queue[i])) {
+        if (!from.has(w)) {
+          from.set(w, queue[i]);
+          queue.push(w);
+        }
+      }
+    }
+    return from;
+  };
+  const done = new Set<Vertex>();
+  for (const v of model.vertices) {
+    // A vertex whose id is used again later is not the one transitions refer to.
+    if (!passes(v) || ix.vertices.get(v.id) !== v || done.has(v)) continue;
+    const forward = walk(v, next);
+    // The shortest cycle through v ends with the first vertex reached that has a transition back to v.
+    const last = [...forward.keys()].find((u) => next(u).includes(v));
+    if (!last) continue;
+    const backward = walk(v, previous);
+    for (const u of forward.keys()) if (backward.has(u)) done.add(u);
+    const cycle = [v];
+    for (let u: Vertex | null = last; u && u !== v; u = forward.get(u)!) cycle.splice(1, 0, u);
+    cycle.push(v);
+    add(v.id, 'error', `${cycleKinds(cycle)} form a cycle without a state: ${cycle.map(name).join(' -> ')}.`);
+  }
+}
+
+/** The kinds of pseudostates in `cycle`: `Junctions`, `Junctions and choices`, ... (as in the code generator's error). */
+function cycleKinds(cycle: Vertex[]): string {
+  const kinds: [string, string[]][] = [
+    ['junctions', ['junction']],
+    ['choices', ['choice']],
+    ['history pseudostates', ['shallowHistory', 'deepHistory']],
+    ['entry points', ['entryPoint']],
+    ['exit points', ['exitPoint']],
+    ['forks', ['fork']],
+  ];
+  const found = kinds.filter(([, types]) => cycle.some((v) => types.includes(v.type))).map(([kind]) => kind);
+  const text = found.length > 1 ? `${found.slice(0, -1).join(', ')} and ${found[found.length - 1]}` : found[0];
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 /** Behaviors and conditions are argument-less function calls; triggers are event names or after(...). */
