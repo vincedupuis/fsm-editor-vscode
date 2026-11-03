@@ -52,11 +52,63 @@ function polylineMid(pts: { x: number; y: number }[]) {
   return { ...pts[0] };
 }
 
-/** Same header height as the diagram editor (name, stereotype, internal activities). */
+/** Estimated width of text in the 11px diagram font (the editors measure the real font; the file must not depend on it). */
+const estimateWidth = (s: string) => s.length * 6.6;
+
+/** Wraps `text` at spaces (or inside words too long for a line), like the diagram editor does for notes and activities. */
+function wrapLines(text: string, width: number): string[] {
+  const lines: string[] = [];
+  for (const para of text.split('\n')) {
+    let line = '';
+    for (const word of para.replace(/\r$/, '').split(' ')) {
+      const candidate = line ? `${line} ${word}` : word;
+      if (!line || estimateWidth(candidate) <= width) {
+        line = candidate;
+      } else {
+        lines.push(line);
+        line = word;
+      }
+      while (line.length > 1 && estimateWidth(line) > width) {
+        let k = line.length - 1;
+        while (k > 1 && estimateWidth(line.slice(0, k)) > width) k--;
+        lines.push(line.slice(0, k));
+        line = line.slice(k);
+      }
+    }
+    lines.push(line);
+  }
+  return lines;
+}
+
+/** The text of an internal transition, as shown in its state's activities compartment. */
+function internalLabel(t: Transition, model: FsmModel): string {
+  const trig = t.triggers.join(', ');
+  let s: string;
+  if (model.kind === 'protocol') {
+    s = '';
+    if (t.precondition) s += `[${t.precondition}] `;
+    s += trig;
+    if (t.postcondition) s += ` / [${t.postcondition}]`;
+  } else {
+    s = trig;
+    if (t.guard) s += ` [${t.guard}]`;
+    if (t.effect) s += ` / ${t.effect}`;
+  }
+  return s.trim() || '(internal)';
+}
+
+/** Same header height as the diagram editor (name, stereotype, internal activities wrapped to the state's width). */
 function headerHeight(v: Vertex, model: FsmModel) {
   let h = 24 + (v.stereotype ? 12 : 0);
-  const internal = model.transitions.filter((t) => t.kind === 'internal' && t.source === v.id && t.target === v.id).length;
-  const n = (v.entry ? 1 : 0) + (v.exit ? 1 : 0) + (v.doActivity ? 1 : 0) + (v.deferrable?.length ?? 0) + internal;
+  const lines: string[] = [];
+  if (v.entry) lines.push(`entry / ${v.entry}`);
+  if (v.exit) lines.push(`exit / ${v.exit}`);
+  if (v.doActivity) lines.push(`do / ${v.doActivity}`);
+  for (const d of v.deferrable ?? []) lines.push(`${d} / defer`);
+  for (const t of model.transitions) {
+    if (t.kind === 'internal' && t.source === v.id && t.target === v.id) lines.push(internalLabel(t, model));
+  }
+  const n = lines.reduce((sum, l) => sum + wrapLines(l, v.w - 16).length, 0);
   if (n) h += n * 14 + 6;
   return h;
 }

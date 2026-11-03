@@ -226,6 +226,17 @@
     return s.trim();
   }
 
+  /** The label as stacked lines: events, then [guard], then / effect (protocol machines: [pre], event, / [post]). */
+  function transitionLabelLines(t) {
+    const trig = (t.triggers || []).join(', ');
+    const lines = model.kind === 'protocol'
+      ? [t.precondition ? `[${t.precondition}]` : '', trig, t.postcondition ? `/ [${t.postcondition}]` : '']
+      : [trig, t.guard ? `[${t.guard}]` : '', t.effect ? `/ ${t.effect}` : ''];
+    return lines.filter((l) => l);
+  }
+
+  const LABEL_LINE_HEIGHT = 13;
+
   /** Parses "t1, t2 [guard] / effect" (or "[pre] t / [post]" for protocol machines). */
   /** May transitions leaving `source` use the [else] guard? */
   const allowsElse = (source) => !!source && (source.type === 'choice' || source.type === 'junction');
@@ -292,9 +303,14 @@
   const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
   const inRect = (r, p) => p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h;
 
+  /** The internal activities as drawn: each line wrapped to the width of the state. */
+  function activityRows(v) {
+    return activityLines(v).flatMap((l) => commentLines(l, v.w - 16));
+  }
+
   function headerHeight(v) {
     let h = NAME_H + (v.stereotype ? 12 : 0);
-    const n = activityLines(v).length;
+    const n = activityRows(v).length;
     if (n) h += n * LINE_H + 6;
     return h;
   }
@@ -443,7 +459,7 @@
       ny = -ny;
     }
     const anchor = nx < -0.5 ? 'end' : nx > 0.5 ? 'start' : 'middle';
-    return { x: m.x + nx * 6 + off.x, y: m.y + ny * 6 + off.y + (ny < -0.5 ? -2 : 4), anchor };
+    return { x: m.x + nx * 6 + off.x, y: m.y + ny * 6 + off.y + (ny < -0.5 ? -2 : 4), anchor, up: ny < -0.5 };
   }
 
   function distToSegment(p, a, b) {
@@ -523,7 +539,7 @@
     switch (v.type) {
       case 'state': {
         s += `<rect class="shape" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"/>`;
-        const lines = activityLines(v);
+        const lines = activityRows(v);
         const regions = regionRects(v);
         const title = v.name + (v.submachine ? ` : ${machineLabel(v.submachine)}` : '');
         const centered = !regions.length && !lines.length;
@@ -657,10 +673,12 @@
     if (!exporting) s += `<path class="hit" d="${d}"/>`;
     s += `<path class="line" d="${d}"/>`;
     s += `<path class="arrow" d="${arrowHead(pts[pts.length - 2], pts[pts.length - 1])}"/>`;
-    const label = transitionLabel(t);
-    if (label) {
+    const lines = transitionLabelLines(t);
+    if (lines.length) {
       const lp = labelPos(t, pts);
-      s += `<text class="tlabel" data-label="${esc(t.id)}" x="${n1(lp.x)}" y="${n1(lp.y)}" text-anchor="${lp.anchor}">${esc(label)}</text>`;
+      const y0 = lp.y - (lp.up ? (lines.length - 1) * LABEL_LINE_HEIGHT : 0);
+      const spans = lines.map((l, i) => `<tspan x="${n1(lp.x)}" dy="${i ? LABEL_LINE_HEIGHT : 0}">${esc(l)}</tspan>`).join('');
+      s += `<text class="tlabel" data-label="${esc(t.id)}" x="${n1(lp.x)}" y="${n1(y0)}" text-anchor="${lp.anchor}">${spans}</text>`;
     }
     if (!exporting && selection.has(t.id) && selection.size === 1) {
       (t.points || []).forEach((p, i) => {
@@ -892,13 +910,14 @@ text{font-family:-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;fill:#1f1f1
       const pts = route(t);
       if (!pts) continue;
       for (const p of pts) addP(p.x, p.y);
-      const label = transitionLabel(t);
-      if (label) {
+      const lines = transitionLabelLines(t);
+      if (lines.length) {
         const lp = labelPos(t, pts);
-        const w = label.length * 6.6;
+        const w = Math.max(...lines.map((l) => l.length)) * 6.6;
         const x0 = lp.anchor === 'end' ? lp.x - w : lp.anchor === 'start' ? lp.x : lp.x - w / 2;
-        addP(x0, lp.y - 12);
-        addP(x0 + w, lp.y + 4);
+        const y0 = lp.y - (lp.up ? (lines.length - 1) * LABEL_LINE_HEIGHT : 0);
+        addP(x0, y0 - 12);
+        addP(x0 + w, y0 + (lines.length - 1) * LABEL_LINE_HEIGHT + 4);
       }
     }
     return { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
@@ -1446,8 +1465,9 @@ ${scene(true)}
       case 'resize': {
         const v = drag.v;
         const minW = v.type === 'fork' || v.type === 'join' ? 6 : 40;
-        const minH = v.type === 'fork' || v.type === 'join' ? 6 : v.type === 'state' ? headerHeight(v) + ((v.regions || []).length ? 30 : 6) : 30;
         v.w = Math.max(minW, e.altKey ? drag.w0 + p.x - drag.start.x : snap(v.x + drag.w0 + p.x - drag.start.x) - v.x);
+        // After the width: the wrapped text depends on it.
+        const minH = v.type === 'fork' || v.type === 'join' ? 6 : v.type === 'state' ? headerHeight(v) + ((v.regions || []).length ? 30 : 6) : 30;
         v.h = Math.max(minH, e.altKey ? drag.h0 + p.y - drag.start.y : snap(v.y + drag.h0 + p.y - drag.start.y) - v.y);
         for (const cp of model.vertices) {
           if (cp.parent === v.id && isCP(cp)) snapToBorder(cp, v, center(cp));
