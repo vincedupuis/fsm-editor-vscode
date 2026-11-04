@@ -19,7 +19,7 @@
   },
   "homepage": "https://github.com/vincedupuis/fsm-editor-vscode#readme",
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.106.0"
   },
   "categories": [
     "Visualization",
@@ -76,6 +76,16 @@
         "command": "fsmEditor.newUntitled",
         "title": "New Untitled State Machine",
         "shortTitle": "State Machine",
+        "category": "FSM"
+      },
+      {
+        "command": "fsmEditor.aiLayoutRedesign",
+        "title": "AI Layout: Redesign",
+        "category": "FSM"
+      },
+      {
+        "command": "fsmEditor.aiLayoutImprove",
+        "title": "AI Layout: Improve",
         "category": "FSM"
       },
       {
@@ -137,6 +147,14 @@
           "when": "activeCustomEditorId == fsmEditor.stateMachine || resourceExtname == .fsm"
         },
         {
+          "command": "fsmEditor.aiLayoutRedesign",
+          "when": "activeCustomEditorId == fsmEditor.stateMachine"
+        },
+        {
+          "command": "fsmEditor.aiLayoutImprove",
+          "when": "activeCustomEditorId == fsmEditor.stateMachine"
+        },
+        {
           "command": "fsmEditor.exportSvg",
           "when": "activeCustomEditorId == fsmEditor.stateMachine"
         },
@@ -158,6 +176,11 @@
           "default": "",
           "scope": "machine-overridable",
           "markdownDescription": "Path of `fsm-generator`, the code generator that runs Jinja templates (`.jinja`). Leave empty to use the one bundled with the extension, or else one found on the PATH. Not available in VS Code for the Web."
+        },
+        "fsmEditor.aiLayout.model": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Language model used by **AI Layout: Redesign** and **AI Layout: Improve**, by its id, among the chat models VS Code provides (GitHub Copilot or another extension). Leave empty to choose one the first time AI Layout runs; the choice is saved here."
         }
       }
     }
@@ -174,7 +197,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
-    "@types/vscode": "^1.85.0",
+    "@types/vscode": "^1.106.0",
     "@vscode/test-web": "^0.0.81",
     "esbuild": "^0.28.2",
     "handlebars": "^4.7.9",

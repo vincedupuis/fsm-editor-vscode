@@ -61,6 +61,9 @@
     json: I('<path d="M8 4c-2 0-2 2-2 4s-2 4-2 4 2 0 2 4 0 4 2 4M16 4c2 0 2 2 2 4s2 4 2 4-2 0-2 4 0 4-2 4"/>'),
     code: I('<path d="M8 7l-5 5 5 5M16 7l5 5-5 5M14 4l-4 16"/>'),
     trash: I('<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>'),
+    sparkle: I('<path d="M11 3l1.9 5.1L18 10l-5.1 1.9L11 17l-1.9-5.1L4 10l5.1-1.9z"/><path d="M18.5 15l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z"/>'),
+    stop: I('<rect x="6" y="6" width="12" height="12" rx="2"/>'),
+    wand: I('<path d="M4 20L15 9"/><path d="M13 7l4 4"/><path d="M16 3v3M14.5 4.5h3M20 8v3M18.5 9.5h3M10 3.5v2M9 4.5h2"/>'),
     close: I('<path d="M7 7l10 10M17 7L7 17"/>'),
     sideLeft: I('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/>'),
     sideLeftOn: I('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M4 5h5v14H4z" fill="currentColor" stroke="none"/>'),
@@ -125,6 +128,8 @@
   let spaceDown = false;
   let pasteCount = 0;
   let firstLoad = !saved.view;
+  /** The AI Layout run going on in this diagram ({ n, max, best }), during which editing is locked. */
+  let aiRun = null;
   /** Machines referenced by submachine states (keyed by href), supplied by the extension. */
   let submachines = {};
   /** State machines in the workspace that can be used as submachines: [{ href, name, file, points }]. */
@@ -914,6 +919,10 @@
       if (!problemsEl.hidden) renderProblems();
     } else if (msg.type === 'requestSvg') {
       vscode.postMessage({ type: 'svg', requestId: msg.requestId, svg: exportSvg() });
+    } else if (msg.type === 'aiEvaluate') {
+      void aiEvaluate(msg);
+    } else if (msg.type === 'aiLayout') {
+      setAiRun(msg.state);
     }
   });
 
@@ -965,17 +974,24 @@ text{font-family:-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;fill:#1f1f1
       const pts = route(t);
       if (!pts) continue;
       for (const p of pts) addP(p.x, p.y);
-      const lines = transitionLabelLines(t);
-      if (lines.length) {
-        const lp = labelPos(t, pts);
-        const w = Math.max(...lines.map((l) => l.length)) * 6.6;
-        const x0 = lp.anchor === 'end' ? lp.x - w : lp.anchor === 'start' ? lp.x : lp.x - w / 2;
-        const y0 = lp.y - (lp.up ? (lines.length - 1) * LABEL_LINE_HEIGHT : 0);
-        addP(x0, y0 - 12);
-        addP(x0 + w, y0 + (lines.length - 1) * LABEL_LINE_HEIGHT + 4);
+      const b = labelBox(t, pts);
+      if (b) {
+        addP(b.x, b.y);
+        addP(b.x + b.w, b.y + b.h);
       }
     }
     return { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
+  }
+
+  /** Approximate box of a transition's label, or null when it has none. */
+  function labelBox(t, pts) {
+    const lines = transitionLabelLines(t);
+    if (!lines.length) return null;
+    const lp = labelPos(t, pts);
+    const w = Math.max(...lines.map((l) => l.length)) * 6.6;
+    const x0 = lp.anchor === 'end' ? lp.x - w : lp.anchor === 'start' ? lp.x : lp.x - w / 2;
+    const y0 = lp.y - (lp.up ? (lines.length - 1) * LABEL_LINE_HEIGHT : 0);
+    return { x: x0, y: y0 - 12, w, h: (lines.length - 1) * LABEL_LINE_HEIGHT + 16 };
   }
 
   function exportSvg() {
@@ -991,6 +1007,362 @@ text{font-family:-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;fill:#1f1f1
 ${scene(true)}
 </svg>
 `;
+  }
+
+  // ---------------------------------------------------------------- AI layout
+  // The extension runs the AI layout loop (src/aiLayout.ts). For each layout the
+  // model proposes, the diagram fits it (grid, text sizes, composite states around
+  // their content), measures its problems and renders it, so all the geometry
+  // stays here.
+  const FIT_PAD = 20;
+  const AI_IMAGE_MAX = 1600;
+  const ceilGrid = (n) => Math.ceil(n / GRID - 1e-6) * GRID;
+  const floorGrid = (n) => Math.floor(n / GRID + 1e-6) * GRID;
+  const snapHalf = (n) => Math.round(n / (GRID / 2)) * (GRID / 2);
+  const ref = (v) => (v.name ? `${v.name} (${v.id})` : v.id);
+
+  let nameCtx;
+  /** Width of a state's name, in the font of `.name`. */
+  function nameTextWidth(text) {
+    if (!nameCtx) {
+      nameCtx = document.createElement('canvas').getContext('2d');
+      nameCtx.font = '600 12px -apple-system,"Segoe UI",Helvetica,Arial,sans-serif';
+    }
+    return nameCtx.measureText(text).width;
+  }
+  const stateTitle = (v) => v.name + (v.submachine ? ` : ${machineLabel(v.submachine)}` : '');
+  /** Narrowest width that shows a state's name. */
+  const minStateWidth = (v) =>
+    Math.max(40, nameTextWidth(stateTitle(v)) + 24, v.stereotype ? commentTextWidth(`«${v.stereotype}»`) + 24 : 0);
+  /** Header height of `v` if it were `w` wide (internal activities wrap to the width). */
+  function headerAt(v, w) {
+    const w0 = v.w;
+    v.w = w;
+    const hh = headerHeight(v);
+    v.w = w0;
+    return hh;
+  }
+  /** Is `v` inside region `rid`, directly or through nested states? */
+  function inRegion(v, rid) {
+    const seen = new Set();
+    for (let x = v; x && !seen.has(x.id); x = owner(x)) {
+      seen.add(x.id);
+      if (!isCP(x) && x.parent === rid) return true;
+    }
+    return false;
+  }
+  /** A vertex's rectangle with the caption or invariant drawn below it. */
+  function extent(v) {
+    const below = v.type === 'state' ? (v.invariant ? 18 : 0) : v.name || v.type === 'connectionPointRef' ? 16 : 0;
+    return { x: v.x, y: v.y, w: v.w, h: v.h + below };
+  }
+  const drawnTransitions = () =>
+    model.transitions.filter((t) => !(t.kind === 'internal' && t.source === t.target && V.get(t.source)?.type === 'state'));
+
+  /** Moves everything inside region `rid` (vertices and the bend points between them). */
+  function moveRegionContent(rid, dx, dy) {
+    const moved = new Set();
+    for (const v of model.vertices) {
+      if (inRegion(v, rid)) {
+        v.x += dx;
+        v.y += dy;
+        moved.add(v.id);
+      }
+    }
+    for (const t of model.transitions) {
+      if (t.points && moved.has(t.source) && moved.has(t.target)) t.points = t.points.map((p) => ({ x: p.x + dx, y: p.y + dy }));
+    }
+  }
+
+  /** Grows composite state `s` around the content of its regions (its children were fitted first). */
+  function fitComposite(s, notes) {
+    const regs = s.regions || [];
+    const w0 = s.w;
+    const h0 = s.h;
+    const content = regs.map((r) => {
+      let b = null;
+      const add = (x1, y1, x2, y2) => {
+        b = b ? { x1: Math.min(b.x1, x1), y1: Math.min(b.y1, y1), x2: Math.max(b.x2, x2), y2: Math.max(b.y2, y2) } : { x1, y1, x2, y2 };
+      };
+      for (const v of model.vertices) {
+        if (isCP(v) || v.parent !== r.id) continue;
+        const e = extent(v);
+        add(e.x, e.y, e.x + e.w, e.y + e.h);
+      }
+      for (const t of drawnTransitions()) {
+        const a = V.get(t.source);
+        const g = V.get(t.target);
+        if (!a || !g || !inRegion(a, r.id) || !inRegion(g, r.id)) continue;
+        for (const p of t.points || []) add(p.x, p.y, p.x, p.y);
+        const pts = route(t);
+        const lb = pts && labelBox(t, pts);
+        if (lb) add(lb.x, lb.y, lb.x + lb.w, lb.y + lb.h);
+      }
+      const top = r.name ? 14 : 0;
+      return { r, b, top, w: b ? b.x2 - b.x1 + 2 * FIT_PAD : 80, h: (b ? b.y2 - b.y1 + 2 * FIT_PAD : 40) + top };
+    });
+    if (regs.length === 1 && content[0].b) {
+      // One region: the box grows around its content, which stays where it was put.
+      const { b, top } = content[0];
+      const x1 = floorGrid(Math.min(s.x, b.x1 - FIT_PAD));
+      const x2 = ceilGrid(Math.max(s.x + s.w, b.x2 + FIT_PAD, x1 + minStateWidth(s)));
+      const hh = headerAt(s, x2 - x1);
+      const y1 = floorGrid(Math.min(s.y, b.y1 - FIT_PAD - top - hh));
+      const y2 = ceilGrid(Math.max(s.y + s.h, b.y2 + FIT_PAD, y1 + hh + 30));
+      Object.assign(s, { x: x1, y: y1, w: x2 - x1, h: y2 - y1 });
+    } else {
+      // Orthogonal regions share the box equally: size it for the largest one, then move
+      // each region's content into its part.
+      const n = regs.length;
+      const horizontal = s.regionLayout === 'horizontal';
+      const rw = Math.max(...content.map((c) => c.w));
+      const rh = Math.max(...content.map((c) => c.h));
+      const c = center(s);
+      s.w = ceilGrid(Math.max(s.w, horizontal ? n * rw : rw, minStateWidth(s)));
+      s.h = ceilGrid(Math.max(s.h, headerHeight(s) + (horizontal ? rh : n * rh)));
+      s.x = snapHalf(c.x) - s.w / 2;
+      s.y = snapHalf(c.y) - s.h / 2;
+      regionRects(s).forEach((rr, i) => {
+        const { b, top } = content[i];
+        if (!b) return;
+        const ix1 = rr.x + FIT_PAD;
+        const iy1 = rr.y + FIT_PAD + top;
+        const ix2 = rr.x + rr.w - FIT_PAD;
+        const iy2 = rr.y + rr.h - FIT_PAD;
+        const dx = Math.round(b.x1 < ix1 ? ix1 - b.x1 : b.x2 > ix2 ? ix2 - b.x2 : 0);
+        const dy = Math.round(b.y1 < iy1 ? iy1 - b.y1 : b.y2 > iy2 ? iy2 - b.y2 : 0);
+        if (dx || dy) moveRegionContent(rr.id, dx, dy);
+        if (Math.abs(dx) >= GRID / 2 || Math.abs(dy) >= GRID / 2) {
+          notes.push(`moved the content of region ${rr.name || rr.id} of ${ref(s)} by (${dx}, ${dy}) into its region`);
+        }
+      });
+    }
+    if (s.w > w0 + GRID / 2 || s.h > h0 + GRID / 2) notes.push(`resized ${ref(s)} to ${s.w}×${s.h} to fit its content`);
+    for (const cp of model.vertices) if (cp.parent === s.id && isCP(cp)) snapToBorder(cp, s, center(cp));
+  }
+
+  /** Turns a proposed layout into one the editor draws well; returns what it changed. */
+  function aiFit() {
+    const notes = [];
+    for (const v of model.vertices) {
+      const c = center(v);
+      if (v.type === 'state' || v.type === 'comment') {
+        const w0 = v.w;
+        const h0 = v.h;
+        v.w = Math.max(ceilGrid(v.type === 'state' ? minStateWidth(v) : 60), snap(v.w));
+        const minH = v.type === 'state'
+          ? headerHeight(v) + ((v.regions || []).length ? 30 : 6)
+          : commentLines(String(v.text ?? ''), v.w - 16).length * 14 + 12;
+        v.h = Math.max(ceilGrid(minH), snap(v.h));
+        // Centers snap to half the grid, so shapes the model aligned stay aligned.
+        v.x = snapHalf(c.x) - v.w / 2;
+        v.y = snapHalf(c.y) - v.h / 2;
+        if (v.w > w0 + GRID / 2 || v.h > h0 + GRID / 2) notes.push(`enlarged ${ref(v)} to ${v.w}×${v.h} to fit its text`);
+      } else {
+        v.x = snapHalf(c.x) - v.w / 2;
+        v.y = snapHalf(c.y) - v.h / 2;
+      }
+    }
+    for (const t of model.transitions) {
+      if (t.points) t.points = t.points.map((p) => ({ x: snapHalf(p.x), y: snapHalf(p.y) }));
+      if (t.labelOffset) t.labelOffset = { x: Math.round(t.labelOffset.x), y: Math.round(t.labelOffset.y) };
+    }
+    reindex();
+    const composites = model.vertices
+      .filter((v) => v.type === 'state' && (v.regions || []).length)
+      .sort((a, b) => depth(b) - depth(a));
+    for (const s of composites) fitComposite(s, notes);
+    for (const v of model.vertices) {
+      const s = isCP(v) && V.get(v.parent);
+      if (s) snapToBorder(v, s, center(v));
+    }
+    return notes;
+  }
+
+  function segmentsCross(a, b, c, d) {
+    const r = { x: b.x - a.x, y: b.y - a.y };
+    const s = { x: d.x - c.x, y: d.y - c.y };
+    const den = r.x * s.y - r.y * s.x;
+    if (Math.abs(den) < 1e-9) return null;
+    const t = ((c.x - a.x) * s.y - (c.y - a.y) * s.x) / den;
+    const u = ((c.x - a.x) * r.y - (c.y - a.y) * r.x) / den;
+    return t > 0 && t < 1 && u > 0 && u < 1 ? { x: a.x + t * r.x, y: a.y + t * r.y } : null;
+  }
+  function segmentHitsRect(a, b, r) {
+    if (inRect(r, a) || inRect(r, b)) return true;
+    const c = [{ x: r.x, y: r.y }, { x: r.x + r.w, y: r.y }, { x: r.x + r.w, y: r.y + r.h }, { x: r.x, y: r.y + r.h }];
+    return c.some((p, i) => segmentsCross(a, b, p, c[(i + 1) % 4]));
+  }
+  const polylineHitsRect = (pts, r) => pts.some((p, i) => i > 0 && segmentHitsRect(pts[i - 1], p, r));
+  const shrink = (r, d) => ({ x: r.x + d, y: r.y + d, w: Math.max(0, r.w - 2 * d), h: Math.max(0, r.h - 2 * d) });
+  const rectsOverlap = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+
+  /** The problems of the current layout, with a score: lower is better, a hard problem outweighs any number of soft ones. */
+  function aiMeasure() {
+    const problems = [];
+    const counts = { overlaps: 0, outside: 0, crowded: 0, throughShapes: 0, crossings: 0, labelOverlaps: 0, almostStraight: 0 };
+    let score = 0;
+    const add = (kind, weight, text) => {
+      counts[kind]++;
+      score += weight;
+      problems.push({ weight, text });
+    };
+    const shapes = model.vertices.filter((v) => !isCP(v));
+    // Shapes that overlap or crowd each other, and shapes outside their region.
+    const byParent = new Map();
+    for (const v of shapes) byParent.set(v.parent, [...(byParent.get(v.parent) || []), v]);
+    for (const group of byParent.values()) {
+      for (let i = 0; i < group.length; i++) {
+        for (let j = i + 1; j < group.length; j++) {
+          const a = group[i];
+          const b = group[j];
+          const ix = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+          const iy = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+          if (ix > 0 && iy > 0) add('overlaps', 1000, `${ref(a)} and ${ref(b)} overlap`);
+          else {
+            const gap = ix > 0 ? -iy : iy > 0 ? -ix : Math.hypot(ix, iy);
+            if (gap < 20) add('crowded', 20, `${ref(a)} and ${ref(b)} are only ${Math.round(gap)} px apart`);
+          }
+        }
+      }
+    }
+    for (const v of shapes) {
+      const o = owner(v);
+      const rr = o && regionRects(o).find((r) => r.id === v.parent);
+      if (rr && (v.x < rr.x - 0.5 || v.y < rr.y - 0.5 || v.x + v.w > rr.x + rr.w + 0.5 || v.y + v.h > rr.y + rr.h + 0.5)) {
+        add('outside', 1000, `${ref(v)} sticks out of its region of ${ref(o)}`);
+      }
+    }
+    // Transitions through shapes, crossing each other, or almost but not quite straight.
+    const edges = [];
+    for (const t of drawnTransitions()) {
+      const pts = route(t);
+      const s = V.get(t.source);
+      const g = V.get(t.target);
+      if (pts && s && g) edges.push({ t, pts, s, g });
+    }
+    let bends = 0;
+    let diagonals = 0;
+    let length = 0;
+    for (const e of edges) {
+      const ends = new Set([e.s.id, e.g.id, ...ancestors(e.s).map((a) => a.id), ...ancestors(e.g).map((a) => a.id)]);
+      for (const u of shapes) {
+        if (!ends.has(u.id) && polylineHitsRect(e.pts, shrink(u, 2))) add('throughShapes', 300, `${e.t.id} passes through ${ref(u)}`);
+      }
+      bends += (e.t.points || []).length;
+      for (let i = 1; i < e.pts.length; i++) {
+        const dx = Math.abs(e.pts[i].x - e.pts[i - 1].x);
+        const dy = Math.abs(e.pts[i].y - e.pts[i - 1].y);
+        length += Math.hypot(dx, dy);
+        const lo = Math.min(dx, dy);
+        if (lo > 0.5 && lo <= 8 && Math.max(dx, dy) > 40) {
+          add('almostStraight', 10, `${e.t.id} is almost ${dx < dy ? 'vertical' : 'horizontal'} (off by ${Math.round(lo)} px)`);
+        } else if (lo > 8) diagonals++;
+      }
+    }
+    const nearEnd = (p, e) => Math.hypot(p.x - e.pts[0].x, p.y - e.pts[0].y) < 4 || Math.hypot(p.x - e.pts[e.pts.length - 1].x, p.y - e.pts[e.pts.length - 1].y) < 4;
+    for (let i = 0; i < edges.length; i++) {
+      for (let j = i + 1; j < edges.length; j++) {
+        const a = edges[i];
+        const b = edges[j];
+        let n = 0;
+        for (let k = 1; k < a.pts.length; k++) {
+          for (let l = 1; l < b.pts.length; l++) {
+            const p = segmentsCross(a.pts[k - 1], a.pts[k], b.pts[l - 1], b.pts[l]);
+            if (p && !nearEnd(p, a) && !nearEnd(p, b)) n++;
+          }
+        }
+        for (let k = 0; k < n; k++) add('crossings', 40, `${a.t.id} and ${b.t.id} cross`);
+      }
+    }
+    // Labels over shapes, over other labels, or crossed by other transitions.
+    const labels = edges.map((e) => ({ e, b: labelBox(e.t, e.pts) })).filter((l) => l.b);
+    for (const { e, b } of labels) {
+      for (const u of shapes) {
+        const composite = (u.regions || []).length > 0;
+        const around = composite && (u === e.s || u === e.g || isInside(e.s, u.id) || isInside(e.g, u.id));
+        const r = around ? { x: u.x, y: u.y, w: u.w, h: headerHeight(u) } : { x: u.x, y: u.y, w: u.w, h: u.h };
+        if (rectsOverlap(shrink(b, 1), r)) add('labelOverlaps', 100, `the label of ${e.t.id} overlaps ${ref(u)}`);
+      }
+      for (const o of edges) {
+        if (o !== e && polylineHitsRect(o.pts, shrink(b, 2))) add('labelOverlaps', 15, `${o.t.id} runs through the label of ${e.t.id}`);
+      }
+    }
+    for (let i = 0; i < labels.length; i++) {
+      for (let j = i + 1; j < labels.length; j++) {
+        if (rectsOverlap(labels[i].b, labels[j].b)) add('labelOverlaps', 80, `the labels of ${labels[i].e.t.id} and ${labels[j].e.t.id} overlap`);
+      }
+    }
+    const box = contentBounds();
+    score += bends * 2 + diagonals * 2 + length / 100 + (box.w * box.h) / 20000;
+    problems.sort((a, b) => b.weight - a.weight);
+    return {
+      score: Math.round(score),
+      problems: problems.map((p) => p.text),
+      counts: { ...counts, bends, diagonals, length: Math.round(length), width: Math.round(box.w), height: Math.round(box.h) },
+    };
+  }
+
+  /** What the model needs to size shapes and place labels: text sizes and label boxes. */
+  function aiInfo() {
+    const vertices = {};
+    for (const v of model.vertices) {
+      if (v.type !== 'state') continue;
+      const textW = Math.max(minStateWidth(v), ...activityItems(v).map((l) => commentTextWidth(l.text) + 18));
+      const cw = ceilGrid(textW);
+      vertices[v.id] = { minW: ceilGrid(minStateWidth(v)), textW: cw, headerH: headerAt(v, cw) };
+    }
+    const transitions = {};
+    for (const t of drawnTransitions()) {
+      const pts = route(t);
+      const b = pts && labelBox(t, pts);
+      if (b) transitions[t.id] = { label: transitionLabelLines(t), box: { x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.w), h: Math.round(b.h) } };
+    }
+    return { vertices, transitions };
+  }
+
+  /** PNG of an SVG document, base64-encoded, at most AI_IMAGE_MAX pixels wide or high. */
+  function rasterize(svgText) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const w = img.naturalWidth || 400;
+        const h = img.naturalHeight || 300;
+        const scale = Math.min(2, AI_IMAGE_MAX / Math.max(w, h));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(w * scale));
+        canvas.height = Math.max(1, Math.round(h * scale));
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return reject(new Error('No canvas to render the diagram.'));
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/png').replace(/^data:image\/png;base64,/, ''));
+      };
+      img.onerror = () => reject(new Error('The diagram could not be rendered as an image.'));
+      img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgText);
+    });
+  }
+
+  /** Fits (optionally), measures and renders a layout for the extension, without touching the open diagram. */
+  async function aiEvaluate(msg) {
+    const current = model;
+    const restore = () => {
+      model = current;
+      if (model) reindex();
+    };
+    try {
+      model = normalize(msg.model);
+      reindex();
+      const notes = msg.fit ? aiFit() : [];
+      reindex();
+      const result = { model, notes, metrics: aiMeasure(), info: aiInfo() };
+      const svgText = msg.image ? exportSvg() : '';
+      restore();
+      if (svgText) result.png = await rasterize(svgText);
+      vscode.postMessage({ type: 'aiEvaluated', requestId: msg.requestId, result });
+    } catch (err) {
+      restore();
+      vscode.postMessage({ type: 'aiEvaluated', requestId: msg.requestId, error: String((err && err.message) || err) });
+    }
   }
 
   // ---------------------------------------------------------------- view
@@ -1063,6 +1435,7 @@ ${scene(true)}
   }
 
   function createVertex(toolId, p) {
+    if (aiRun) return;
     const def = TOOL_BY_ID.get(toolId);
     if (!def || !def.create) return;
     reindex();
@@ -1186,6 +1559,7 @@ ${scene(true)}
   }
 
   function deleteSelection() {
+    if (aiRun) return;
     if (!selection.size) return;
     const vs = new Set();
     const ts = new Set();
@@ -1257,6 +1631,7 @@ ${scene(true)}
   }
 
   function pasteData(data) {
+    if (aiRun) return;
     if (!data || !Array.isArray(data.vertices)) return;
     reindex();
     pasteCount++;
@@ -1308,7 +1683,7 @@ ${scene(true)}
     pasteCount = 0;
   });
   document.addEventListener('cut', (e) => {
-    if (isEditable(document.activeElement) || !model) return;
+    if (isEditable(document.activeElement) || !model || aiRun) return;
     const data = collectSelection();
     if (!data) return;
     e.clipboardData?.setData('text/plain', JSON.stringify(data));
@@ -1378,6 +1753,15 @@ ${scene(true)}
       svg.classList.add('panning');
       capture(e);
       e.preventDefault();
+      return;
+    }
+
+    if (aiRun) {
+      // Locked while AI Layout runs: clicks only select.
+      const id = hit.kind === 'vertex' || hit.kind === 'transition' || hit.kind === 'label' ? hit.id : null;
+      selection = id ? new Set([id]) : new Set();
+      renderProps();
+      render();
       return;
     }
 
@@ -1715,6 +2099,7 @@ ${scene(true)}
       e.preventDefault();
       return;
     }
+    if (aiRun && !(mod ? ['a', '=', '+', '-', '0'].includes(e.key.toLowerCase()) : e.key === 'f' || e.key === 'Escape')) return;
     if (mod) {
       const k = e.key.toLowerCase();
       if (k === 'a') {
@@ -1815,6 +2200,7 @@ ${scene(true)}
   let inline = null;
 
   function startInlineEdit(id) {
+    if (aiRun) return;
     commitInlineEdit();
     reindex();
     const v = V.get(id);
@@ -2435,21 +2821,25 @@ ${scene(true)}
 
   let zoomLabel;
   let titleLabel;
+  let undoBtn;
+  let redoBtn;
+  let aiGroup;
   const panelToggles = {};
+  const btn = (icon, title, onclick, text) => {
+    const b = h('button', { className: 'tbtn', title, onclick });
+    b.innerHTML = ICONS[icon] || '';
+    if (text) b.append(text);
+    return b;
+  };
+  const cmd = (command) => () => vscode.postMessage({ type: 'command', command });
   function buildToolbar() {
-    const btn = (icon, title, onclick, text) => {
-      const b = h('button', { className: 'tbtn', title, onclick });
-      b.innerHTML = ICONS[icon] || '';
-      if (text) b.append(text);
-      return b;
-    };
-    const cmd = (command) => () => vscode.postMessage({ type: 'command', command });
     titleLabel = h('span', { className: 'title' });
     zoomLabel = h('span', { className: 'zoom' });
+    aiGroup = h('span', { className: 'ai-group' });
     toolbarEl.append(
       titleLabel,
-      btn('undo', 'Undo (Ctrl/Cmd+Z)', cmd('undo')),
-      btn('redo', 'Redo (Ctrl/Cmd+Shift+Z)', cmd('redo')),
+      (undoBtn = btn('undo', 'Undo (Ctrl/Cmd+Z)', cmd('undo'))),
+      (redoBtn = btn('redo', 'Redo (Ctrl/Cmd+Shift+Z)', cmd('redo'))),
       h('span', { className: 'sep' }),
       btn('zoomOut', 'Zoom out (Ctrl/Cmd+-)', () => zoomCenter(1 / 1.2)),
       zoomLabel,
@@ -2457,6 +2847,8 @@ ${scene(true)}
       btn('fit', 'Fit diagram (F)', () => fit()),
       h('span', { className: 'sep' }),
       btn('trash', 'Delete selection (Del)', () => deleteSelection()),
+      h('span', { className: 'sep' }),
+      aiGroup,
       h('span', { className: 'spacer' }),
       btn('code', 'Generate code from a template', cmd('fsmEditor.generateCode'), 'Code'),
       btn('export', 'Export as SVG', cmd('fsmEditor.exportSvg'), 'SVG'),
@@ -2470,6 +2862,49 @@ ${scene(true)}
       const b = btn('close', title, () => setPanel(p, false));
       PANES[p].querySelector('.side-head').append(b);
     }
+    renderAiToolbar();
+  }
+
+  // ---------------------------------------------------------------- AI Layout run
+  /** The run the extension reports: { running, n, max, best }. Each proposal reaches the diagram as a document update. */
+  function setAiRun(state) {
+    const starting = !!(state && state.running) && !aiRun;
+    aiRun = state && state.running ? { ...state } : null;
+    if (starting) {
+      drag = null;
+      setTool(null);
+      closeColorPopover();
+    }
+    toolboxEl.inert = !!aiRun;
+    propsEl.inert = !!aiRun;
+    renderAiToolbar();
+    render();
+  }
+
+  function renderAiToolbar() {
+    undoBtn.disabled = !!aiRun;
+    redoBtn.disabled = !!aiRun;
+    aiGroup.innerHTML = '';
+    if (!aiRun) {
+      aiGroup.append(
+        btn('sparkle', 'AI Layout: redesign the whole diagram with the language model', cmd('fsmEditor.aiLayoutRedesign'), 'Redesign'),
+        btn('wand', 'AI Layout: improve the current layout with the language model', cmd('fsmEditor.aiLayoutImprove'), 'Improve'),
+      );
+      return;
+    }
+    const status = aiRun.stopping
+      ? 'stopping…'
+      : aiRun.n
+        ? `proposal ${aiRun.n} of ${aiRun.max}${aiRun.best ? ` · best so far: ${aiRun.best}` : ''}`
+        : 'designing the layout…';
+    const stop = btn('stop', 'Stop AI Layout and keep the version shown', () => {
+      if (!aiRun) return;
+      aiRun.stopping = true;
+      renderAiToolbar();
+      vscode.postMessage({ type: 'aiLayoutStop' });
+    }, 'Stop');
+    stop.disabled = !!aiRun.stopping;
+    aiGroup.append(h('span', { className: 'ai-status', title: 'Editing is locked while AI Layout runs' }, `AI Layout: ${status}`), stop);
   }
 
   // ---------------------------------------------------------------- side panels

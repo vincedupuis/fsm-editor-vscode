@@ -58,8 +58,9 @@ See **[docs/UML-CONFORMANCE.md](docs/UML-CONFORMANCE.md)** for:
 - **Panels**: ✕ closes the toolbox or the properties panel, and the two toggles at the right of the toolbar show and hide them, in every diagram.
 - **Editing**: Delete removes the selection. Ctrl/Cmd+C/X/V copies, cuts and pastes, including between diagrams. Ctrl/Cmd+D duplicates. Arrow keys nudge (Shift for 10px). Undo and redo are VS Code's own.
 - **Shortcuts**: S state, X final, I initial, H history, C choice, J junction, N comment, T transition, R region, V/Esc select. Shift+click a tool to keep it active.
+- **AI Layout**: *Redesign* (toolbar) lays the whole diagram out again, and *Improve* keeps your arrangement and fixes spacing, alignment, sizes, routing and labels. Both use a language model VS Code provides (GitHub Copilot or another chat extension): pick one the first time, or set `fsmEditor.aiLayout.model`. The model proposes a layout, the editor checks it, shows it and sends back its problems and an image, for up to five rounds. While it runs the diagram is locked (you can still pan, zoom and select) and **Stop** keeps the version shown; a run that finishes ends on the best one. Each proposal is one undo step, so Undo and Redo go back and forth between them. Only the layout changes, never the state machine.
 
-Commands (Command Palette → "FSM"): *New State Machine*, *New Untitled State Machine*, *Generate Code…*, *Export as SVG*, *Open as XMI Text*, *Open in FSM Editor*. *New Untitled State Machine* is also *State Machine* in **File › New File…**.
+Commands (Command Palette → "FSM"): *New State Machine*, *New Untitled State Machine*, *AI Layout: Redesign*, *AI Layout: Improve*, *Generate Code…*, *Export as SVG*, *Open as XMI Text*, *Open in FSM Editor*. *New Untitled State Machine* is also *State Machine* in **File › New File…**.
 
 ## Development
 
@@ -79,6 +80,7 @@ Package with `npm run package`, which produces a `.vsix` file.
 
 - `src/extension.ts`: commands and registration (bundled by `esbuild.mjs` into `out/extension.js` for desktop and `out/web/extension.js` for the web)
 - `src/fsmEditorProvider.ts`: custom text editor; syncs the document and the webview and publishes diagnostics
+- `src/aiLayout.ts`: the AI Layout commands and loop (VS Code language model API); `src/layoutPrompt.ts`: its prompt, tool and reports
 - `src/model.ts`: the in-memory model the diagram editor works on
 - `src/xmi.ts`, `src/xml.ts`: reading and writing `.fsm` files (XMI with UML DI)
 - `src/validation.ts`: UML well-formedness rules

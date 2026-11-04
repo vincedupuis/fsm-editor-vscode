@@ -1,10 +1,11 @@
 import * as vscode from 'vscode';
+import { LayoutEvaluation } from './layoutPrompt';
 import { ConnectionPointInfo, FsmModel, MachineInfo, SubmachineInfo, defaultModel, machineConnectionPoints, normalizeModel } from './model';
 import { Issue, validate } from './validation';
 import { basename, decodeText, dirname, relative } from './util';
 import { fromXmi, toXmi } from './xmi';
 
-interface ActiveEditor {
+export interface ActiveEditor {
   panel: vscode.WebviewPanel;
   document: vscode.TextDocument;
 }
@@ -16,6 +17,8 @@ const WEBVIEW_COMMANDS = new Set([
   'fsmEditor.exportSvg',
   'fsmEditor.generateCode',
   'fsmEditor.openAsText',
+  'fsmEditor.aiLayoutRedesign',
+  'fsmEditor.aiLayoutImprove',
 ]);
 
 /** Which side panels of the diagram editor are shown, the same for every editor. */
@@ -44,7 +47,8 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
 
   private active: ActiveEditor | undefined;
   private readonly diagnostics = vscode.languages.createDiagnosticCollection('fsm');
-  private readonly pendingSvg = new Map<number, (svg: string) => void>();
+  /** Replies the extension waits for from a webview, by request id. */
+  private readonly pending = new Map<number, (msg: any) => void>();
   private nextRequest = 1;
   /** Re-sync callbacks of every open editor, run when any .fsm file changes (submachines may be affected). */
   private readonly resyncs = new Set<() => void>();
@@ -68,6 +72,9 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
       vscode.workspace.onDidCloseTextDocument((d) => this.diagnostics.delete(d.uri)),
     );
   }
+
+  /** Stops the AI Layout run, when one is going on (its Stop button in the diagram). */
+  aiStop: (() => void) | undefined;
 
   get activeEditor(): ActiveEditor | undefined {
     return this.active;
@@ -167,12 +174,16 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
       case 'command':
         if (WEBVIEW_COMMANDS.has(msg.command)) await vscode.commands.executeCommand(msg.command);
         break;
-      case 'svg': {
-        const resolve = this.pendingSvg.get(msg.requestId);
-        this.pendingSvg.delete(msg.requestId);
-        resolve?.(msg.svg);
+      case 'svg':
+      case 'aiEvaluated': {
+        const resolve = this.pending.get(msg.requestId);
+        this.pending.delete(msg.requestId);
+        resolve?.(msg);
         break;
       }
+      case 'aiLayoutStop':
+        this.aiStop?.();
+        break;
       case 'openSubmachine':
         await this.openSubmachine(document, String(msg.href ?? ''));
         break;
@@ -182,16 +193,42 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
     }
   }
 
-  /** Asks the active diagram to render itself as a standalone SVG. */
-  requestSvg(editor: ActiveEditor): Promise<string> {
+  /** Posts `message` to the diagram with a new request id and waits for the reply carrying it. */
+  private request(editor: ActiveEditor, message: object, timeout: number): Promise<any> {
     const requestId = this.nextRequest++;
     return new Promise((resolve, reject) => {
-      this.pendingSvg.set(requestId, resolve);
-      void editor.panel.webview.postMessage({ type: 'requestSvg', requestId });
+      this.pending.set(requestId, resolve);
+      void editor.panel.webview.postMessage({ ...message, requestId });
       setTimeout(() => {
-        if (this.pendingSvg.delete(requestId)) reject(new Error('The diagram did not respond.'));
-      }, 5000);
+        if (this.pending.delete(requestId)) reject(new Error('The diagram did not respond.'));
+      }, timeout);
     });
+  }
+
+  /** Asks the active diagram to render itself as a standalone SVG. */
+  async requestSvg(editor: ActiveEditor): Promise<string> {
+    return (await this.request(editor, { type: 'requestSvg' }, 5000)).svg;
+  }
+
+  /** Has the diagram fit (optionally), measure and render a layout of its machine, without showing it. */
+  async evaluateLayout(editor: ActiveEditor, model: FsmModel, opts: { fit: boolean; image: boolean }): Promise<LayoutEvaluation> {
+    const reply = await this.request(editor, { type: 'aiEvaluate', model, ...opts }, 30000);
+    if (reply.error) throw new Error(reply.error);
+    return reply.result;
+  }
+
+  /** Shows an AI Layout run in the diagram (status, Stop) and locks its editing while `running`. */
+  postAiState(editor: ActiveEditor, state: { running: boolean; n?: number; max?: number; best?: number }) {
+    void editor.panel.webview.postMessage({ type: 'aiLayout', state });
+  }
+
+  /** Replaces the document with `model`, as one edit. */
+  async applyModel(document: vscode.TextDocument, model: FsmModel): Promise<void> {
+    const xmi = toXmi(model);
+    if (xmi === document.getText()) return;
+    const edit = new vscode.WorkspaceEdit();
+    edit.replace(document.uri, new vscode.Range(0, 0, document.lineCount, 0), xmi);
+    await vscode.workspace.applyEdit(edit);
   }
 
   /** Name, id and connection points of the state machine in `uri`, or null when it cannot be read. */

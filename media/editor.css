@@ -55,6 +55,9 @@ button.tbtn {
   font: inherit;
 }
 button.tbtn:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.2)); }
+button.tbtn:disabled { opacity: 0.4; cursor: default; background: transparent; }
+#toolbar .ai-group { display: inline-flex; align-items: center; gap: 2px; }
+#toolbar .ai-status { white-space: nowrap; opacity: 0.85; margin: 0 4px; font-variant-numeric: tabular-nums; }
 button.tbtn svg { width: 16px; height: 16px; }
 
 /* ---------- layout ---------- */
