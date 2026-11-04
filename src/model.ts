@@ -31,6 +31,19 @@ export type PointKind = 'entry' | 'exit';
 
 export type TransitionKind = 'external' | 'internal' | 'local';
 
+/** Diagram colors, `#rrggbb`: the element's own, and per item of its text (keys from ITEM_COLOR_KEYS). */
+export type ItemColors = Partial<Record<ItemColorKey, string>>;
+
+/** Items of a state or transition that can have their own color, in file order. */
+export const ITEM_COLOR_KEYS = [
+  'entry', 'exit', 'doActivity', 'deferrable', 'invariant',
+  'triggers', 'guard', 'effect', 'precondition', 'postcondition',
+] as const;
+export type ItemColorKey = (typeof ITEM_COLOR_KEYS)[number];
+
+/** The color value accepted in files and in the editor. */
+export const isColor = (s: unknown): s is string => typeof s === 'string' && /^#[0-9a-f]{6}$/.test(s);
+
 export interface Region {
   id: string;
   name: string;
@@ -62,6 +75,8 @@ export interface Vertex {
   // comment
   text?: string;
   anchors?: string[];
+  color?: string;
+  itemColors?: ItemColors;
 }
 
 export interface Transition {
@@ -77,6 +92,8 @@ export interface Transition {
   postcondition?: string;
   points?: { x: number; y: number }[];
   labelOffset?: { x: number; y: number };
+  color?: string;
+  itemColors?: ItemColors;
 }
 
 export interface FsmModel {

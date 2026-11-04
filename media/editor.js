@@ -226,14 +226,15 @@
     return s.trim();
   }
 
-  /** The label as stacked lines: events, then [guard], then / effect (protocol machines: [pre], event, / [post]). */
-  function transitionLabelLines(t) {
+  /** The label as stacked lines: events, then [guard], then / effect (protocol machines: [pre], event, / [post]), each with the item it shows. */
+  function transitionLabelItems(t) {
     const trig = (t.triggers || []).join(', ');
-    const lines = model.kind === 'protocol'
-      ? [t.precondition ? `[${t.precondition}]` : '', trig, t.postcondition ? `/ [${t.postcondition}]` : '']
-      : [trig, t.guard ? `[${t.guard}]` : '', t.effect ? `/ ${t.effect}` : ''];
-    return lines.filter((l) => l);
+    const items = model.kind === 'protocol'
+      ? [['precondition', t.precondition ? `[${t.precondition}]` : ''], ['triggers', trig], ['postcondition', t.postcondition ? `/ [${t.postcondition}]` : '']]
+      : [['triggers', trig], ['guard', t.guard ? `[${t.guard}]` : ''], ['effect', t.effect ? `/ ${t.effect}` : '']];
+    return items.filter(([, text]) => text).map(([key, text]) => ({ key, text }));
   }
+  const transitionLabelLines = (t) => transitionLabelItems(t).map((l) => l.text);
 
   const LABEL_LINE_HEIGHT = 13;
 
@@ -285,17 +286,43 @@
     return -1;
   }
 
-  function activityLines(v) {
+  /** The lines of a state's internal activities compartment, with the color each is drawn in. */
+  function activityItems(v) {
     const out = [];
-    if (v.entry) out.push(`entry / ${v.entry}`);
-    if (v.exit) out.push(`exit / ${v.exit}`);
-    if (v.doActivity) out.push(`do / ${v.doActivity}`);
-    for (const d of v.deferrable || []) out.push(`${d} / defer`);
+    const add = (text, key) => out.push({ text, color: itemColor(v, key) });
+    if (v.entry) add(`entry / ${v.entry}`, 'entry');
+    if (v.exit) add(`exit / ${v.exit}`, 'exit');
+    if (v.doActivity) add(`do / ${v.doActivity}`, 'doActivity');
+    for (const d of v.deferrable || []) add(`${d} / defer`, 'deferrable');
     for (const t of model.transitions) {
-      if (t.kind === 'internal' && t.source === v.id && t.target === v.id) out.push(transitionLabel(t) || '(internal)');
+      if (t.kind === 'internal' && t.source === v.id && t.target === v.id) {
+        out.push({ text: transitionLabel(t) || '(internal)', color: colorOf(t.color) || colorOf(v.color) });
+      }
     }
     return out;
   }
+  const activityLines = (v) => activityItems(v).map((l) => l.text);
+
+  // ---------------------------------------------------------------- colors
+  /** Colors offered by the properties panel, readable on light and dark backgrounds. */
+  const PALETTE = [
+    '#e5484d', '#f76b15', '#d4a20b', '#30a46c', '#12a594', '#0090ff',
+    '#3e63dd', '#8e4ec6', '#d6409f', '#a18072', '#8b8d98', '#5b5bd6',
+  ];
+  const isColor = (c) => typeof c === 'string' && /^#[0-9a-f]{6}$/.test(c);
+  const colorOf = (c) => (isColor(c) ? c : null);
+  /** Color of one item of a state or transition: its own, else the element's. */
+  const itemColor = (e, key) => colorOf(e.itemColors && e.itemColors[key]) || colorOf(e.color);
+  /** Fill of a colored shape: a light tint of its color over the shape background. */
+  function tint(c, exporting) {
+    if (!exporting) return `color-mix(in srgb, ${c} 16%, var(--fsm-state))`;
+    const mix = (i) => Math.round(parseInt(c.slice(i, i + 2), 16) * 0.16 + 0xfd * 0.84).toString(16).padStart(2, '0');
+    return `#${mix(1)}${mix(3)}${mix(5)}`;
+  }
+  const styleAttr = (...decls) => {
+    const d = decls.filter(Boolean).join(';');
+    return d ? ` style="${d}"` : '';
+  };
 
   // ---------------------------------------------------------------- geometry
   const center = (v) => ({ x: v.x + v.w / 2, y: v.y + v.h / 2 });
@@ -305,7 +332,7 @@
 
   /** The internal activities as drawn: each line wrapped to the width of the state. */
   function activityRows(v) {
-    return activityLines(v).flatMap((l) => commentLines(l, v.w - 16));
+    return activityItems(v).flatMap((l) => commentLines(l.text, v.w - 16).map((text) => ({ text, color: l.color })));
   }
 
   function headerHeight(v) {
@@ -484,8 +511,8 @@
     return '';
   }
 
-  function textLine(x, y, cls, text, anchor = 'middle') {
-    return `<text class="${cls}" x="${n1(x)}" y="${n1(y)}" text-anchor="${anchor}">${esc(text)}</text>`;
+  function textLine(x, y, cls, text, anchor = 'middle', color = null) {
+    return `<text class="${cls}" x="${n1(x)}" y="${n1(y)}" text-anchor="${anchor}"${styleAttr(color && `fill:${color}`)}>${esc(text)}</text>`;
   }
 
   let measureCtx;
@@ -536,41 +563,48 @@
     const cx = x + w / 2;
     const cy = y + h / 2;
     const r = Math.min(w, h) / 2;
+    // The element's color; selection and problem highlights keep their own outline.
+    const c = colorOf(v.color);
+    const oc = c && cls.length === 2 ? c : null;
+    const shapeSt = styleAttr(c && `fill:${tint(c, exporting)}`, oc && `stroke:${oc}`);
+    const fillSt = styleAttr(oc && `fill:${oc}`);
+    const strokeSt = (width) => styleAttr(oc && `stroke:${oc}`, width && `stroke-width:${width}`);
+    const sepSt = styleAttr(c && `stroke:${c}`);
     switch (v.type) {
       case 'state': {
-        s += `<rect class="shape" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"/>`;
+        s += `<rect class="shape" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"${shapeSt}/>`;
         const lines = activityRows(v);
         const regions = regionRects(v);
         const title = v.name + (v.submachine ? ` : ${machineLabel(v.submachine)}` : '');
         const centered = !regions.length && !lines.length;
         let ty = y + 16;
         if (v.stereotype) {
-          s += textLine(cx, y + (centered ? h / 2 - 4 : 13), 'stereo', `«${v.stereotype}»`);
+          s += textLine(cx, y + (centered ? h / 2 - 4 : 13), 'stereo', `«${v.stereotype}»`, 'middle', c);
           ty += 12;
         }
         if (centered) {
-          s += textLine(cx, y + h / 2 + (v.stereotype ? 10 : 4), 'name', title);
+          s += textLine(cx, y + h / 2 + (v.stereotype ? 10 : 4), 'name', title, 'middle', c);
         } else {
-          s += textLine(cx, ty, 'name', title);
+          s += textLine(cx, ty, 'name', title, 'middle', c);
           let ly = y + NAME_H + (v.stereotype ? 12 : 0);
           if (lines.length) {
-            s += `<line class="sep" x1="${x}" y1="${ly}" x2="${x + w}" y2="${ly}"/>`;
+            s += `<line class="sep" x1="${x}" y1="${ly}" x2="${x + w}" y2="${ly}"${sepSt}/>`;
             for (const l of lines) {
               ly += LINE_H;
-              s += textLine(x + 8, ly, 'activity', l, 'start');
+              s += textLine(x + 8, ly, 'activity', l.text, 'start', l.color);
             }
           }
         }
         if (regions.length) {
           const top = regions[0].y;
-          s += `<line class="sep" x1="${x}" y1="${n1(top)}" x2="${x + w}" y2="${n1(top)}"/>`;
+          s += `<line class="sep" x1="${x}" y1="${n1(top)}" x2="${x + w}" y2="${n1(top)}"${sepSt}/>`;
           regions.forEach((rr, i) => {
             if (i > 0) {
               s += v.regionLayout === 'horizontal'
-                ? `<line class="sep dashed" x1="${n1(rr.x)}" y1="${n1(rr.y)}" x2="${n1(rr.x)}" y2="${n1(rr.y + rr.h)}"/>`
-                : `<line class="sep dashed" x1="${n1(rr.x)}" y1="${n1(rr.y)}" x2="${n1(rr.x + rr.w)}" y2="${n1(rr.y)}"/>`;
+                ? `<line class="sep dashed" x1="${n1(rr.x)}" y1="${n1(rr.y)}" x2="${n1(rr.x)}" y2="${n1(rr.y + rr.h)}"${sepSt}/>`
+                : `<line class="sep dashed" x1="${n1(rr.x)}" y1="${n1(rr.y)}" x2="${n1(rr.x + rr.w)}" y2="${n1(rr.y)}"${sepSt}/>`;
             }
-            if (rr.name) s += textLine(rr.x + 6, rr.y + 12, 'region-name', rr.name, 'start');
+            if (rr.name) s += textLine(rr.x + 6, rr.y + 12, 'region-name', rr.name, 'start', c);
             if (!exporting && drag && drag.dropRegion === rr.id) {
               s += `<rect class="drop-region" x="${n1(rr.x)}" y="${n1(rr.y)}" width="${n1(rr.w)}" height="${n1(rr.h)}"/>`;
             }
@@ -579,59 +613,60 @@
         if (v.submachine) {
           const gx = x + w - 26;
           const gy = y + h - 14;
-          s += `<rect class="stroke" x="${gx}" y="${gy}" width="8" height="6" rx="2" style="stroke-width:1.2"/>`;
-          s += `<rect class="stroke" x="${gx + 13}" y="${gy}" width="8" height="6" rx="2" style="stroke-width:1.2"/>`;
-          s += `<line class="stroke" x1="${gx + 8}" y1="${gy + 3}" x2="${gx + 13}" y2="${gy + 3}" style="stroke-width:1.2"/>`;
+          const glyphSt = styleAttr(c && `stroke:${c}`, 'stroke-width:1.2');
+          s += `<rect class="stroke" x="${gx}" y="${gy}" width="8" height="6" rx="2"${glyphSt}/>`;
+          s += `<rect class="stroke" x="${gx + 13}" y="${gy}" width="8" height="6" rx="2"${glyphSt}/>`;
+          s += `<line class="stroke" x1="${gx + 8}" y1="${gy + 3}" x2="${gx + 13}" y2="${gy + 3}"${glyphSt}/>`;
         }
-        if (v.invariant) s += textLine(x + 4, y + h + 14, 'invariant', `{${v.invariant}}`, 'start');
+        if (v.invariant) s += textLine(x + 4, y + h + 14, 'invariant', `{${v.invariant}}`, 'start', itemColor(v, 'invariant'));
         break;
       }
       case 'final':
-        s += `<circle class="shape" cx="${cx}" cy="${cy}" r="${r}"/><circle class="fill" cx="${cx}" cy="${cy}" r="${Math.max(2, r - 5)}"/>`;
+        s += `<circle class="shape" cx="${cx}" cy="${cy}" r="${r}"${shapeSt}/><circle class="fill" cx="${cx}" cy="${cy}" r="${Math.max(2, r - 5)}"${fillSt}/>`;
         break;
       case 'initial':
       case 'junction':
-        s += `<circle class="fill" cx="${cx}" cy="${cy}" r="${r}"/>`;
+        s += `<circle class="fill" cx="${cx}" cy="${cy}" r="${r}"${fillSt}/>`;
         break;
       case 'shallowHistory':
       case 'deepHistory':
-        s += `<circle class="shape" cx="${cx}" cy="${cy}" r="${r}"/>`;
-        s += textLine(cx, cy + 4, 'glyph', v.type === 'deepHistory' ? 'H*' : 'H');
+        s += `<circle class="shape" cx="${cx}" cy="${cy}" r="${r}"${shapeSt}/>`;
+        s += textLine(cx, cy + 4, 'glyph', v.type === 'deepHistory' ? 'H*' : 'H', 'middle', c);
         break;
       case 'choice':
-        s += `<path class="shape" d="M${cx},${y} L${x + w},${cy} L${cx},${y + h} L${x},${cy} Z"/>`;
+        s += `<path class="shape" d="M${cx},${y} L${x + w},${cy} L${cx},${y + h} L${x},${cy} Z"${shapeSt}/>`;
         break;
       case 'fork':
       case 'join':
-        s += `<rect class="fill" x="${x}" y="${y}" width="${w}" height="${h}" rx="1"/>`;
+        s += `<rect class="fill" x="${x}" y="${y}" width="${w}" height="${h}" rx="1"${fillSt}/>`;
         break;
       case 'connectionPointRef':
       case 'entryPoint':
         if (v.type === 'connectionPointRef' && refKind(v) === 'exit') {
           const k = r * 0.62;
-          s += `<circle class="shape" cx="${cx}" cy="${cy}" r="${r}"/>`;
-          s += `<path class="stroke" d="M${cx - k},${cy - k} L${cx + k},${cy + k} M${cx + k},${cy - k} L${cx - k},${cy + k}" style="stroke-width:1.3"/>`;
+          s += `<circle class="shape" cx="${cx}" cy="${cy}" r="${r}"${shapeSt}/>`;
+          s += `<path class="stroke" d="M${cx - k},${cy - k} L${cx + k},${cy + k} M${cx + k},${cy - k} L${cx - k},${cy + k}"${strokeSt(1.3)}/>`;
         } else {
-          s += `<circle class="shape" cx="${cx}" cy="${cy}" r="${r}"/>`;
+          s += `<circle class="shape" cx="${cx}" cy="${cy}" r="${r}"${shapeSt}/>`;
         }
         break;
       case 'exitPoint': {
         const k = r * 0.62;
-        s += `<circle class="shape" cx="${cx}" cy="${cy}" r="${r}"/>`;
-        s += `<path class="stroke" d="M${cx - k},${cy - k} L${cx + k},${cy + k} M${cx + k},${cy - k} L${cx - k},${cy + k}" style="stroke-width:1.3"/>`;
+        s += `<circle class="shape" cx="${cx}" cy="${cy}" r="${r}"${shapeSt}/>`;
+        s += `<path class="stroke" d="M${cx - k},${cy - k} L${cx + k},${cy + k} M${cx + k},${cy - k} L${cx - k},${cy + k}"${strokeSt(1.3)}/>`;
         break;
       }
       case 'terminate':
         s += `<rect class="hit" x="${x}" y="${y}" width="${w}" height="${h}"/>`;
-        s += `<path class="stroke" d="M${x},${y} L${x + w},${y + h} M${x + w},${y} L${x},${y + h}" style="stroke-width:2"/>`;
+        s += `<path class="stroke" d="M${x},${y} L${x + w},${y + h} M${x + w},${y} L${x},${y + h}"${strokeSt(2)}/>`;
         break;
       case 'comment': {
         const f = 12;
-        s += `<path class="shape" d="M${x},${y} H${x + w - f} L${x + w},${y + f} V${y + h} H${x} Z"/>`;
-        s += `<path class="stroke" d="M${x + w - f},${y} V${y + f} H${x + w}" style="stroke-width:1"/>`;
+        s += `<path class="shape" d="M${x},${y} H${x + w - f} L${x + w},${y + f} V${y + h} H${x} Z"${shapeSt}/>`;
+        s += `<path class="stroke" d="M${x + w - f},${y} V${y + f} H${x + w}"${strokeSt(1)}/>`;
         const lines = commentLines(String(v.text ?? ''), w - 16);
         lines.forEach((l, i) => {
-          if (16 + i * 14 < h) s += textLine(x + 8, y + 17 + i * 14, '', l, 'start');
+          if (16 + i * 14 < h) s += textLine(x + 8, y + 17 + i * 14, '', l, 'start', c);
         });
         break;
       }
@@ -639,7 +674,7 @@
     const caption = v.type === 'connectionPointRef' ? pointName(V.get(v.parent), v.ref) || '?' : v.name;
     if (caption && v.type !== 'state' && v.type !== 'comment') {
       const below = v.type === 'fork' || v.type === 'join' ? y + h + 13 : y + h + 12;
-      s += textLine(cx, below, 'activity', caption);
+      s += textLine(cx, below, 'activity', caption, 'middle', c);
     }
     if (!exporting && Math.min(w, h) < 20 && v.type !== 'fork' && v.type !== 'join') {
       s += `<rect class="hit" x="${cx - 11}" y="${cy - 11}" width="22" height="22"/>`;
@@ -670,14 +705,20 @@
       if (ic) cls.push(ic);
     }
     let s = `<g class="${cls.join(' ')}" data-id="${esc(t.id)}">`;
+    // Selection and problem highlights keep their own line color.
+    const oc = cls.length === 1 ? colorOf(t.color) : null;
+    const lineSt = styleAttr(oc && `stroke:${oc}`);
     if (!exporting) s += `<path class="hit" d="${d}"/>`;
-    s += `<path class="line" d="${d}"/>`;
-    s += `<path class="arrow" d="${arrowHead(pts[pts.length - 2], pts[pts.length - 1])}"/>`;
-    const lines = transitionLabelLines(t);
+    s += `<path class="line" d="${d}"${lineSt}/>`;
+    s += `<path class="arrow" d="${arrowHead(pts[pts.length - 2], pts[pts.length - 1])}"${lineSt}/>`;
+    const lines = transitionLabelItems(t);
     if (lines.length) {
       const lp = labelPos(t, pts);
       const y0 = lp.y - (lp.up ? (lines.length - 1) * LABEL_LINE_HEIGHT : 0);
-      const spans = lines.map((l, i) => `<tspan x="${n1(lp.x)}" dy="${i ? LABEL_LINE_HEIGHT : 0}">${esc(l)}</tspan>`).join('');
+      const spans = lines.map((l, i) => {
+        const lc = itemColor(t, l.key);
+        return `<tspan x="${n1(lp.x)}" dy="${i ? LABEL_LINE_HEIGHT : 0}"${styleAttr(lc && `fill:${lc}`)}>${esc(l.text)}</tspan>`;
+      }).join('');
       s += `<text class="tlabel" data-label="${esc(t.id)}" x="${n1(lp.x)}" y="${n1(y0)}" text-anchor="${lp.anchor}">${spans}</text>`;
     }
     if (!exporting && selection.has(t.id) && selection.size === 1) {
@@ -798,6 +839,14 @@
     vscode.setState({ ...(vscode.getState() || {}), view });
   }
 
+  function normalizeColors(e) {
+    if (!isColor(e.color)) delete e.color;
+    if (e.itemColors && typeof e.itemColors === 'object') {
+      for (const k of Object.keys(e.itemColors)) if (!isColor(e.itemColors[k])) delete e.itemColors[k];
+      if (!Object.keys(e.itemColors).length) delete e.itemColors;
+    } else delete e.itemColors;
+  }
+
   function normalize(m) {
     m.regions = Array.isArray(m.regions) && m.regions.length ? m.regions : [{ id: 'r_root', name: '' }];
     m.vertices = Array.isArray(m.vertices) ? m.vertices : [];
@@ -811,12 +860,14 @@
       v.h = Number(v.h) || 40;
       v.x = Number(v.x) || 0;
       v.y = Number(v.y) || 0;
+      normalizeColors(v);
     }
     for (const t of m.transitions) {
       t.triggers = t.triggers ?? [];
       t.guard = t.guard ?? '';
       t.effect = t.effect ?? '';
       t.kind = t.kind ?? 'external';
+      normalizeColors(t);
     }
     return m;
   }
@@ -856,7 +907,7 @@
           requestAnimationFrame(() => fit());
         }
         renderProps();
-      } else if (!propsEl.contains(document.activeElement)) {
+      } else if (!propsEl.contains(document.activeElement) && !colorPop) {
         renderProps();
       }
       render();
@@ -1907,7 +1958,91 @@ ${scene(true)}
         if (e.key === 'Enter') input.blur();
       });
     }
-    return h('div', { className: 'field' }, h('label', {}, label), input, error);
+    const head = opts.color
+      ? h('div', { className: 'field-head' }, h('label', {}, label), colorButton(opts.color.value, opts.color.onChange, `Color of ${opts.color.what}`))
+      : h('label', {}, label);
+    return h('div', { className: 'field' }, head, input, error);
+  }
+
+  // ---------------------------------------------------------------- color picker
+  let colorPop = null;
+  let colorAnchor = null;
+  function closeColorPopover() {
+    if (colorPop) colorPop.remove();
+    colorPop = null;
+    colorAnchor = null;
+  }
+  document.addEventListener('mousedown', (e) => {
+    const target = /** @type {Node} */ (e.target);
+    if (colorPop && !colorPop.contains(target) && !colorAnchor?.contains(target)) closeColorPopover();
+  }, true);
+  document.addEventListener('keydown', (e) => {
+    if (colorPop && e.key === 'Escape') {
+      e.stopPropagation();
+      closeColorPopover();
+    }
+  }, true);
+
+  /** A swatch showing `value` (null: the default color) that opens a palette; `onChange` gets a color or null. */
+  function colorButton(value, onChange, title) {
+    const btn = h('button', { className: `swatch-btn${value ? '' : ' none'}`, title, style: value ? `background:${value}` : null });
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      if (colorPop && colorAnchor === btn) return closeColorPopover();
+      openColorPopover(btn, value, title, onChange);
+    });
+    return btn;
+  }
+
+  function openColorPopover(anchor, value, title, onChange) {
+    closeColorPopover();
+    const pick = (c) => {
+      closeColorPopover();
+      if (c !== value) onChange(c);
+    };
+    const custom = h('input', { type: 'color', title: 'Custom color' });
+    custom.value = value || '#0090ff';
+    custom.addEventListener('change', () => pick(custom.value.toLowerCase()));
+    colorPop = h('div', { className: 'color-pop', role: 'dialog', 'aria-label': title },
+      h('div', { className: 'color-pop-title' }, title),
+      h('div', { className: 'color-pop-grid' }, ...PALETTE.map((c) =>
+        h('button', { className: `swatch${c === value ? ' current' : ''}`, title: c, style: `background:${c}`, onclick: () => pick(c) }))),
+      h('div', { className: 'color-pop-row' },
+        h('label', { className: 'color-custom', title: 'Custom color' }, custom, 'Custom…'),
+        h('button', { className: 'pbtn', onclick: () => pick(null), disabled: !value }, 'Default')),
+    );
+    colorAnchor = anchor;
+    colorPop.addEventListener('keydown', (e) => e.stopPropagation()); // keep diagram shortcuts out of the palette
+    document.body.append(colorPop);
+    const r = anchor.getBoundingClientRect();
+    const pw = colorPop.offsetWidth;
+    const ph = colorPop.offsetHeight;
+    colorPop.style.left = `${clamp(r.right - pw, 4, window.innerWidth - pw - 4)}px`;
+    colorPop.style.top = `${r.bottom + 4 + ph > window.innerHeight ? Math.max(4, r.top - ph - 4) : r.bottom + 4}px`;
+  }
+
+  /** Sets (or with null, clears) the color of `e`, or of its item `key`. */
+  function setColor(e, key, c) {
+    if (!key) {
+      if (c) e.color = c;
+      else delete e.color;
+    } else {
+      const items = { ...(e.itemColors || {}) };
+      if (c) items[key] = c;
+      else delete items[key];
+      if (Object.keys(items).length) e.itemColors = items;
+      else delete e.itemColors;
+    }
+    commit({ props: true });
+  }
+  const colorOpt = (e, key, what) => ({ value: colorOf(key ? e.itemColors && e.itemColors[key] : e.color), what, onChange: (c) => setColor(e, key, c) });
+
+  function colorField(e, what) {
+    const o = colorOpt(e, null, what);
+    return h('div', { className: 'field row color-field' },
+      h('label', {}, 'Color'),
+      colorButton(o.value, o.onChange, `Color of ${what}`),
+      h('span', { className: 'muted' }, o.value || 'Default'));
   }
 
   const CHECK = {
@@ -1932,6 +2067,7 @@ ${scene(true)}
   }
 
   function renderProps() {
+    closeColorPopover();
     propsEl.innerHTML = '';
     if (!model) return;
     reindex();
@@ -2031,16 +2167,17 @@ ${scene(true)}
         commit();
       }));
     }
+    propsEl.append(colorField(v, v.type === 'comment' ? 'the comment' : v.name || 'the element'));
 
     if (v.type === 'state') {
       propsEl.append(
         textField('Stereotype', v.stereotype, set('stereotype'), { check: X.checkName, placeholder: 'e.g. Critical' }),
         h('h4', {}, 'Behaviors'),
-        textField('entry /', v.entry, set('entry'), { check: CHECK.actions, placeholder: 'e.g. start(); log()' }),
-        textField('exit /', v.exit, set('exit'), { check: CHECK.actions, placeholder: 'e.g. stop()' }),
-        textField('do /', v.doActivity, set('doActivity'), { check: CHECK.actions, placeholder: 'e.g. poll()' }),
-        textField('Deferrable events', (v.deferrable || []).join(', '), set('deferrable'), { check: CHECK.events, placeholder: 'evA, evB' }),
-        textField('State invariant', v.invariant, set('invariant'), { check: CHECK.condition, placeholder: 'e.g. isRunning() && !isFaulty()' }),
+        textField('entry /', v.entry, set('entry'), { check: CHECK.actions, placeholder: 'e.g. start(); log()', color: colorOpt(v, 'entry', 'entry') }),
+        textField('exit /', v.exit, set('exit'), { check: CHECK.actions, placeholder: 'e.g. stop()', color: colorOpt(v, 'exit', 'exit') }),
+        textField('do /', v.doActivity, set('doActivity'), { check: CHECK.actions, placeholder: 'e.g. poll()', color: colorOpt(v, 'doActivity', 'do') }),
+        textField('Deferrable events', (v.deferrable || []).join(', '), set('deferrable'), { check: CHECK.events, placeholder: 'evA, evB', color: colorOpt(v, 'deferrable', 'the deferrable events') }),
+        textField('State invariant', v.invariant, set('invariant'), { check: CHECK.condition, placeholder: 'e.g. isRunning() && !isFaulty()', color: colorOpt(v, 'invariant', 'the state invariant') }),
       );
 
       propsEl.append(h('h4', {}, 'Submachine'));
@@ -2104,7 +2241,9 @@ ${scene(true)}
             commit();
           }
         });
+        const ic = colorOpt(t, null, 'the internal transition');
         propsEl.append(h('div', { className: 'row field' }, input,
+          colorButton(ic.value, ic.onChange, `Color of ${transitionLabel(t) || 'the internal transition'}`),
           h('button', { className: 'pbtn icon', title: 'Remove', onclick: () => {
             model.transitions = model.transitions.filter((x) => x !== t);
             commit({ props: true });
@@ -2222,20 +2361,27 @@ ${scene(true)}
         }
         commit({ props: true });
       }),
-      textField('Triggers', t.triggers.join(', '), set('triggers'), { check: CHECK.triggers, placeholder: 'event, after(500ms), after(2s)' }),
+      colorField(t, 'the transition'),
+    );
+    // Internal transitions drawn in their state's compartment take a single color.
+    const inCompartment = t.kind === 'internal' && t.source === t.target && s && s.type === 'state';
+    const item = (key, what) => (inCompartment ? undefined : colorOpt(t, key, what));
+    propsEl.append(
+      textField('Triggers', t.triggers.join(', '), set('triggers'), { check: CHECK.triggers, placeholder: 'event, after(500ms), after(2s)', color: item('triggers', 'the triggers') }),
     );
     if (model.kind === 'protocol') {
       propsEl.append(
-        textField('Precondition', t.precondition, set('precondition'), { check: CHECK.condition, placeholder: 'e.g. isOpen()' }),
-        textField('Postcondition', t.postcondition, set('postcondition'), { check: CHECK.condition, placeholder: 'e.g. isClosed()' }),
+        textField('Precondition', t.precondition, set('precondition'), { check: CHECK.condition, placeholder: 'e.g. isOpen()', color: item('precondition', 'the precondition') }),
+        textField('Postcondition', t.postcondition, set('postcondition'), { check: CHECK.condition, placeholder: 'e.g. isClosed()', color: item('postcondition', 'the postcondition') }),
       );
     } else {
       propsEl.append(
         textField('Guard', t.guard, set('guard'), {
           check: (val) => X.checkGuard(val, allowsElse(s)),
           placeholder: allowsElse(s) ? 'e.g. hasDisc() && !isJammed(), or else' : 'e.g. hasDisc() && !isJammed()',
+          color: item('guard', 'the guard'),
         }),
-        textField('Effect', t.effect, set('effect'), { check: CHECK.actions, placeholder: 'e.g. notify(); log()' }),
+        textField('Effect', t.effect, set('effect'), { check: CHECK.actions, placeholder: 'e.g. notify(); log()', color: item('effect', 'the effect') }),
       );
     }
     propsEl.append(h('h4', {}, 'Routing'));

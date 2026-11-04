@@ -8,9 +8,12 @@
  *   its source and target with the bend points in between, plus an optional
  *   UMLLabel whose center is the middle of those waypoints moved by the
  *   label offset;
- * - the region layout of an orthogonal state follows from its region shapes.
+ * - the region layout of an orthogonal state follows from its region shapes;
+ * - colors are kept in one xmi:Extension at the end of the diagram, with a
+ *   <style element="id" color="#rrggbb" entry="#rrggbb" …/> per colored
+ *   vertex or transition (UML DI has no color).
  */
-import { FsmModel, PointKind, Region, Transition, Vertex, VertexType, normalizeModel } from './model';
+import { FsmModel, ITEM_COLOR_KEYS, ItemColors, PointKind, Region, Transition, Vertex, VertexType, isColor, normalizeModel } from './model';
 import { Node, XmlElement, parseXml, writeXml } from './xml';
 
 export const NS = {
@@ -31,6 +34,7 @@ const PSEUDO_KINDS = new Set<VertexType>([
 ]);
 
 const n1 = (n: number) => Math.round(n * 10) / 10;
+const EXTENDER = 'FSM Editor';
 const LABEL_W = 100;
 const LABEL_H = 16;
 
@@ -362,11 +366,22 @@ export function toXmi(model: FsmModel): string {
       edges.push(['ownedElement', { 'xmi:type': 'umldi:UMLEdge', 'xmi:id': `di_${c.id}_anchor${i + 1}`, modelElement: c.id, source: `di_${c.id}`, target: `di_${a}` }]);
     });
   }
+  const styles: Node[] = [];
+  for (const e of [...m.vertices, ...m.transitions]) {
+    const attrs: Record<string, string> = {};
+    if (isColor(e.color)) attrs.color = e.color;
+    for (const k of ITEM_COLOR_KEYS) {
+      const c = e.itemColors?.[k];
+      if (isColor(c)) attrs[k] = c;
+    }
+    if (Object.keys(attrs).length) styles.push(['style', { element: e.id, ...attrs }]);
+  }
   const diagram: Node = [
     'umldi:UMLStateMachineDiagram',
     { 'xmi:id': `${smId}_diagram`, name: m.name, modelElement: smId, isFrame: 'false' },
     ...shapes,
     ...edges,
+    ...(styles.length ? [['xmi:Extension', { extender: EXTENDER }, ...styles] as Node] : []),
   ];
 
   return writeXml([
@@ -586,6 +601,21 @@ export function fromXmi(text: string): FsmModel {
   const regionShapes = new Map<string, { x: number; y: number }>();
   for (const d of root.children) {
     if (d.ns !== NS.umldi) continue;
+    for (const ext of kids(d, 'xmi:Extension')) {
+      if (ext.attrs.extender !== EXTENDER) continue;
+      for (const st of kids(ext, 'style')) {
+        const e = V.get(st.attrs.element ?? '') ?? T.get(st.attrs.element ?? '');
+        if (!e) continue;
+        const color = (st.attrs.color ?? '').toLowerCase();
+        if (isColor(color)) e.color = color;
+        const items: ItemColors = {};
+        for (const k of ITEM_COLOR_KEYS) {
+          const c = (st.attrs[k] ?? '').toLowerCase();
+          if (isColor(c)) items[k] = c;
+        }
+        if (Object.keys(items).length) e.itemColors = items;
+      }
+    }
     for (const el of walk(d)) {
       const type = typeOf(el);
       const target = el.attrs.modelElement ?? refs(el, 'modelElement')[0];
