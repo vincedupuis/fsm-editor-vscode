@@ -313,6 +313,10 @@
   const colorOf = (c) => (isColor(c) ? c : null);
   /** Color of one item of a state or transition: its own, else the element's. */
   const itemColor = (e, key) => colorOf(e.itemColors && e.itemColors[key]) || colorOf(e.color);
+  /** Background color of a composite state's regions (not inherited from the state's own color). */
+  const backgroundOf = (v) => colorOf(v.itemColors && v.itemColors.background);
+  /** Fill of a state in the SVG export (`.shape` in EXPORT_CSS). */
+  const EXPORT_FILL = '#fdfdfd';
   /** Fill of a colored shape: a light tint of its color over the shape background. */
   function tint(c, exporting) {
     if (!exporting) return `color-mix(in srgb, ${c} 16%, var(--fsm-state))`;
@@ -572,9 +576,24 @@
     const sepSt = styleAttr(c && `stroke:${c}`);
     switch (v.type) {
       case 'state': {
-        s += `<rect class="shape" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"${shapeSt}/>`;
         const lines = activityRows(v);
         const regions = regionRects(v);
+        let st = shapeSt;
+        if (regions.length) {
+          // Composite state: its color tints the header, its background color the regions.
+          const base = exporting ? EXPORT_FILL : 'var(--fsm-state)';
+          const bg = backgroundOf(v);
+          const head = c ? tint(c, exporting) : base;
+          const body = bg ? tint(bg, exporting) : base;
+          if (head !== body) {
+            const id = `fsm-fill-${++fillSeq}`;
+            const at = Math.round(((regions[0].y - y) / h) * 10000) / 10000;
+            s += `<defs><linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1">`
+              + `<stop offset="${at}" style="stop-color:${head}"/><stop offset="${at}" style="stop-color:${body}"/></linearGradient></defs>`;
+            st = styleAttr(`fill:url(#${id})`, oc && `stroke:${oc}`);
+          }
+        }
+        s += `<rect class="shape" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"${st}/>`;
         const title = v.name + (v.submachine ? ` : ${machineLabel(v.submachine)}` : '');
         const centered = !regions.length && !lines.length;
         let ty = y + 16;
@@ -795,7 +814,10 @@
       .map((o) => o.v);
   }
 
+  /** Numbers the fill gradients of composite states within one scene. */
+  let fillSeq = 0;
   function scene(exporting) {
+    fillSeq = 0;
     const parts = [];
     const sorted = sortedVertices();
     for (const v of sorted) parts.push(renderVertex(v, exporting));
@@ -2037,11 +2059,12 @@ ${scene(true)}
   }
   const colorOpt = (e, key, what) => ({ value: colorOf(key ? e.itemColors && e.itemColors[key] : e.color), what, onChange: (c) => setColor(e, key, c) });
 
-  function colorField(e, what) {
-    const o = colorOpt(e, null, what);
-    return h('div', { className: 'field row color-field' },
-      h('label', {}, 'Color'),
-      colorButton(o.value, o.onChange, `Color of ${what}`),
+  /** The row of the element's own color (`key` null), or of its item `key`, named `label`. */
+  function colorField(e, what, key = null, label = 'Color') {
+    const o = colorOpt(e, key, what);
+    return h('div', { className: `field row color-field${label === 'Color' ? '' : ' wide'}` },
+      h('label', {}, label),
+      colorButton(o.value, o.onChange, `${label} of ${what}`),
       h('span', { className: 'muted' }, o.value || 'Default'));
   }
 
@@ -2167,7 +2190,13 @@ ${scene(true)}
         commit();
       }));
     }
-    propsEl.append(colorField(v, v.type === 'comment' ? 'the comment' : v.name || 'the element'));
+    const what = v.type === 'comment' ? 'the comment' : v.name || 'the element';
+    // A composite state has a color for its header and one for its regions.
+    if (v.type === 'state' && (v.regions || []).length) {
+      propsEl.append(colorField(v, what, null, 'Title color'), colorField(v, what, 'background', 'Background color'));
+    } else {
+      propsEl.append(colorField(v, what));
+    }
 
     if (v.type === 'state') {
       propsEl.append(
