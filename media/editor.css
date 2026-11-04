@@ -313,6 +313,7 @@ textarea.inline-edit { text-align: left; resize: none; }
 
 .sel-box { fill: none; stroke: var(--fsm-accent); stroke-width: 1; stroke-dasharray: 4 3; pointer-events: none; }
 .handle { fill: var(--fsm-accent); stroke: var(--fsm-bg); stroke-width: 1; cursor: nwse-resize; }
+.handle-ne, .handle-sw { cursor: nesw-resize; }
 .connect-handle { fill: var(--fsm-bg); stroke: var(--fsm-accent); stroke-width: 1.5; cursor: crosshair; }
 .connect-handle-arrow { fill: none; stroke: var(--fsm-accent); stroke-width: 1.5; pointer-events: none; }
 .wp { fill: var(--fsm-bg); stroke: var(--fsm-accent); stroke-width: 1.5; cursor: move; }

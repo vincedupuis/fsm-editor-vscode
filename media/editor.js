@@ -717,7 +717,11 @@
     if (sel.length === 1 && selection.size === 1) {
       const v = sel[0];
       if (RESIZABLE.has(v.type)) {
-        s += `<rect class="handle" data-handle="resize" x="${v.x + v.w - 1}" y="${v.y + v.h - 1}" width="9" height="9" rx="1.5"/>`;
+        for (const c of ['nw', 'ne', 'sw', 'se']) {
+          const hx = c.includes('w') ? v.x - 8 : v.x + v.w - 1;
+          const hy = c.includes('n') ? v.y - 8 : v.y + v.h - 1;
+          s += `<rect class="handle handle-${c}" data-handle="resize-${c}" x="${hx}" y="${hy}" width="9" height="9" rx="1.5"/>`;
+        }
       }
       if (v.type !== 'final' && v.type !== 'terminate') {
         const hx = v.x + v.w + 18;
@@ -1358,7 +1362,7 @@ ${scene(true)}
       case 'handle': {
         const v = V.get([...selection][0]);
         if (!v) break;
-        if (hit.handle === 'resize') drag = { kind: 'resize', v, start: p, w0: v.w, h0: v.h };
+        if (hit.handle.startsWith('resize-')) drag = { kind: 'resize', corner: hit.handle.slice(7), v, start: p, x0: v.x, y0: v.y, w0: v.w, h0: v.h };
         else startConnect(v, p);
         break;
       }
@@ -1464,11 +1468,29 @@ ${scene(true)}
       }
       case 'resize': {
         const v = drag.v;
+        const west = drag.corner.includes('w');
+        const north = drag.corner.includes('n');
+        const dx = p.x - drag.start.x;
+        const dy = p.y - drag.start.y;
         const minW = v.type === 'fork' || v.type === 'join' ? 6 : 40;
-        v.w = Math.max(minW, e.altKey ? drag.w0 + p.x - drag.start.x : snap(v.x + drag.w0 + p.x - drag.start.x) - v.x);
+        if (west) {
+          // The right edge stays put.
+          const right = drag.x0 + drag.w0;
+          v.x = Math.min(right - minW, e.altKey ? drag.x0 + dx : snap(drag.x0 + dx));
+          v.w = right - v.x;
+        } else {
+          v.w = Math.max(minW, e.altKey ? drag.w0 + dx : snap(v.x + drag.w0 + dx) - v.x);
+        }
         // After the width: the wrapped text depends on it.
         const minH = v.type === 'fork' || v.type === 'join' ? 6 : v.type === 'state' ? headerHeight(v) + ((v.regions || []).length ? 30 : 6) : 30;
-        v.h = Math.max(minH, e.altKey ? drag.h0 + p.y - drag.start.y : snap(v.y + drag.h0 + p.y - drag.start.y) - v.y);
+        if (north) {
+          // The bottom edge stays put.
+          const bottom = drag.y0 + drag.h0;
+          v.y = Math.min(bottom - minH, e.altKey ? drag.y0 + dy : snap(drag.y0 + dy));
+          v.h = bottom - v.y;
+        } else {
+          v.h = Math.max(minH, e.altKey ? drag.h0 + dy : snap(v.y + drag.h0 + dy) - v.y);
+        }
         for (const cp of model.vertices) {
           if (cp.parent === v.id && isCP(cp)) snapToBorder(cp, v, center(cp));
         }
