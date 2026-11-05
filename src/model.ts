@@ -31,12 +31,16 @@ export type PointKind = 'entry' | 'exit';
 
 export type TransitionKind = 'external' | 'internal' | 'local';
 
-/** Diagram colors, `#rrggbb`: the element's own, and per item of its text (keys from ITEM_COLOR_KEYS). */
+/** Diagram colors, `#rrggbb`: the element's own, and per item (keys from ITEM_COLOR_KEYS). */
 export type ItemColors = Partial<Record<ItemColorKey, string>>;
 
-/** Items of a state or transition that can have their own color, in file order. */
+/**
+ * Items of a state or transition that can have their own color, in file order:
+ * `background` is the fill of a composite state's regions (its own color tints
+ * only the header then), the others are items of the text.
+ */
 export const ITEM_COLOR_KEYS = [
-  'entry', 'exit', 'doActivity', 'deferrable', 'invariant',
+  'background', 'entry', 'exit', 'doActivity', 'deferrable', 'invariant',
   'triggers', 'guard', 'effect', 'precondition', 'postcondition',
 ] as const;
 export type ItemColorKey = (typeof ITEM_COLOR_KEYS)[number];

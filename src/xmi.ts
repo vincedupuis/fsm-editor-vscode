@@ -10,8 +10,8 @@
  *   label offset;
  * - the region layout of an orthogonal state follows from its region shapes;
  * - colors are kept in one xmi:Extension at the end of the diagram, with a
- *   <style element="id" color="#rrggbb" entry="#rrggbb" …/> per colored
- *   vertex or transition (UML DI has no color).
+ *   <style element="id" color="#rrggbb" background="#rrggbb" entry="#rrggbb" …/>
+ *   per colored vertex or transition (UML DI has no color).
  */
 import { FsmModel, ITEM_COLOR_KEYS, ItemColors, PointKind, Region, Transition, Vertex, VertexType, isColor, normalizeModel } from './model';
 import { Node, XmlElement, parseXml, writeXml } from './xml';

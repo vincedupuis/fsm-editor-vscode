@@ -161,6 +161,7 @@ button.tbtn svg { width: 16px; height: 16px; }
 #props .field-head { display: flex; align-items: center; gap: 6px; margin-bottom: 2px; }
 #props .field-head label { flex: 1; margin-bottom: 0; }
 #props .color-field label { margin-bottom: 0; min-width: 40px; }
+#props .color-field.wide label { min-width: 96px; }
 #props .color-field .muted { font-size: 11px; }
 button.swatch-btn {
   flex: none;

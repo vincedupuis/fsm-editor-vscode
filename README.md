@@ -53,8 +53,8 @@ See **[docs/UML-CONFORMANCE.md](docs/UML-CONFORMANCE.md)** for:
 - **Labels**: double-click a name or transition label to edit it in place. The transition syntax is `event, after(2s) [isReady() && !isBusy()] / doIt(); log()`.
 - **Routing**: double-click a transition to add a bend point, double-click a bend point to remove it, and drag labels to move them.
 - **Regions**: use the Add Region tool (R) or the properties panel.
-- **Colors**: in the properties panel, *Color* colors the selected element, and the swatch beside an entry, exit, do, deferrable events, invariant, trigger, guard or effect field colors just that text. *Default* removes the color.
-- **View**: right-drag, middle-drag or Space+drag pans, the mouse wheel zooms, F fits the diagram.
+- **Colors**: in the properties panel, *Color* colors the selected element, and the swatch beside an entry, exit, do, deferrable events, invariant, trigger, guard or effect field colors just that text. A composite state has a *Title color* (its outline, text and header) and a *Background color* (its regions) instead. *Default* removes the color.
+- **View**: right-drag, middle-drag or Space+drag pans, the mouse wheel zooms, two fingers on a trackpad pan and pinching zooms, F fits the diagram.
 - **Panels**: ✕ closes the toolbox or the properties panel, and the two toggles at the right of the toolbar show and hide them, in every diagram.
 - **Editing**: Delete removes the selection. Ctrl/Cmd+C/X/V copies, cuts and pastes, including between diagrams. Ctrl/Cmd+D duplicates. Arrow keys nudge (Shift for 10px). Undo and redo are VS Code's own.
 - **Shortcuts**: S state, X final, I initial, H history, C choice, J junction, N comment, T transition, R region, V/Esc select. Shift+click a tool to keep it active.
