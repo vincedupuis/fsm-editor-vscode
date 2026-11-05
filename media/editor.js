@@ -1695,14 +1695,38 @@ ${scene(true)}
     commit({ props: true });
   }
 
+  // A mouse wheel zooms around the pointer and a horizontal scroll (tilt wheel) pans; a trackpad
+  // pans in both directions and pinches (Ctrl+wheel) to zoom. Browsers don't say which device sent
+  // a wheel event, so a burst of events (no gap over 250 ms) is classified by its first one: in
+  // Chromium and WebKit a trackpad's legacy wheelDelta is exactly -3 times its pixel delta, and
+  // Firefox reports a mouse wheel in lines.
+  let wheelBurstEnd = 0;
+  let wheelTrackpad = false;
+  function isTrackpadWheel(/** @type {WheelEvent} */ e) {
+    if (e.deltaMode !== 0) return false;
+    if (e.deltaX && e.deltaY) return true;
+    const w = /** @type {any} */ (e);
+    if (w.wheelDeltaX || w.wheelDeltaY) return w.wheelDeltaX === -3 * e.deltaX && w.wheelDeltaY === -3 * e.deltaY;
+    return true;
+  }
+
   svg.addEventListener('wheel', (e) => {
     e.preventDefault();
     const r = svg.getBoundingClientRect();
-    // The wheel zooms around the pointer; a horizontal scroll (trackpad, tilt wheel) still pans.
     const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? r.height : 1;
     const dx = e.deltaX * unit;
     const dy = e.deltaY * unit;
-    if (Math.abs(dx) > Math.abs(dy)) {
+    if (e.timeStamp > wheelBurstEnd) wheelTrackpad = isTrackpadWheel(e);
+    wheelBurstEnd = e.timeStamp + 250;
+    if (e.ctrlKey) {
+      // Pinch (or Ctrl+wheel): clamped so that a mouse notch doesn't jump.
+      if (dy) zoomAt(Math.exp(-clamp(dy, -25, 25) * 0.01), e.clientX - r.left, e.clientY - r.top);
+    } else if (wheelTrackpad) {
+      view.x -= dx;
+      view.y -= dy;
+      saveView();
+      scheduleRender();
+    } else if (Math.abs(dx) > Math.abs(dy)) {
       view.x -= dx;
       saveView();
       scheduleRender();
@@ -2133,7 +2157,7 @@ ${scene(true)}
         ['Drag', 'the ⊕ handle of a selected element to draw a transition.'],
         ['Double-click', 'a transition to add a bend point, a bend point to remove it.'],
         ['Drop', 'an element into a region to nest it.'],
-        ['Right-drag', 'Space+drag or middle-drag pans; the wheel zooms; F fits.'],
+        ['Right-drag', 'Space+drag, middle-drag or two fingers pan; the wheel or a pinch zooms; F fits.'],
         ['Shift+click', 'a tool keeps it active.'],
         ['Label syntax', model.kind === 'protocol' ? '[isReady()] event / [isDone()]' : 'event, after(2s) [isReady() && !isBusy()] / doIt(); log()'],
         ['Behaviors', 'are calls without arguments, e.g. start(); there are no variables.'],
