@@ -7,7 +7,8 @@
  * targeted fixes. The diagram is locked meanwhile and shows a Stop button.
  * Stopping keeps the version shown; a run that finishes ends on the best-scoring
  * proposal. Only the layout (UML DI) changes. Prompt, tool and reports are in
- * layoutPrompt.ts.
+ * layoutPrompt.ts. The "FSM Editor AI Layout" output channel logs each run: the
+ * prompt, the model's answers and tool calls, and the reports sent back.
  */
 import * as vscode from 'vscode';
 import { ActiveEditor, FsmEditorProvider } from './fsmEditorProvider';
@@ -20,6 +21,16 @@ const MODEL_SETTING = 'aiLayout.model';
 const JUSTIFICATION = 'FSM Editor uses the language model to lay out the state machine diagram.';
 
 let running = false;
+let channel: vscode.LogOutputChannel | undefined;
+
+/** The output channel that logs the runs, created on the first one. */
+export function aiLog(): vscode.LogOutputChannel {
+  return (channel ??= vscode.window.createOutputChannel('FSM Editor AI Layout', { log: true }));
+}
+
+function errorText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
 
 /** What a user message can carry. */
 type UserPart = vscode.LanguageModelTextPart | vscode.LanguageModelToolResultPart | vscode.LanguageModelDataPart;
@@ -100,6 +111,8 @@ async function run(provider: FsmEditorProvider, editor: ActiveEditor, mode: Layo
   const chat = await chooseModel();
   if (!chat) return;
   const { document } = editor;
+  const log = aiLog();
+  log.info(`${mode === 'redesign' ? 'Redesign' : 'Improve'} ${document.uri.toString(true)} with ${chat.name} (${chat.vendor} · ${chat.id}, ${chat.maxInputTokens} input tokens)`);
   const model = fromXmi(document.getText());
   const stop = new vscode.CancellationTokenSource();
   const state: RunState = { version: document.version, writing: false, changed: false, proposals: 0, shown: 0, text: '' };
@@ -158,6 +171,12 @@ async function run(provider: FsmEditorProvider, editor: ActiveEditor, mode: Layo
         ending = 'changed';
       }
     }
+    log.info(
+      ending === 'failed'
+        ? `Failed: ${errorText(failure)}`
+        : `${ending[0].toUpperCase()}${ending.slice(1)} after ${state.proposals} proposal${state.proposals === 1 ? '' : 's'}` +
+            (state.best ? `; best: proposal ${state.best.n} (score ${state.best.score}); shown: proposal ${state.shown || 'none (the original)'}` : ''),
+    );
   } finally {
     stop.dispose();
     provider.postAiState(editor, { running: false });
@@ -203,16 +222,24 @@ async function loop(
   progress: vscode.Progress<{ message?: string }>,
   token: vscode.CancellationToken,
 ): Promise<void> {
+  const log = aiLog();
   progress.report({ message: 'reading the diagram…' });
   const start = await provider.evaluateLayout(editor, model, { fit: false, image: mode === 'improve' });
-  const first: UserPart[] = [new vscode.LanguageModelTextPart(buildPrompt(model, start, mode, MAX_PROPOSALS))];
+  log.info(`Current layout: score ${start.metrics.score}, ${start.metrics.problems.length} problem${start.metrics.problems.length === 1 ? '' : 's'}`);
+  const prompt = buildPrompt(model, start, mode, MAX_PROPOSALS);
+  log.info(`Prompt${start.png ? ' (with an image of the diagram)' : ''}:\n${prompt}`);
+  const first: UserPart[] = [new vscode.LanguageModelTextPart(prompt)];
   if (start.png) first.push(vscode.LanguageModelDataPart.image(fromBase64(start.png), 'image/png'));
   const messages = [vscode.LanguageModelChatMessage.User(first)];
 
   // Images go along until the model refuses a request with them.
   let images = true;
+  let requests = 0;
   const ask = async () => {
     for (;;) {
+      const n = ++requests;
+      const started = Date.now();
+      log.info(`Request ${n}: ${messages.length} message${messages.length === 1 ? '' : 's'}${images ? '' : ', without images'}`);
       try {
         const response = await chat.sendRequest(messages, { tools: [LAYOUT_TOOL], justification: JUSTIFICATION }, token);
         let text = '';
@@ -221,11 +248,16 @@ async function loop(
           if (part instanceof vscode.LanguageModelTextPart) text += part.value;
           else if (part instanceof vscode.LanguageModelToolCallPart) calls.push(part);
         }
+        const secs = ((Date.now() - started) / 1000).toFixed(1);
+        log.info(`Answer ${n} after ${secs} s: ${calls.length} tool call${calls.length === 1 ? '' : 's'}${text.trim() ? `, text:\n${text.trim()}` : ', no text'}`);
+        for (const call of calls) log.info(`Tool call ${call.name} (${call.callId}):\n${JSON.stringify(call.input)}`);
         return { text, calls };
       } catch (e) {
         if (token.isCancellationRequested) throw new vscode.CancellationError();
+        log.warn(`Request ${n} failed: ${errorText(e)}`);
         if (images && stripImages(messages)) {
           images = false;
+          log.info('Retrying without images');
           continue;
         }
         throw e;
@@ -245,6 +277,7 @@ async function loop(
       if (state.best || nudged) return;
       // Once, ask again for the tool call instead of a text answer.
       nudged = true;
+      log.info(`No tool call: asking for ${LAYOUT_TOOL.name}`);
       messages.push(
         vscode.LanguageModelChatMessage.Assistant(text || '(no answer)'),
         vscode.LanguageModelChatMessage.User(`Call ${LAYOUT_TOOL.name} with your layout.`),
@@ -257,6 +290,7 @@ async function loop(
     for (const call of calls) {
       if (call.name !== LAYOUT_TOOL.name || state.proposals >= MAX_PROPOSALS) {
         const why = call.name !== LAYOUT_TOOL.name ? `There is no tool ${call.name}.` : 'No proposals left.';
+        log.warn(`Tool call ${call.callId} refused: ${why}`);
         parts.push(new vscode.LanguageModelToolResultPart(call.callId, [new vscode.LanguageModelTextPart(why)]));
         continue;
       }
@@ -266,13 +300,16 @@ async function loop(
       const ev = await provider.evaluateLayout(editor, proposed, { fit: true, image: images });
       // Stopped while checking: the version shown stays.
       if (token.isCancellationRequested) return;
+      log.info(`Proposal ${n}: score ${ev.metrics.score}, ${ev.metrics.problems.length} problem${ev.metrics.problems.length === 1 ? '' : 's'}`);
       current = ev.model;
       // On a tie the later proposal wins: the model saw the earlier one and refined it.
       if (!state.best || ev.metrics.score <= state.best.score) state.best = { model: ev.model, n, score: ev.metrics.score, problems: ev.metrics.problems.length };
       await write(ev.model);
       state.shown = n;
       provider.postAiState(editor, { running: true, n, max: MAX_PROPOSALS, best: state.best.n });
-      parts.push(new vscode.LanguageModelToolResultPart(call.callId, [new vscode.LanguageModelTextPart(proposalReport(n, MAX_PROPOSALS, ev, state.best, errors))]));
+      const report = proposalReport(n, MAX_PROPOSALS, ev, state.best, errors);
+      log.info(`Report on proposal ${n}${images && ev.png ? ' (with an image)' : ''}:\n${report}`);
+      parts.push(new vscode.LanguageModelToolResultPart(call.callId, [new vscode.LanguageModelTextPart(report)]));
       png = ev.png;
     }
     if (images && png) {

@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { aiLayout } from './aiLayout';
+import { aiLayout, aiLog } from './aiLayout';
 import { GenerateArgs, generateCode } from './codegenCommand';
 import { FsmEditorProvider } from './fsmEditorProvider';
 import { defaultModel } from './model';
@@ -84,6 +84,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     vscode.commands.registerCommand('fsmEditor.aiLayoutRedesign', () => aiLayout(provider, 'redesign')),
     vscode.commands.registerCommand('fsmEditor.aiLayoutImprove', () => aiLayout(provider, 'improve')),
+    aiLog(),
 
     vscode.commands.registerCommand('fsmEditor.exportSvg', async () => {
       const editor = provider.activeEditor;
