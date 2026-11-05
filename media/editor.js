@@ -1697,17 +1697,21 @@ ${scene(true)}
 
   // A mouse wheel zooms around the pointer and a horizontal scroll (tilt wheel) pans; a trackpad
   // pans in both directions and pinches (Ctrl+wheel) to zoom. Browsers don't say which device sent
-  // a wheel event, so a burst of events (no gap over 250 ms) is classified by its first one: in
-  // Chromium and WebKit a trackpad's legacy wheelDelta is exactly -3 times its pixel delta, and
-  // Firefox reports a mouse wheel in lines.
+  // a wheel event, so one event that looks like a trackpad's makes its burst of events (no gap over
+  // 250 ms) a trackpad scroll. Firefox reports a mouse wheel in lines. Chromium and WebKit also
+  // give the legacy wheelDelta (wheel notches × 120): on macOS a trackpad's is exactly -3 times its
+  // pixel delta, and elsewhere a mouse wheel moves whole notches while a touchpad doesn't.
+  const macWheel = /Mac/.test(navigator.platform || navigator.userAgent);
   let wheelBurstEnd = 0;
   let wheelTrackpad = false;
   function isTrackpadWheel(/** @type {WheelEvent} */ e) {
     if (e.deltaMode !== 0) return false;
     if (e.deltaX && e.deltaY) return true;
     const w = /** @type {any} */ (e);
-    if (w.wheelDeltaX || w.wheelDeltaY) return w.wheelDeltaX === -3 * e.deltaX && w.wheelDeltaY === -3 * e.deltaY;
-    return true;
+    const wx = w.wheelDeltaX || 0;
+    const wy = w.wheelDeltaY || 0;
+    if (!wx && !wy) return true;
+    return macWheel ? wx === -3 * e.deltaX && wy === -3 * e.deltaY : wx % 120 !== 0 || wy % 120 !== 0;
   }
 
   svg.addEventListener('wheel', (e) => {
@@ -1716,8 +1720,9 @@ ${scene(true)}
     const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? r.height : 1;
     const dx = e.deltaX * unit;
     const dy = e.deltaY * unit;
-    if (e.timeStamp > wheelBurstEnd) wheelTrackpad = isTrackpadWheel(e);
+    if (e.timeStamp > wheelBurstEnd) wheelTrackpad = false;
     wheelBurstEnd = e.timeStamp + 250;
+    if (isTrackpadWheel(e)) wheelTrackpad = true;
     if (e.ctrlKey) {
       // Pinch (or Ctrl+wheel): clamped so that a mouse notch doesn't jump.
       if (dy) zoomAt(Math.exp(-clamp(dy, -25, 25) * 0.01), e.clientX - r.left, e.clientY - r.top);
