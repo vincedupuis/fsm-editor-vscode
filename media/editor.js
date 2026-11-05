@@ -1723,8 +1723,9 @@ ${scene(true)}
     if (e.timeStamp > wheelBurstEnd) wheelTrackpad = false;
     wheelBurstEnd = e.timeStamp + 250;
     if (isTrackpadWheel(e)) wheelTrackpad = true;
-    if (e.ctrlKey) {
-      // Pinch (or Ctrl+wheel): clamped so that a mouse notch doesn't jump.
+    if (e.ctrlKey || (macWheel && e.metaKey)) {
+      // Pinch (Chromium sends it as Ctrl+wheel), Ctrl+wheel, or Cmd+wheel on macOS, where the
+      // system keeps Ctrl+scroll for its own zoom: clamped so that a mouse notch doesn't jump.
       if (dy) zoomAt(Math.exp(-clamp(dy, -25, 25) * 0.01), e.clientX - r.left, e.clientY - r.top);
     } else if (wheelTrackpad) {
       view.x -= dx;
