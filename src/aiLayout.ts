@@ -28,6 +28,35 @@ export function aiLog(): vscode.LogOutputChannel {
   return (channel ??= vscode.window.createOutputChannel('FSM Editor AI Layout', { log: true }));
 }
 
+/** `text` with each run of JSON lines (the diagram data in the prompt) replaced by a count. */
+function withoutJson(text: string): string {
+  const out: string[] = [];
+  let json = 0;
+  const flush = () => {
+    if (json) out.push(`(${json} line${json === 1 ? '' : 's'} of JSON data)`);
+    json = 0;
+  };
+  for (const line of text.split('\n')) {
+    if (line.startsWith('{')) json++;
+    else {
+      flush();
+      out.push(line);
+    }
+  }
+  flush();
+  return out.join('\n');
+}
+
+/** What a propose_layout call holds, without its coordinates. */
+function callSummary(input: object): string {
+  const count = (k: string, one: string, many: string) => {
+    const v = (input as Record<string, unknown>)[k];
+    const n = Array.isArray(v) ? v.length : 0;
+    return `${n} ${n === 1 ? one : many}`;
+  };
+  return [count('vertices', 'vertex', 'vertices'), count('regionLayouts', 'region layout', 'region layouts'), count('transitions', 'transition', 'transitions')].join(', ');
+}
+
 function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
@@ -112,6 +141,7 @@ async function run(provider: FsmEditorProvider, editor: ActiveEditor, mode: Layo
   if (!chat) return;
   const { document } = editor;
   const log = aiLog();
+  log.show(true);
   log.info(`${mode === 'redesign' ? 'Redesign' : 'Improve'} ${document.uri.toString(true)} with ${chat.name} (${chat.vendor} · ${chat.id}, ${chat.maxInputTokens} input tokens)`);
   const model = fromXmi(document.getText());
   const stop = new vscode.CancellationTokenSource();
@@ -227,7 +257,7 @@ async function loop(
   const start = await provider.evaluateLayout(editor, model, { fit: false, image: mode === 'improve' });
   log.info(`Current layout: score ${start.metrics.score}, ${start.metrics.problems.length} problem${start.metrics.problems.length === 1 ? '' : 's'}`);
   const prompt = buildPrompt(model, start, mode, MAX_PROPOSALS);
-  log.info(`Prompt${start.png ? ' (with an image of the diagram)' : ''}:\n${prompt}`);
+  log.info(`Prompt${start.png ? ' (with an image of the diagram)' : ''}:\n${withoutJson(prompt)}`);
   const first: UserPart[] = [new vscode.LanguageModelTextPart(prompt)];
   if (start.png) first.push(vscode.LanguageModelDataPart.image(fromBase64(start.png), 'image/png'));
   const messages = [vscode.LanguageModelChatMessage.User(first)];
@@ -250,7 +280,7 @@ async function loop(
         }
         const secs = ((Date.now() - started) / 1000).toFixed(1);
         log.info(`Answer ${n} after ${secs} s: ${calls.length} tool call${calls.length === 1 ? '' : 's'}${text.trim() ? `, text:\n${text.trim()}` : ', no text'}`);
-        for (const call of calls) log.info(`Tool call ${call.name} (${call.callId}):\n${JSON.stringify(call.input)}`);
+        for (const call of calls) log.info(`Tool call ${call.name} (${call.callId}): ${callSummary(call.input)}`);
         return { text, calls };
       } catch (e) {
         if (token.isCancellationRequested) throw new vscode.CancellationError();
@@ -308,7 +338,7 @@ async function loop(
       state.shown = n;
       provider.postAiState(editor, { running: true, n, max: MAX_PROPOSALS, best: state.best.n });
       const report = proposalReport(n, MAX_PROPOSALS, ev, state.best, errors);
-      log.info(`Report on proposal ${n}${images && ev.png ? ' (with an image)' : ''}:\n${report}`);
+      log.info(`Report on proposal ${n}${images && ev.png ? ' (with an image)' : ''}:\n${withoutJson(report)}`);
       parts.push(new vscode.LanguageModelToolResultPart(call.callId, [new vscode.LanguageModelTextPart(report)]));
       png = ev.png;
     }
