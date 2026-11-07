@@ -142,7 +142,9 @@
   const world = $('world');
   const wrap = $('canvas-wrap');
   const toolboxEl = $('toolbox');
-  const propsEl = $('props');
+  const propsPane = $('props');
+  /** Where the properties are being built: the side panel, or the body of the properties window. */
+  let propsEl = propsPane;
   const PANES = { toolbox: $('toolbox-pane'), props: $('props-pane') };
   /** Shown side panels, the same in every diagram editor (kept by the extension). */
   let panels = { toolbox: true, props: true };
@@ -929,7 +931,7 @@
           requestAnimationFrame(() => fit());
         }
         renderProps();
-      } else if (!propsEl.contains(document.activeElement) && !colorPop) {
+      } else if (!propsPane.contains(document.activeElement) && !propsPop?.el.contains(document.activeElement) && !colorPop) {
         renderProps();
       }
       render();
@@ -1883,7 +1885,7 @@ ${scene(true)}
 
   // ---------------------------------------------------------------- keyboard
   window.addEventListener('keydown', (e) => {
-    if (isEditable(/** @type {Element} */ (e.target)) || !model) return;
+    if (isEditable(/** @type {Element} */ (e.target)) || propsPop?.el.contains(/** @type {Node} */ (e.target)) || !model) return;
     const mod = e.metaKey || e.ctrlKey;
     if (e.key === ' ' && !spaceDown) {
       spaceDown = true;
@@ -2140,6 +2142,54 @@ ${scene(true)}
     return h('div', { className: 'field' }, head, input, error);
   }
 
+  // ---------------------------------------------------------------- properties window
+  /** The floating properties window opened from the context menu: `id` is the element it shows, null for the machine. */
+  let propsPop = null;
+  document.addEventListener('pointerdown', (e) => {
+    const target = /** @type {Node} */ (e.target);
+    if (propsPop && !propsPop.el.contains(target) && !colorPop?.contains(target) && !contextMenu?.contains(target)) closePropsPop();
+  }, true);
+  document.addEventListener('keydown', (e) => {
+    // Registered before the context menu and color picker handlers, which close themselves first.
+    const target = /** @type {Element} */ (e.target);
+    if (propsPop && e.key === 'Escape' && !contextMenu && !colorPop && (propsPop.el.contains(target) || !isEditable(target))) {
+      e.stopPropagation();
+      closePropsPop();
+      svg.focus();
+    }
+  }, true);
+
+  /** Opens the properties of element `id` (null: the machine) in a window at (cx, cy), selecting the element. */
+  function openPropsPop(id, cx, cy) {
+    closePropsPop();
+    selection = id ? new Set([id]) : new Set();
+    const close = h('button', { className: 'tbtn', title: 'Close (Esc)', onclick: () => closePropsPop() });
+    close.innerHTML = ICONS.close;
+    const body = h('div', { className: 'props' });
+    const el = h('div', { className: 'props-pop', role: 'dialog', 'aria-label': 'Properties', tabindex: '-1' },
+      h('div', { className: 'side-head' }, h('span', {}, 'Properties'), close), body);
+    propsPop = { el, body, id };
+    document.body.append(el);
+    renderProps();
+    render();
+    const w = el.offsetWidth;
+    const top = clamp(cy, 4, Math.max(4, window.innerHeight - el.offsetHeight - 4));
+    el.style.left = `${clamp(cx, 4, Math.max(4, window.innerWidth - w - 4))}px`;
+    el.style.top = `${top}px`;
+    el.style.maxHeight = `${window.innerHeight - top - 4}px`;
+    el.focus();
+  }
+
+  function closePropsPop() {
+    if (!propsPop) return;
+    const { el } = propsPop;
+    propsPop = null;
+    // Apply the field being edited (its change event) before the window goes away.
+    const active = /** @type {HTMLElement} */ (document.activeElement);
+    if (active && el.contains(active)) active.blur();
+    el.remove();
+  }
+
   // ---------------------------------------------------------------- context menu
   let contextMenu = null;
   function closeContextMenu() {
@@ -2157,29 +2207,44 @@ ${scene(true)}
   }, true);
   window.addEventListener('blur', closeContextMenu);
 
-  /** The menu of a right-click on a state (`target`, the element pressed): it selects the state unless it is already selected. */
+  /**
+   * The menu of a right-click on an element or on empty canvas (`target`, the element pressed).
+   * A right-click on an element selects it unless it is already selected.
+   */
   function showContextMenu(target, cx, cy) {
     closeContextMenu();
+    if (tool) return;
     const hit = hitTarget(target);
-    const state = hit.kind === 'vertex' ? V.get(hit.id) : null;
-    if (!state || state.type !== 'state' || tool) return;
-    if (!selection.has(state.id)) {
-      selection = new Set([state.id]);
+    const id = hit.kind === 'vertex' || hit.kind === 'transition' || hit.kind === 'label' || hit.kind === 'wp' ? hit.id
+      : hit.kind === 'handle' && selection.size === 1 ? [...selection][0]
+      : null;
+    if (id && !selection.has(id)) {
+      selection = new Set([id]);
       renderProps();
       render();
     }
-    const canAlign = selectionRoots().filter((v) => v.type === 'state').length >= 2;
-    const item = (label, horizontally) =>
+    const item = (label, onclick, disabled = false) =>
       h('button', {
         className: 'ctx-item',
         role: 'menuitem',
-        disabled: !canAlign,
+        disabled,
         onclick: () => {
           closeContextMenu();
-          align(state.id, horizontally);
+          onclick();
         },
       }, label);
-    contextMenu = h('div', { className: 'ctx-menu', role: 'menu' }, item('Align Horizontally', true), item('Align Vertically', false));
+    const items = [];
+    const v = id ? V.get(id) : null;
+    if (v && v.type === 'state') {
+      const canAlign = selectionRoots().filter((x) => x.type === 'state').length >= 2;
+      items.push(
+        item('Align Horizontally', () => align(v.id, true), !canAlign),
+        item('Align Vertically', () => align(v.id, false), !canAlign),
+        h('div', { className: 'ctx-sep', role: 'separator' }),
+      );
+    }
+    items.push(item('Properties…', () => openPropsPop(id, cx, cy)));
+    contextMenu = h('div', { className: 'ctx-menu', role: 'menu' }, ...items);
     contextMenu.addEventListener('contextmenu', (e) => e.preventDefault());
     document.body.append(contextMenu);
     const mw = contextMenu.offsetWidth;
@@ -2291,11 +2356,27 @@ ${scene(true)}
     return h('div', {}, h('h4', {}, 'Problems'), ...list.map((i) => h('div', { className: `issue ${i.severity}` }, i.message)));
   }
 
+  /** Rebuilds the side panel, and the properties window if it still shows the selection. */
   function renderProps() {
     closeColorPopover();
-    propsEl.innerHTML = '';
-    if (!model) return;
-    reindex();
+    if (model) reindex();
+    if (propsPop) {
+      const id = propsPop.id;
+      const shown = id ? selection.size === 1 && selection.has(id) && (V.has(id) || T.has(id)) : selection.size === 0;
+      if (!model || !shown) closePropsPop();
+    }
+    try {
+      for (const el of propsPop ? [propsPane, propsPop.body] : [propsPane]) {
+        propsEl = el;
+        el.innerHTML = '';
+        if (model) buildProps();
+      }
+    } finally {
+      propsEl = propsPane;
+    }
+  }
+
+  function buildProps() {
     const ids = [...selection];
     if (ids.length > 1) {
       propsEl.append(

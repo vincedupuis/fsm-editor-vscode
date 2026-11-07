@@ -331,7 +331,7 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
         <div id="toast" hidden></div>
         <div id="parse-error" hidden></div>
       </div>
-      <aside id="props-pane" class="side right"><div class="side-head"><span>Properties</span></div><div id="props"></div></aside>
+      <aside id="props-pane" class="side right"><div class="side-head"><span>Properties</span></div><div id="props" class="props"></div></aside>
     </div>
     <div id="statusbar"></div>
   </div>

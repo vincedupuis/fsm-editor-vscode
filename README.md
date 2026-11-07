@@ -56,6 +56,7 @@ See **[docs/UML-CONFORMANCE.md](docs/UML-CONFORMANCE.md)** for:
 - **Align**: select states, right-click one of them and choose *Align Horizontally* (on its horizontal center line) or *Align Vertically* (on its vertical one). The states keep their regions: a composite state grows when its region no longer holds them.
 - **Colors**: in the properties panel, *Color* colors the selected element, and the swatch beside an entry, exit, do, deferrable events, invariant, trigger, guard or effect field colors just that text. A composite state has a *Title color* (its outline, text and header) and a *Background color* (its regions) instead. *Default* removes the color.
 - **View**: right-drag, middle-drag or Space+drag pans, the mouse wheel zooms, two fingers on a trackpad pan and pinching zooms, F fits the diagram.
+- **Properties window**: right-click an element, or empty canvas for the state machine, and choose *Properties…* to edit its properties in a window next to the pointer, without the properties panel. It closes with Esc or a click outside it.
 - **Panels**: ✕ closes the toolbox or the properties panel, and the two toggles at the right of the toolbar show and hide them, in every diagram.
 - **Editing**: Delete removes the selection. Ctrl/Cmd+C/X/V copies, cuts and pastes, including between diagrams. Ctrl/Cmd+D duplicates. Arrow keys nudge (Shift for 10px). Undo and redo are VS Code's own.
 - **Shortcuts**: S state, X final, I initial, H history, C choice, J junction, N comment, T transition, R region, V/Esc select. Shift+click a tool to keep it active.
