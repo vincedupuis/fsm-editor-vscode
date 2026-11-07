@@ -188,11 +188,18 @@ export function normalizeModel(m: FsmModel): FsmModel {
     v.name = v.name ?? '';
     v.regions = v.regions ?? [];
   }
+  const types = new Map(m.vertices.map((v) => [v.id, v.type]));
   for (const t of m.transitions) {
     t.triggers = t.triggers ?? [];
     t.guard = t.guard ?? '';
     t.effect = t.effect ?? '';
     t.kind = t.kind ?? 'external';
+    // A state's self-transition is a loop whose only bend point is its far corner:
+    // older free bend points go back to the default loop.
+    if (t.source === t.target && t.kind !== 'internal' && types.get(t.source) === 'state' && t.points && t.points.length > 1) {
+      delete t.points;
+      delete t.labelOffset;
+    }
   }
   return m;
 }

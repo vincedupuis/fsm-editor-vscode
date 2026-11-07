@@ -433,13 +433,57 @@
     return { x: c.x + dx * t, y: c.y + dy * t };
   }
 
+  /** An external or local self-transition of a state: a loop with three right angles over one of its corners. */
+  function isLoop(t) {
+    if (t.source !== t.target || t.kind === 'internal') return false;
+    const s = V.get(t.source);
+    return !!s && s.type === 'state';
+  }
+
+  /** Smallest distance between a state and the far corner of its self-transition loop. */
+  const LOOP_MIN_GAP = 10;
+
+  /**
+   * Far corner of a state's self-transition loop: its only bend point, or by default over the
+   * top-right corner. The quadrant around the state's center that holds it picks the state's
+   * corner, and it stays outside the state.
+   */
+  function loopCorner(t, s) {
+    const gap = Math.max(18, Math.min(30, s.w / 3));
+    const p = t.points && t.points.length === 1 ? t.points[0] : { x: s.x + s.w + gap, y: s.y - gap };
+    const right = p.x >= s.x + s.w / 2;
+    const below = p.y > s.y + s.h / 2;
+    return {
+      x: right ? Math.max(p.x, s.x + s.w + LOOP_MIN_GAP) : Math.min(p.x, s.x - LOOP_MIN_GAP),
+      y: below ? Math.max(p.y, s.y + s.h + LOOP_MIN_GAP) : Math.min(p.y, s.y - LOOP_MIN_GAP),
+      right,
+      below,
+    };
+  }
+
+  /** Points of a state's self-transition loop, clockwise around the state's corner. */
+  function loopRoute(t, s) {
+    const c = loopCorner(t, s);
+    const hx = c.right ? s.x + s.w * 0.72 : s.x + s.w * 0.28;
+    const hy = c.below ? s.y + s.h : s.y;
+    const vx = c.right ? s.x + s.w : s.x;
+    const vy = c.below ? s.y + s.h - Math.min(s.h * 0.3, 22) : s.y + Math.min(s.h * 0.3, 22);
+    const fromTopOrBottom = [{ x: hx, y: hy }, { x: hx, y: c.y }];
+    const fromSide = [{ x: vx, y: vy }, { x: c.x, y: vy }];
+    const corner = { x: c.x, y: c.y };
+    return c.right === c.below
+      ? [...fromSide, corner, ...fromTopOrBottom.reverse()]
+      : [...fromTopOrBottom, corner, ...fromSide.reverse()];
+  }
+
   function route(t) {
     const s = V.get(t.source);
     const g = V.get(t.target);
     if (!s || !g) return null;
+    if (isLoop(t)) return loopRoute(t, s);
     const pts = (t.points || []).map((p) => ({ x: p.x, y: p.y }));
     if (s === g && !pts.length) {
-      // Self transition: a loop over the top-right corner.
+      // Other self transitions: a loop over the top-right corner.
       const gap = Math.max(18, Math.min(30, s.w / 3));
       const a = { x: s.x + s.w * 0.72, y: s.y - gap };
       const b = { x: s.x + s.w + gap, y: s.y - gap };
@@ -743,7 +787,8 @@
       s += `<text class="tlabel" data-label="${esc(t.id)}" x="${n1(lp.x)}" y="${n1(y0)}" text-anchor="${lp.anchor}">${spans}</text>`;
     }
     if (!exporting && selection.has(t.id) && selection.size === 1) {
-      (t.points || []).forEach((p, i) => {
+      const loop = isLoop(t);
+      (loop ? [loopCorner(t, V.get(t.source))] : t.points || []).forEach((p, i) => {
         s += `<circle class="wp" data-wp="${esc(t.id)}:${i}" cx="${p.x}" cy="${p.y}" r="4.5"/>`;
       });
     }
@@ -1699,9 +1744,16 @@ ${scene(true)}
         drag.hover = vertexUnder(e);
         if (drag.hover && !V.has(drag.hover) && drag.source.type !== 'comment') drag.hover = null;
         break;
-      case 'wp':
-        drag.t.points[drag.index] = e.altKey ? { x: p.x, y: p.y } : { x: snap(p.x), y: snap(p.y) };
+      case 'wp': {
+        const q = e.altKey ? { x: p.x, y: p.y } : { x: snap(p.x), y: snap(p.y) };
+        if (isLoop(drag.t)) {
+          // The loop keeps its single bend point, its far corner, outside the state.
+          drag.t.points = [q];
+          const c = loopCorner(drag.t, V.get(drag.t.source));
+          drag.t.points = [{ x: c.x, y: c.y }];
+        } else drag.t.points[drag.index] = q;
         break;
+      }
       case 'label':
         drag.moved = true;
         drag.t.labelOffset = { x: Math.round(drag.off0.x + p.x - drag.start.x), y: Math.round(drag.off0.y + p.y - drag.start.y) };
@@ -1791,7 +1843,9 @@ ${scene(true)}
     } else if (hit.kind === 'label') {
       startInlineEdit(hit.id);
     } else if (hit.kind === 'transition') {
-      addWaypoint(T.get(hit.id), p);
+      const t = T.get(hit.id);
+      if (isLoop(t)) return false; // a self-transition loop has no bend points
+      addWaypoint(t, p);
     } else if (hit.kind === 'vertex') {
       const v = V.get(hit.id);
       if (v.type === 'state' && v.submachine && e.altKey) vscode.postMessage({ type: 'openSubmachine', href: v.submachine });
@@ -2415,6 +2469,7 @@ ${scene(true)}
         ['Double-click', 'empty canvas to add a state; a name or label to edit it.'],
         ['Drag', 'the ⊕ handle of a selected element to draw a transition.'],
         ['Double-click', 'a transition to add a bend point, a bend point to remove it.'],
+        ['Drag', 'the far corner of a selected self-transition to resize its loop or move it to another corner.'],
         ['Drop', 'an element into a region to nest it.'],
         ['Right-drag', 'Space+drag, middle-drag or two fingers pan; the wheel or a pinch zooms; F fits.'],
         ['Shift+click', 'a tool keeps it active.'],
