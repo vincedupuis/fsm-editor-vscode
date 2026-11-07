@@ -2671,10 +2671,6 @@ ${scene(true)}
       } }, '+ Add internal transition'));
     }
 
-    const own = owner(v);
-    propsEl.append(h('h4', {}, 'Location'), h('div', { className: 'muted' },
-      own ? `${isCP(v) ? 'On the border of' : 'Inside'} ${own.name || TYPE_LABEL[own.type]}` : isPointType(v.type) ? 'Connection point of the state machine' : 'Top level',
-      ` · ${Math.round(v.x)}, ${Math.round(v.y)} · ${Math.round(v.w)}×${Math.round(v.h)}`));
     const vi = issuesFor(v.id);
     if (vi) propsEl.append(vi);
   }
