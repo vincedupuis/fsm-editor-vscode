@@ -2382,7 +2382,6 @@ ${scene(true)}
     if (ids.length > 1) {
       propsEl.append(
         h('h3', {}, `${ids.length} elements selected`),
-        h('button', { className: 'pbtn', onclick: deleteSelection }, 'Delete'),
         h('p', { className: 'muted' }, 'Drag to move them together. Ctrl/Cmd+D duplicates, Ctrl/Cmd+C and V copy between diagrams.'),
       );
       return;
@@ -2574,7 +2573,6 @@ ${scene(true)}
       ` · ${Math.round(v.x)}, ${Math.round(v.y)} · ${Math.round(v.w)}×${Math.round(v.h)}`));
     const vi = issuesFor(v.id);
     if (vi) propsEl.append(vi);
-    if (propsEl === propsPane) propsEl.append(h('div', { style: 'margin-top:12px' }, h('button', { className: 'pbtn', onclick: deleteSelection }, 'Delete')));
   }
 
   function refProps(v) {
@@ -2716,7 +2714,6 @@ ${scene(true)}
     );
     const ti = issuesFor(t.id);
     if (ti) propsEl.append(ti);
-    if (propsEl === propsPane) propsEl.append(h('div', { style: 'margin-top:12px' }, h('button', { className: 'pbtn', onclick: deleteSelection }, 'Delete')));
   }
 
   // ---------------------------------------------------------------- chrome
