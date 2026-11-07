@@ -2243,6 +2243,7 @@ ${scene(true)}
         h('div', { className: 'ctx-sep', role: 'separator' }),
       );
     }
+    if (id) items.push(item('Delete', deleteSelection), h('div', { className: 'ctx-sep', role: 'separator' }));
     items.push(item('Properties…', () => openPropsPop(id, cx, cy)));
     contextMenu = h('div', { className: 'ctx-menu', role: 'menu' }, ...items);
     contextMenu.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -2573,7 +2574,7 @@ ${scene(true)}
       ` · ${Math.round(v.x)}, ${Math.round(v.y)} · ${Math.round(v.w)}×${Math.round(v.h)}`));
     const vi = issuesFor(v.id);
     if (vi) propsEl.append(vi);
-    propsEl.append(h('div', { style: 'margin-top:12px' }, h('button', { className: 'pbtn', onclick: deleteSelection }, 'Delete')));
+    if (propsEl === propsPane) propsEl.append(h('div', { style: 'margin-top:12px' }, h('button', { className: 'pbtn', onclick: deleteSelection }, 'Delete')));
   }
 
   function refProps(v) {
@@ -2715,7 +2716,7 @@ ${scene(true)}
     );
     const ti = issuesFor(t.id);
     if (ti) propsEl.append(ti);
-    propsEl.append(h('div', { style: 'margin-top:12px' }, h('button', { className: 'pbtn', onclick: deleteSelection }, 'Delete')));
+    if (propsEl === propsPane) propsEl.append(h('div', { style: 'margin-top:12px' }, h('button', { className: 'pbtn', onclick: deleteSelection }, 'Delete')));
   }
 
   // ---------------------------------------------------------------- chrome
