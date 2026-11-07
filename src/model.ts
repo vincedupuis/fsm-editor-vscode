@@ -194,9 +194,10 @@ export function normalizeModel(m: FsmModel): FsmModel {
     t.guard = t.guard ?? '';
     t.effect = t.effect ?? '';
     t.kind = t.kind ?? 'external';
-    // A state's self-transition is a loop whose only bend point is its far corner:
-    // older free bend points go back to the default loop.
-    if (t.source === t.target && t.kind !== 'internal' && types.get(t.source) === 'state' && t.points && t.points.length > 1) {
+    // A state's self-transition is a loop whose bend points are its three corners, or only its
+    // far corner: other numbers of free bend points, from older versions, go back to the default loop.
+    const n = t.points?.length ?? 0;
+    if (t.source === t.target && t.kind !== 'internal' && types.get(t.source) === 'state' && (n === 2 || n > 3)) {
       delete t.points;
       delete t.labelOffset;
     }
