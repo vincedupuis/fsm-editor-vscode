@@ -1197,6 +1197,126 @@ ${scene(true)}
     commit({ props: true });
   }
 
+  /** Space kept between a region's border and its contents when `align` grows a state. */
+  const FIT_MARGIN = 10;
+
+  /**
+   * Aligns the selected states (without a selected ancestor) with `anchorId`: on its horizontal center
+   * line when `horizontally`, else on its vertical one. Each state moves with its contents and stays in
+   * its region; the enclosing composite states grow so that their regions still hold their states.
+   * Returns false, changing nothing, when fewer than two states are selected or when states of different
+   * regions of one state would overlap along its region layout.
+   */
+  function align(anchorId, horizontally) {
+    const states = selectionRoots().filter((v) => v.type === 'state');
+    const clicked = V.get(anchorId);
+    if (!clicked) return false;
+    const anchor = ancestors(clicked).filter((a) => selection.has(a.id)).pop() || clicked;
+    if (states.length < 2 || !states.includes(anchor)) return false;
+
+    const saved = model.vertices.map((v) => ({ v, x: v.x, y: v.y, w: v.w, h: v.h }));
+    const savedPoints = model.transitions.map((t) => ({ t, points: t.points }));
+    const moved = [];
+    for (const v of states) {
+      const dx = horizontally ? 0 : center(anchor).x - center(v).x;
+      const dy = horizontally ? center(anchor).y - center(v).y : 0;
+      if (dx === 0 && dy === 0) continue;
+      moved.push(v);
+      const group = [v, ...descendants(v)];
+      for (const x of group) {
+        x.x += dx;
+        x.y += dy;
+      }
+      const ids = new Set(group.map((x) => x.id));
+      for (const t of model.transitions) {
+        if (t.points && t.points.length && ids.has(t.source) && ids.has(t.target)) t.points = t.points.map((q) => ({ x: q.x + dx, y: q.y + dy }));
+      }
+    }
+    if (!moved.length) return false;
+
+    // Innermost first: a state that grows may no longer fit in its own region.
+    const owners = [...new Set(moved.flatMap(ancestors))].sort((a, b) => depth(b) - depth(a));
+    for (const s of owners) {
+      if (fitRegions(s)) continue;
+      for (const r of saved) Object.assign(r.v, { x: r.x, y: r.y, w: r.w, h: r.h });
+      for (const r of savedPoints) {
+        if (r.points) r.t.points = r.points;
+      }
+      toast(`The states cannot be aligned: they would leave their regions of '${s.name}'.`);
+      return false;
+    }
+    commit({ props: true });
+    return true;
+  }
+
+  /** Selected elements without a selected ancestor, which lead a move. */
+  function selectionRoots() {
+    return [...selection].map((id) => V.get(id)).filter((v) => v && !ancestors(v).some((a) => selection.has(a.id)));
+  }
+
+  /** Grows `s` so that each of its regions holds its vertices; false when no size can. */
+  function fitRegions(s) {
+    const n = (s.regions || []).length;
+    const boxes = [];
+    s.regions.forEach((r, i) => {
+      const kids = model.vertices.filter((v) => v.parent === r.id);
+      if (!kids.length) return;
+      const x = Math.min(...kids.map((v) => v.x));
+      const y = Math.min(...kids.map((v) => v.y));
+      boxes.push({ i, x, y, right: Math.max(...kids.map((v) => v.x + v.w)), bottom: Math.max(...kids.map((v) => v.y + v.h)) });
+    });
+    if (!boxes.length) return true;
+    if (s.regionLayout === 'horizontal') {
+      const along = fitAlong(s.x, s.x + s.w, n, boxes.map((b) => ({ i: b.i, lo: b.x, hi: b.right })));
+      if (!along) return false;
+      const [x, right] = stretch(s.x, s.x + s.w, along.start, along.start + n * along.size);
+      s.x = x;
+      s.w = right - x;
+      const header = headerHeight(s);
+      const [top, bottom] = stretch(s.y + header, s.y + s.h, Math.min(...boxes.map((b) => b.y)) - FIT_MARGIN, Math.max(...boxes.map((b) => b.bottom)) + FIT_MARGIN);
+      s.y = top - header;
+      s.h = bottom - s.y;
+    } else {
+      const [left, right] = stretch(s.x, s.x + s.w, Math.min(...boxes.map((b) => b.x)) - FIT_MARGIN, Math.max(...boxes.map((b) => b.right)) + FIT_MARGIN);
+      s.x = left;
+      s.w = right - left;
+      // After the width: the wrapped activities depend on it.
+      const header = headerHeight(s);
+      const along = fitAlong(s.y + header, s.y + s.h, n, boxes.map((b) => ({ i: b.i, lo: b.y, hi: b.bottom })));
+      if (!along) return false;
+      const [top, bottom] = stretch(s.y + header, s.y + s.h, along.start, along.start + n * along.size);
+      s.y = top - header;
+      s.h = bottom - s.y;
+    }
+    for (const cp of model.vertices) {
+      if (cp.parent === s.id && isCP(cp)) snapToBorder(cp, s, center(cp));
+    }
+    return true;
+  }
+
+  /** The extent `start0`..`end0` grown to cover `lo`..`hi`, unchanged where it already does. */
+  const stretch = (start0, end0, lo, hi) => [lo < start0 - 1e-6 ? lo : start0, hi > end0 + 1e-6 ? hi : end0];
+
+  /**
+   * Start and size of `n` equal regions laid out from `start0` to `end0`, grown as little as possible so
+   * that region `i` spans `[lo, hi]` with the margin; null when the extents overlap so that no size fits them.
+   */
+  function fitAlong(start0, end0, n, items) {
+    // Region i spans [start + i * size, start + (i + 1) * size]. Upper bounds: start + j * size <= a;
+    // lower bounds: start + (k + 1) * size >= b. The first and last ones keep the old extent.
+    const uppers = [{ j: 0, a: start0 }, ...items.map((it) => ({ j: it.i, a: it.lo - FIT_MARGIN }))];
+    const lowers = [{ k: n - 1, b: end0 }, ...items.map((it) => ({ k: it.i, b: it.hi + FIT_MARGIN }))];
+    // Each pair bounds the size from below when the lower bound's region doesn't come before the upper one's.
+    let size = Math.max(0, (end0 - start0) / n);
+    for (const { j, a } of uppers) {
+      for (const { k, b } of lowers) {
+        if (k + 1 > j) size = Math.max(size, (b - a) / (k + 1 - j));
+      }
+    }
+    const start = Math.min(...uppers.map((u) => u.a - u.j * size));
+    return lowers.every((l) => start + (l.k + 1) * size >= l.b - 1e-6) ? { start, size } : null;
+  }
+
   function removeVertices(ids, transitionIds = new Set()) {
     model.vertices = model.vertices.filter((v) => !ids.has(v.id));
     model.transitions = model.transitions.filter((t) => !transitionIds.has(t.id) && !ids.has(t.source) && !ids.has(t.target));
@@ -1396,7 +1516,8 @@ ${scene(true)}
 
     if (e.button === 1 || e.button === 2 || spaceDown || tool) lastDown = null;
     if (e.button === 1 || e.button === 2 || spaceDown) {
-      drag = { kind: 'pan', sx: e.clientX, sy: e.clientY, vx: view.x, vy: view.y };
+      // A right-button press that doesn't move opens the context menu.
+      drag = { kind: 'pan', sx: e.clientX, sy: e.clientY, vx: view.x, vy: view.y, right: e.button === 2 && !spaceDown, moved: false, start: p, target: e.target };
       svg.classList.add('panning');
       capture(e);
       e.preventDefault();
@@ -1508,6 +1629,8 @@ ${scene(true)}
     const p = toWorld(e);
     switch (drag.kind) {
       case 'pan':
+        if (!drag.moved && Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) < 3) return;
+        drag.moved = true;
         view.x = drag.vx + e.clientX - drag.sx;
         view.y = drag.vy + e.clientY - drag.sy;
         break;
@@ -1605,6 +1728,7 @@ ${scene(true)}
       case 'pan':
         saveView();
         render();
+        if (d.right && !d.moved) showContextMenu(d.target, e.clientX, e.clientY);
         break;
       case 'move':
         if (!d.moved) {
@@ -2014,6 +2138,54 @@ ${scene(true)}
       ? h('div', { className: 'field-head' }, h('label', {}, label), colorButton(opts.color.value, opts.color.onChange, `Color of ${opts.color.what}`))
       : h('label', {}, label);
     return h('div', { className: 'field' }, head, input, error);
+  }
+
+  // ---------------------------------------------------------------- context menu
+  let contextMenu = null;
+  function closeContextMenu() {
+    if (contextMenu) contextMenu.remove();
+    contextMenu = null;
+  }
+  document.addEventListener('pointerdown', (e) => {
+    if (contextMenu && !contextMenu.contains(/** @type {Node} */ (e.target))) closeContextMenu();
+  }, true);
+  document.addEventListener('keydown', (e) => {
+    if (contextMenu && e.key === 'Escape') {
+      e.stopPropagation();
+      closeContextMenu();
+    }
+  }, true);
+  window.addEventListener('blur', closeContextMenu);
+
+  /** The menu of a right-click on a state (`target`, the element pressed): it selects the state unless it is already selected. */
+  function showContextMenu(target, cx, cy) {
+    closeContextMenu();
+    const hit = hitTarget(target);
+    const state = hit.kind === 'vertex' ? V.get(hit.id) : null;
+    if (!state || state.type !== 'state' || tool) return;
+    if (!selection.has(state.id)) {
+      selection = new Set([state.id]);
+      renderProps();
+      render();
+    }
+    const canAlign = selectionRoots().filter((v) => v.type === 'state').length >= 2;
+    const item = (label, horizontally) =>
+      h('button', {
+        className: 'ctx-item',
+        role: 'menuitem',
+        disabled: !canAlign,
+        onclick: () => {
+          closeContextMenu();
+          align(state.id, horizontally);
+        },
+      }, label);
+    contextMenu = h('div', { className: 'ctx-menu', role: 'menu' }, item('Align Horizontally', true), item('Align Vertically', false));
+    contextMenu.addEventListener('contextmenu', (e) => e.preventDefault());
+    document.body.append(contextMenu);
+    const mw = contextMenu.offsetWidth;
+    const mh = contextMenu.offsetHeight;
+    contextMenu.style.left = `${clamp(cx, 4, window.innerWidth - mw - 4)}px`;
+    contextMenu.style.top = `${cy + mh + 4 > window.innerHeight ? Math.max(4, cy - mh) : cy}px`;
   }
 
   // ---------------------------------------------------------------- color picker
