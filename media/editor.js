@@ -1669,7 +1669,7 @@ ${scene(true)}
     commitInlineEdit();
     hideProblems();
     const p = toWorld(e);
-    const hit = hitTarget(e.target);
+    let hit = hitTarget(e.target);
 
     if (e.button === 1 || e.button === 2 || spaceDown || tool) lastDown = null;
     if (e.button === 1 || e.button === 2 || spaceDown) {
@@ -1708,6 +1708,9 @@ ${scene(true)}
       e.preventDefault();
       return;
     }
+
+    // A composite state moves by its title bar: its regions are empty canvas, for a selection band.
+    if (hit.kind === 'vertex' && regionRects(V.get(hit.id)).some((r) => inRect(r, p))) hit = { kind: 'empty' };
 
     switch (hit.kind) {
       case 'handle': {
@@ -2592,6 +2595,7 @@ ${scene(true)}
         ['Drag', 'an end of a selected transition onto another element to reconnect it.'],
         ['Drag', 'a corner of a selected self-transition to reshape its loop; the far corner moves it to another corner of the state.'],
         ['Drop', 'an element into a region to nest it.'],
+        ['Drag', 'a composite state by its title bar; dragging inside its regions selects what it encloses.'],
         ['Right-drag', 'Space+drag, middle-drag or two fingers pan; the wheel or a pinch zooms; F fits.'],
         ['Shift+click', 'a tool keeps it active.'],
         ['Label syntax', model.kind === 'protocol' ? '[isReady()] event / [isDone()]' : 'event, after(2s) [isReady() && !isBusy()] / doIt(); log()'],
