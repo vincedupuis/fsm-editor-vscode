@@ -843,6 +843,12 @@
       (loop ? loopCorners(loopFrame(t, V.get(t.source))) : t.points || []).forEach((p, i) => {
         s += `<circle class="wp" data-wp="${esc(t.id)}:${i}" cx="${p.x}" cy="${p.y}" r="4.5"/>`;
       });
+      // Its ends: dragged onto another element, they reconnect it.
+      if (!(drag && drag.kind === 'reconnect' && drag.t === t)) {
+        for (const [end, p] of [['source', pts[0]], ['target', pts[pts.length - 1]]]) {
+          s += `<circle class="tend" data-end="${esc(t.id)}:${end}" cx="${n1(p.x)}" cy="${n1(p.y)}" r="4.5"/>`;
+        }
+      }
     }
     return s + '</g>';
   }
@@ -892,6 +898,18 @@
     if (drag && drag.kind === 'connect' && drag.cur) {
       const target = drag.hover && V.get(drag.hover);
       const from = clip(drag.source, target ? center(target) : drag.cur);
+      const to = target ? clip(target, from) : drag.cur;
+      s += `<line class="rubber" x1="${n1(from.x)}" y1="${n1(from.y)}" x2="${n1(to.x)}" y2="${n1(to.y)}"/>`;
+    }
+    if (drag && drag.kind === 'reconnect') {
+      // From the bend point next to the dragged end, or from the element at the other end.
+      const t = drag.t;
+      const pts = t.points && t.points.length && !isLoop(t) ? t.points : [];
+      const target = drag.hover && V.get(drag.hover);
+      const toward = target ? center(target) : drag.cur;
+      const near = drag.end === 'source' ? pts[0] : pts[pts.length - 1];
+      const fixed = V.get(drag.end === 'source' ? t.target : t.source);
+      const from = near || (fixed ? clip(fixed, toward) : toward);
       const to = target ? clip(target, from) : drag.cur;
       s += `<line class="rubber" x1="${n1(from.x)}" y1="${n1(from.y)}" x2="${n1(to.x)}" y2="${n1(to.y)}"/>`;
     }
@@ -1459,20 +1477,9 @@ ${scene(true)}
       commit({ props: true });
       return;
     }
-    if (source.type === 'connectionPointRef' && refKind(source) === 'entry') {
-      toast('An entry reference only receives transitions; execution continues inside the submachine.');
-      return;
-    }
-    if (target.type === 'connectionPointRef' && refKind(target) === 'exit') {
-      toast('An exit reference only has outgoing transitions; it is reached when the submachine exits.');
-      return;
-    }
-    if (source.type === 'final' || source.type === 'terminate') {
-      toast(`A ${TYPE_LABEL[source.type].toLowerCase()} cannot have outgoing transitions.`);
-      return;
-    }
-    if (target.type === 'initial') {
-      toast('An initial pseudostate cannot be the target of a transition.');
+    const problem = connectProblem(source, target);
+    if (problem) {
+      toast(problem);
       return;
     }
     const t = { id: uid('t'), source: source.id, target: target.id, kind: 'external', triggers: [], guard: '', effect: '' };
@@ -1480,6 +1487,42 @@ ${scene(true)}
     selection = new Set([t.id]);
     commit({ props: true });
     if (source.type === 'state') setTimeout(() => startInlineEdit(t.id), 0);
+  }
+
+  /** Why a transition can't go from `source` to `target`, or null when it can. */
+  function connectProblem(source, target) {
+    if (source.type === 'connectionPointRef' && refKind(source) === 'entry') {
+      return 'An entry reference only receives transitions; execution continues inside the submachine.';
+    }
+    if (target.type === 'connectionPointRef' && refKind(target) === 'exit') {
+      return 'An exit reference only has outgoing transitions; it is reached when the submachine exits.';
+    }
+    if (source.type === 'final' || source.type === 'terminate') {
+      return `A ${TYPE_LABEL[source.type].toLowerCase()} cannot have outgoing transitions.`;
+    }
+    if (target.type === 'initial') return 'An initial pseudostate cannot be the target of a transition.';
+    return null;
+  }
+
+  /**
+   * Moves the `end` ('source' or 'target') of `t` to vertex `v`. Its bend points stay, unless it
+   * becomes or stops being a state's self-transition loop, whose bend points are its corners.
+   */
+  function reconnect(t, end, v) {
+    if (t[end] === v.id) return;
+    const source = end === 'source' ? v : V.get(t.source);
+    const target = end === 'target' ? v : V.get(t.target);
+    if (!source || !target) return;
+    const problem = connectProblem(source, target);
+    if (problem) {
+      toast(problem);
+      render();
+      return;
+    }
+    const wasLoop = isLoop(t);
+    t[end] = v.id;
+    if (isLoop(t) !== wasLoop) delete t.points;
+    commit({ props: true });
   }
 
   // ---------------------------------------------------------------- clipboard
@@ -1582,6 +1625,11 @@ ${scene(true)}
       const [id, i] = String(wp.getAttribute('data-wp')).split(':');
       return { kind: 'wp', id, index: Number(i) };
     }
+    const end = e.closest('[data-end]');
+    if (end) {
+      const [id, which] = String(end.getAttribute('data-end')).split(':');
+      return { kind: 'end', id, end: which };
+    }
     const label = e.closest('[data-label]');
     if (label) return { kind: 'label', id: label.getAttribute('data-label') };
     const item = e.closest('[data-id]');
@@ -1598,6 +1646,16 @@ ${scene(true)}
       if (!item) continue;
       const id = item.getAttribute('data-id');
       if (V.has(id) || T.has(id)) return id;
+    }
+    return null;
+  }
+
+  /** The topmost state or pseudostate under the pointer, through transitions and comments. */
+  function connectableUnder(e) {
+    for (const el of document.elementsFromPoint(e.clientX, e.clientY)) {
+      const item = el.closest && el.closest('[data-id]');
+      const v = item && V.get(item.getAttribute('data-id'));
+      if (v && v.type !== 'comment') return v.id;
     }
     return null;
   }
@@ -1661,6 +1719,9 @@ ${scene(true)}
       }
       case 'wp':
         drag = { kind: 'wp', t: T.get(hit.id), index: hit.index };
+        break;
+      case 'end':
+        drag = { kind: 'reconnect', t: T.get(hit.id), end: hit.end, cur: p, hover: null };
         break;
       case 'label': {
         const t = T.get(hit.id);
@@ -1796,6 +1857,10 @@ ${scene(true)}
         drag.hover = vertexUnder(e);
         if (drag.hover && !V.has(drag.hover) && drag.source.type !== 'comment') drag.hover = null;
         break;
+      case 'reconnect':
+        drag.cur = p;
+        drag.hover = connectableUnder(e);
+        break;
       case 'wp': {
         const q = e.altKey ? { x: p.x, y: p.y } : { x: snap(p.x), y: snap(p.y) };
         if (isLoop(drag.t)) moveLoopCorner(drag.t, V.get(drag.t.source), drag.index, q);
@@ -1872,6 +1937,12 @@ ${scene(true)}
         if (target) connect(d.source, target);
         else render();
         toolDone();
+        break;
+      }
+      case 'reconnect': {
+        const v = V.get(connectableUnder(e) || '');
+        if (v) reconnect(d.t, d.end, v);
+        else render();
         break;
       }
       case 'band':
@@ -2518,6 +2589,7 @@ ${scene(true)}
         ['Double-click', 'empty canvas to add a state; a name or label to edit it.'],
         ['Drag', 'the ⊕ handle of a selected element to draw a transition.'],
         ['Double-click', 'a transition to add a bend point, a bend point to remove it.'],
+        ['Drag', 'an end of a selected transition onto another element to reconnect it.'],
         ['Drag', 'a corner of a selected self-transition to reshape its loop; the far corner moves it to another corner of the state.'],
         ['Drop', 'an element into a region to nest it.'],
         ['Right-drag', 'Space+drag, middle-drag or two fingers pan; the wheel or a pinch zooms; F fits.'],
