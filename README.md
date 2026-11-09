@@ -48,17 +48,18 @@ See **[docs/UML-CONFORMANCE.md](docs/UML-CONFORMANCE.md)** for:
 
 ## Using the editor
 
-- **Add elements**: click a toolbox item and then the canvas, or drag it onto the canvas. Drop inside a region to nest it. A composite state moves by its title bar: dragging inside its regions draws a selection band. Double-click empty canvas to add a state.
+- **Add elements**: click a toolbox item and then the canvas, or drag it onto the canvas. Drop an element entirely inside a region to nest it. A composite state moves by its title bar: dragging inside its regions draws a selection band. Double-click empty canvas to add a state.
+- **Nesting**: an element inside a composite state stays in its region. Dragging or resizing it past the region's border grows the region, its state and the states around it, and moving back during the same drag shrinks them again. Right-click it and choose *Leave Parent* to move it up one level, to the region holding its state. Overlapping elements get a warning on the diagram.
 - **Transitions**: select an element and drag its ⊕ handle to the target, or use the Transition tool (T). Drawing from a comment attaches the comment instead. Drag an end of a selected transition onto another element to move its source or target there.
 - **Labels**: double-click a name or transition label to edit it in place. The transition syntax is `event, after(2s) [isReady() && !isBusy()] / doIt(); log()`.
 - **Routing**: double-click a transition to add a bend point, double-click a bend point to remove it, and drag labels to move them.
-- **Regions**: use the Add Region tool (R) or the properties panel.
+- **Regions**: use the Add Region tool (R) or the properties panel. Each region has its own size: drag the line between two regions to resize the one before it. Resizing the state on the side of its first or last region resizes that region.
 - **Align**: select states, right-click one of them and choose *Align Horizontally* (on its horizontal center line) or *Align Vertically* (on its vertical one). The states keep their regions: a composite state grows when its region no longer holds them.
 - **Colors**: in the properties panel, *Color* colors the selected element, and the swatch beside an entry, exit, do, deferrable events, invariant, trigger, guard or effect field colors just that text. A composite state has a *Title color* (its outline, text and header) and a *Background color* (its regions) instead. *Default* removes the color.
 - **View**: right-drag, middle-drag or Space+drag pans, the mouse wheel zooms, two fingers on a trackpad pan and pinching zooms, F fits the diagram.
 - **Properties window**: right-click an element, or empty canvas for the state machine, and choose *Properties…* to edit its properties in a window next to the pointer, without the properties panel. It closes with Esc or a click outside it. *Delete* in the same menu deletes the selection.
 - **Panels**: ✕ closes the toolbox or the properties panel, and the two toggles at the right of the toolbar show and hide them, in every diagram.
-- **Editing**: Delete removes the selection. Ctrl/Cmd+C/X/V copies, cuts and pastes, including between diagrams. Ctrl/Cmd+D duplicates. Arrow keys nudge (Shift for 10px). Undo and redo are VS Code's own.
+- **Editing**: Delete removes the selection. Ctrl/Cmd+C/X/V copies, cuts and pastes, including between diagrams. Ctrl/Cmd+D duplicates. *Cut*, *Copy* and *Paste* are also in the context menu, which pastes where you right-clicked. Undo and redo are VS Code's own.
 - **Shortcuts**: S state, X final, I initial, H history, C choice, J junction, N comment, T transition, R region, V/Esc select. Shift+click a tool to keep it active.
 
 Commands (Command Palette → "FSM"): *New State Machine*, *New Untitled State Machine*, *Generate Code…*, *Export as SVG*, *Open as XMI Text*, *Open in FSM Editor*. *New Untitled State Machine* is also *State Machine* in **File › New File…**.

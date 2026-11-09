@@ -51,6 +51,12 @@ export const isColor = (s: unknown): s is string => typeof s === 'string' && /^#
 export interface Region {
   id: string;
   name: string;
+  /**
+   * Regions of a state: extent along the state's region layout (height when stacked, width side by
+   * side). The last region takes whatever the others leave; without sizes, the regions share the
+   * state equally.
+   */
+  size?: number;
 }
 
 export interface Vertex {
