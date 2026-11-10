@@ -8,7 +8,8 @@
  *   its source and target with the bend points in between, plus an optional
  *   UMLLabel whose center is the middle of those waypoints moved by the
  *   label offset;
- * - the region layout of an orthogonal state follows from its region shapes;
+ * - the region layout of an orthogonal state, and each region's size along it,
+ *   follow from its region shapes;
  * - colors are kept in one xmi:Extension at the end of the diagram, with a
  *   <style element="id" color="#rrggbb" background="#rrggbb" entry="#rrggbb" …/>
  *   per colored vertex or transition (UML DI has no color).
@@ -117,16 +118,29 @@ function headerHeight(v: Vertex, model: FsmModel) {
   return h;
 }
 
+/**
+ * Extents of a state's regions along its region layout, out of `total`: their own sizes, the last one
+ * taking the rest, or equal parts when some size is missing or they leave nothing for the last one.
+ */
+export function regionSizes(regs: Region[], total: number): number[] {
+  const own = regs.slice(0, -1).map((r) => r.size);
+  const sum = own.reduce<number>((a, b) => a + (b ?? 0), 0);
+  if (own.every((s) => typeof s === 'number' && s > 0) && sum < total) return [...(own as number[]), total - sum];
+  return regs.map(() => total / regs.length);
+}
+
 function regionBounds(v: Vertex, model: FsmModel) {
   const regs = v.regions ?? [];
   const top = v.y + Math.min(headerHeight(v, model), v.h - 20);
   const bh = v.y + v.h - top;
   const horizontal = v.regionLayout === 'horizontal';
-  return regs.map((r, i) =>
-    horizontal
-      ? { id: r.id, x: v.x + (i * v.w) / regs.length, y: top, w: v.w / regs.length, h: bh }
-      : { id: r.id, x: v.x, y: top + (i * bh) / regs.length, w: v.w, h: bh / regs.length },
-  );
+  const sizes = regionSizes(regs, horizontal ? v.w : bh);
+  let at = horizontal ? v.x : top;
+  return regs.map((r, i) => {
+    const b = horizontal ? { id: r.id, x: at, y: top, w: sizes[i], h: bh } : { id: r.id, x: v.x, y: at, w: v.w, h: sizes[i] };
+    at += sizes[i];
+    return b;
+  });
 }
 
 // ------------------------------------------------------------------ writing
@@ -598,7 +612,7 @@ export function fromXmi(text: string): FsmModel {
 
   // Layout
   const T = new Map(model.transitions.map((t) => [t.id, t]));
-  const regionShapes = new Map<string, { x: number; y: number }>();
+  const regionShapes = new Map<string, { x: number; y: number; w: number; h: number }>();
   for (const d of root.children) {
     if (d.ns !== NS.umldi) continue;
     for (const ext of kids(d, 'xmi:Extension')) {
@@ -644,10 +658,16 @@ export function fromXmi(text: string): FsmModel {
   }
   for (const v of model.vertices) {
     const regs = v.regions ?? [];
-    if (regs.length < 2) continue;
-    const a = regionShapes.get(regs[0].id);
-    const b = regionShapes.get(regs[1].id);
-    if (a && b) v.regionLayout = Math.abs(b.x - a.x) > Math.abs(b.y - a.y) ? 'horizontal' : 'vertical';
+    if (regs.length >= 2) {
+      const a = regionShapes.get(regs[0].id);
+      const b = regionShapes.get(regs[1].id);
+      if (a && b) v.regionLayout = Math.abs(b.x - a.x) > Math.abs(b.y - a.y) ? 'horizontal' : 'vertical';
+    }
+    // Each region's own size, along the layout.
+    for (const r of regs) {
+      const box = regionShapes.get(r.id);
+      if (box) r.size = v.regionLayout === 'horizontal' ? box.w : box.h;
+    }
   }
 
   // Elements without a shape get a default place and size.

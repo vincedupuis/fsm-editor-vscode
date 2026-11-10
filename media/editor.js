@@ -117,7 +117,10 @@
   // ---------------------------------------------------------------- state
   /** @type {any} */ let model = null;
   let lastText = null;
+  /** Problems found by the extension's validation. */
   let issues = [];
+  /** Those plus the editor's own layout warnings (overlapping elements), refreshed by each render. */
+  let allIssues = [];
   let issuesById = new Map();
   let selection = new Set();
   const saved = vscode.getState() || {};
@@ -147,7 +150,9 @@
   const world = $('world');
   const wrap = $('canvas-wrap');
   const toolboxEl = $('toolbox');
-  const propsEl = $('props');
+  const propsPane = $('props');
+  /** Where the properties are being built: the side panel, or the body of the properties window. */
+  let propsEl = propsPane;
   const PANES = { toolbox: $('toolbox-pane'), props: $('props-pane') };
   /** Shown side panels, the same in every diagram editor (kept by the extension). */
   let panels = { toolbox: true, props: true };
@@ -351,18 +356,32 @@
     return h;
   }
 
+  /**
+   * Extents of a state's regions along its region layout, out of `total`: their own sizes, the last one
+   * taking the rest, or equal parts when some size is missing or they leave nothing for the last one.
+   */
+  function regionSizes(regs, total) {
+    const own = regs.slice(0, -1).map((r) => r.size);
+    const sum = own.reduce((a, b) => a + (b || 0), 0);
+    if (own.every((n) => typeof n === 'number' && n > 0) && sum < total) return [...own, total - sum];
+    return regs.map(() => total / regs.length);
+  }
+
   function regionRects(v) {
     const regs = v.regions || [];
     if (!regs.length) return [];
     const top = v.y + Math.min(headerHeight(v), v.h - 20);
     const bh = v.y + v.h - top;
-    const n = regs.length;
     const horizontal = v.regionLayout === 'horizontal';
-    return regs.map((r, i) =>
-      horizontal
-        ? { id: r.id, name: r.name, x: v.x + (i * v.w) / n, y: top, w: v.w / n, h: bh }
-        : { id: r.id, name: r.name, x: v.x, y: top + (i * bh) / n, w: v.w, h: bh / n },
-    );
+    const sizes = regionSizes(regs, horizontal ? v.w : bh);
+    let at = horizontal ? v.x : top;
+    return regs.map((r, i) => {
+      const rect = horizontal
+        ? { id: r.id, name: r.name, x: at, y: top, w: sizes[i], h: bh }
+        : { id: r.id, name: r.name, x: v.x, y: at, w: v.w, h: sizes[i] };
+      at += sizes[i];
+      return rect;
+    });
   }
 
   /** Deepest region under `p`, ignoring the states in `exclude`. */
@@ -374,6 +393,28 @@
       for (const r of regionRects(s)) if (inRect(r, p)) return r;
     }
     return null;
+  }
+
+  /** Deepest region that holds the whole box `b`, ignoring the states in `exclude`. */
+  function regionHolding(b, exclude) {
+    const states = model.vertices
+      .filter((v) => v.type === 'state' && (v.regions || []).length && !exclude.has(v.id))
+      .sort((a, b2) => depth(b2) - depth(a));
+    for (const s of states) {
+      for (const r of regionRects(s)) {
+        if (b.x >= r.x - 1e-6 && b.y >= r.y - 1e-6 && b.x + b.w <= r.x + r.w + 1e-6 && b.y + b.h <= r.y + r.h + 1e-6) return r;
+      }
+    }
+    return null;
+  }
+
+  /** Whether region `id` is region `outer` or lies inside it, at any depth. */
+  function regionWithin(id, outer) {
+    if (id === outer) return true;
+    for (let o = regionOwner.get(id); o; o = regionOwner.get(o.parent)) {
+      if (o.parent === outer) return true;
+    }
+    return false;
   }
 
   function stateAt(p, exclude) {
@@ -436,13 +477,109 @@
     return { x: c.x + dx * t, y: c.y + dy * t };
   }
 
+  /** An external or local self-transition of a state: a loop with three right angles over one of its corners. */
+  function isLoop(t) {
+    if (t.source !== t.target || t.kind === 'internal') return false;
+    const s = V.get(t.source);
+    return !!s && s.type === 'state';
+  }
+
+  /** Smallest distance between a state and the far corner of its self-transition loop, and between its ends and that corner of the state. */
+  const LOOP_MIN_GAP = 10;
+
+  /** Whether a loop starts on the state's top or bottom edge: clockwise over its top-right or bottom-left corner. */
+  const startsOnTopOrBottom = (f) => f.right !== f.below;
+
+  /**
+   * A state's self-transition loop: the state's corner it goes over (`right`, `below`), its far
+   * corner (`cx`, `cy`), and where it meets the state's top or bottom edge (`hx`) and its side (`vy`).
+   * Its bend points are its three corners, or only its far corner, or none for the default loop
+   * over the top-right corner. The far corner's quadrant around the state's center picks the
+   * state's corner.
+   */
+  function loopFrame(t, s) {
+    const pts = t.points || [];
+    const gap = Math.max(18, Math.min(30, s.w / 3));
+    const far = pts.length === 1 || pts.length === 3 ? pts[(pts.length - 1) / 2] : { x: s.x + s.w + gap, y: s.y - gap };
+    const right = far.x >= s.x + s.w / 2;
+    const below = far.y > s.y + s.h / 2;
+    const f = {
+      right,
+      below,
+      cx: far.x,
+      cy: far.y,
+      hx: right ? s.x + s.w * 0.72 : s.x + s.w * 0.28,
+      vy: below ? s.y + s.h - Math.min(s.h * 0.3, 22) : s.y + Math.min(s.h * 0.3, 22),
+    };
+    if (pts.length === 3) {
+      const [h, v] = startsOnTopOrBottom(f) ? [pts[0], pts[2]] : [pts[2], pts[0]];
+      f.hx = h.x;
+      f.vy = v.y;
+    }
+    return clampLoop(f, s);
+  }
+
+  /** Keeps a loop's far corner outside the state, and its ends on the state's edges away from the corner it goes over. */
+  function clampLoop(f, s) {
+    return {
+      right: f.right,
+      below: f.below,
+      cx: f.right ? Math.max(f.cx, s.x + s.w + LOOP_MIN_GAP) : Math.min(f.cx, s.x - LOOP_MIN_GAP),
+      cy: f.below ? Math.max(f.cy, s.y + s.h + LOOP_MIN_GAP) : Math.min(f.cy, s.y - LOOP_MIN_GAP),
+      hx: f.right ? clamp(f.hx, s.x, s.x + s.w - LOOP_MIN_GAP) : clamp(f.hx, s.x + LOOP_MIN_GAP, s.x + s.w),
+      vy: f.below ? clamp(f.vy, s.y, s.y + s.h - LOOP_MIN_GAP) : clamp(f.vy, s.y + LOOP_MIN_GAP, s.y + s.h),
+    };
+  }
+
+  /** A loop's three corners, in the order it is drawn. */
+  function loopCorners(f) {
+    const h = { x: f.hx, y: f.cy };
+    const far = { x: f.cx, y: f.cy };
+    const v = { x: f.cx, y: f.vy };
+    return startsOnTopOrBottom(f) ? [h, far, v] : [v, far, h];
+  }
+
+  /** Points of a state's self-transition loop, clockwise around the state's corner. */
+  function loopRoute(t, s) {
+    const f = loopFrame(t, s);
+    const onTopOrBottom = { x: f.hx, y: f.below ? s.y + s.h : s.y };
+    const onSide = { x: f.right ? s.x + s.w : s.x, y: f.vy };
+    return startsOnTopOrBottom(f) ? [onTopOrBottom, ...loopCorners(f), onSide] : [onSide, ...loopCorners(f), onTopOrBottom];
+  }
+
+  /**
+   * Drags corner `index` (in drawing order) of a state's self-transition loop to `q`. The far
+   * corner resizes the loop and moves it to the state's corner in its quadrant; each other corner
+   * moves its leg and slides the leg's end along the state's edge. The loop then keeps its three
+   * corners as bend points.
+   */
+  function moveLoopCorner(t, s, index, q) {
+    const f = loopFrame(t, s);
+    if (index === 1) {
+      const right = q.x >= s.x + s.w / 2;
+      const below = q.y > s.y + s.h / 2;
+      // Moved to another corner of the state, the loop is mirrored.
+      if (right !== f.right) f.hx = 2 * s.x + s.w - f.hx;
+      if (below !== f.below) f.vy = 2 * s.y + s.h - f.vy;
+      Object.assign(f, { right, below, cx: q.x, cy: q.y });
+    } else if ((index === 0) === startsOnTopOrBottom(f)) {
+      f.hx = q.x;
+      f.cy = q.y;
+    } else {
+      f.cx = q.x;
+      f.vy = q.y;
+    }
+    t.points = loopCorners(clampLoop(f, s));
+  }
+
   function route(t) {
     const s = V.get(t.source);
     const g = V.get(t.target);
     if (!s || !g) return null;
+    if (isLoop(t)) return loopRoute(t, s);
     const pts = (t.points || []).map((p) => ({ x: p.x, y: p.y }));
     if (s === g && !pts.length) {
-      // Self transition: a loop over the top-right corner.
+      // Other self transitions: a loop over the top-right corner.
       const gap = Math.max(18, Math.min(30, s.w / 3));
       const a = { x: s.x + s.w * 0.72, y: s.y - gap };
       const b = { x: s.x + s.w + gap, y: s.y - gap };
@@ -746,9 +883,16 @@
       s += `<text class="tlabel" data-label="${esc(t.id)}" x="${n1(lp.x)}" y="${n1(y0)}" text-anchor="${lp.anchor}">${spans}</text>`;
     }
     if (!exporting && selection.has(t.id) && selection.size === 1) {
-      (t.points || []).forEach((p, i) => {
+      const loop = isLoop(t);
+      (loop ? loopCorners(loopFrame(t, V.get(t.source))) : t.points || []).forEach((p, i) => {
         s += `<circle class="wp" data-wp="${esc(t.id)}:${i}" cx="${p.x}" cy="${p.y}" r="4.5"/>`;
       });
+      // Its ends: dragged onto another element, they reconnect it.
+      if (!(drag && drag.kind === 'reconnect' && drag.t === t)) {
+        for (const [end, p] of [['source', pts[0]], ['target', pts[pts.length - 1]]]) {
+          s += `<circle class="tend" data-end="${esc(t.id)}:${end}" cx="${n1(p.x)}" cy="${n1(p.y)}" r="4.5"/>`;
+        }
+      }
     }
     return s + '</g>';
   }
@@ -775,6 +919,17 @@
 
   function renderOverlay() {
     let s = '';
+    // The lines between regions: dragged, they resize the region before them.
+    for (const v of model.vertices) {
+      const rects = regionRects(v);
+      for (let i = 0; i < rects.length - 1; i++) {
+        const r = rects[i];
+        const handle = `sep:${esc(v.id)}:${i}`;
+        s += v.regionLayout === 'horizontal'
+          ? `<rect class="region-sep sep-x" data-handle="${handle}" x="${n1(r.x + r.w - 3)}" y="${n1(r.y)}" width="6" height="${n1(r.h)}"/>`
+          : `<rect class="region-sep sep-y" data-handle="${handle}" x="${n1(r.x)}" y="${n1(r.y + r.h - 3)}" width="${n1(r.w)}" height="6"/>`;
+      }
+    }
     const sel = [...selection].map((id) => V.get(id)).filter(Boolean);
     for (const v of sel) {
       s += `<rect class="sel-box" x="${v.x - 4}" y="${v.y - 4}" width="${v.w + 8}" height="${v.h + 8}" rx="3"/>`;
@@ -798,6 +953,18 @@
     if (drag && drag.kind === 'connect' && drag.cur) {
       const target = drag.hover && V.get(drag.hover);
       const from = clip(drag.source, target ? center(target) : drag.cur);
+      const to = target ? clip(target, from) : drag.cur;
+      s += `<line class="rubber" x1="${n1(from.x)}" y1="${n1(from.y)}" x2="${n1(to.x)}" y2="${n1(to.y)}"/>`;
+    }
+    if (drag && drag.kind === 'reconnect') {
+      // From the bend point next to the dragged end, or from the element at the other end.
+      const t = drag.t;
+      const pts = t.points && t.points.length && !isLoop(t) ? t.points : [];
+      const target = drag.hover && V.get(drag.hover);
+      const toward = target ? center(target) : drag.cur;
+      const near = drag.end === 'source' ? pts[0] : pts[pts.length - 1];
+      const fixed = V.get(drag.end === 'source' ? t.target : t.source);
+      const from = near || (fixed ? clip(fixed, toward) : toward);
       const to = target ? clip(target, from) : drag.cur;
       s += `<line class="rubber" x1="${n1(from.x)}" y1="${n1(from.y)}" x2="${n1(to.x)}" y2="${n1(to.y)}"/>`;
     }
@@ -840,6 +1007,7 @@
       return;
     }
     reindex();
+    indexIssues();
     world.setAttribute('transform', `translate(${n1(view.x)},${n1(view.y)}) scale(${view.zoom})`);
     world.innerHTML = scene(false) + renderOverlay();
     const g = GRID * 2 * view.zoom;
@@ -849,12 +1017,23 @@
     renderToolbarState();
     renderStatus();
   }
+  function indexIssues() {
+    allIssues = [...issues, ...overlapIssues()];
+    issuesById = new Map();
+    for (const i of allIssues) {
+      const l = issuesById.get(i.id) || [];
+      l.push(i);
+      issuesById.set(i.id, l);
+    }
+  }
   function scheduleRender() {
     if (!frame) frame = requestAnimationFrame(render);
   }
 
   // ---------------------------------------------------------------- persistence
   function commit(opts = {}) {
+    reindex();
+    keepHeaders();
     const text = JSON.stringify(model, null, 2) + '\n';
     lastText = text;
     vscode.postMessage({ type: 'edit', text });
@@ -908,12 +1087,6 @@
       issues = msg.issues || [];
       submachines = msg.submachines || {};
       machines = msg.machines || [];
-      issuesById = new Map();
-      for (const i of issues) {
-        const l = issuesById.get(i.id) || [];
-        l.push(i);
-        issuesById.set(i.id, l);
-      }
       if (msg.error) {
         showParseError(msg.error);
         return;
@@ -928,17 +1101,34 @@
           return;
         }
         reindex();
+        resetHeaders();
+        indexIssues();
         selection = new Set([...selection].filter((id) => V.has(id) || T.has(id)));
         if (firstLoad) {
           firstLoad = false;
           requestAnimationFrame(() => fit());
         }
         renderProps();
-      } else if (!propsEl.contains(document.activeElement) && !colorPop) {
+      } else if (!propsPane.contains(document.activeElement) && !propsPop?.el.contains(document.activeElement) && !colorPop) {
+        if (model) {
+          reindex();
+          indexIssues();
+        }
         renderProps();
       }
       render();
       if (!problemsEl.hidden) renderProblems();
+    } else if (msg.type === 'clipboard') {
+      if (msg.requestId !== clipboard.request) return;
+      try {
+        const data = JSON.parse(msg.text);
+        if (data && data.fsmClipboard && Array.isArray(data.vertices) && data.vertices.length) {
+          clipboard.data = data;
+          if (clipboard.button) clipboard.button.disabled = false;
+        }
+      } catch {
+        // not state machine elements
+      }
     } else if (msg.type === 'requestSvg') {
       vscode.postMessage({ type: 'svg', requestId: msg.requestId, svg: exportSvg() });
     } else if (msg.type === 'aiEvaluate') {
@@ -1133,8 +1323,12 @@ ${scene(true)}
       const y2 = ceilGrid(Math.max(s.y + s.h, b.y2 + FIT_PAD, y1 + hh + 30));
       Object.assign(s, { x: x1, y: y1, w: x2 - x1, h: y2 - y1 });
     } else {
-      // Orthogonal regions share the box equally: size it for the largest one, then move
-      // each region's content into its part.
+      // Orthogonal regions share the box equally, as the model is told: size it for the
+      // largest one, then move each region's content into its part.
+      if (regs.some((r) => r.size !== undefined)) {
+        for (const r of regs) delete r.size;
+        notes.push(`made the regions of ${ref(s)} share it equally`);
+      }
       const n = regs.length;
       const horizontal = s.regionLayout === 'horizontal';
       const rw = Math.max(...content.map((c) => c.w));
@@ -1501,6 +1695,8 @@ ${scene(true)}
       v.parent = r ? r.id : rootRegion();
     }
     model.vertices.push(v);
+    reindex();
+    fitInRegion(v, null, false);
     selection = new Set([v.id]);
     commit({ props: true });
     toolDone();
@@ -1538,21 +1734,32 @@ ${scene(true)}
       });
     }
     // Leave room for the captions under the points.
+    const old = boxOf(state);
     state.h = Math.max(state.h, 40 + 24 * Math.max(free.filter((q) => q.kind === 'entry').length, free.filter((q) => q.kind === 'exit').length));
+    fitInRegion(state, old, false);
     commit({ props: true });
   }
 
   function addRegion(state) {
     state.regions = state.regions || [];
+    const old = boxOf(state);
     if (!state.regions.length) {
       // Make room for the region below the name compartment.
       state.w = Math.max(state.w, 220);
       state.h = Math.max(state.h, headerHeight(state) + 120);
+      state.regions.push({ id: uid('r'), name: '' });
+      layoutHeader.set(state.id, headerHeight(state));
     } else {
-      if (state.regionLayout === 'horizontal') state.w += 160;
-      else state.h += 100;
+      // The new region comes after the others, which keep their sizes.
+      keepRegionSizes(state);
+      const size = state.regionLayout === 'horizontal' ? 160 : 100;
+      if (state.regionLayout === 'horizontal') state.w += size;
+      else state.h += size;
+      state.regions.push({ id: uid('r'), name: '', size });
     }
-    state.regions.push({ id: uid('r'), name: '' });
+    reindex();
+    followBorder(state, old);
+    fitInRegion(state, old, false);
     selection = new Set([state.id]);
     commit({ props: true });
   }
@@ -1565,9 +1772,377 @@ ${scene(true)}
         for (const d of descendants(v)) doomed.add(d.id);
       }
     }
+    const i = state.regions.findIndex((r) => r.id === regionId);
+    if (i >= 0 && state.regions.length > 1) {
+      // The state shrinks by the region's size, and the later regions move back with their contents.
+      const old = boxOf(state);
+      keepRegionSizes(state);
+      const size = state.regions[i].size;
+      const horizontal = state.regionLayout === 'horizontal';
+      shiftRegions(state, i + 1, state.regions.length - 1, horizontal ? -size : 0, horizontal ? 0 : -size);
+      if (horizontal) state.w -= size;
+      else state.h -= size;
+      followBorder(state, old);
+    }
     state.regions = state.regions.filter((r) => r.id !== regionId);
     removeVertices(doomed);
     commit({ props: true });
+  }
+
+  // ---------------------------------------------------------------- layout
+  // Elements inside a composite state's region stay inside it: what would leave it grows the region,
+  // its state and the states around it in turn, and moving back during the same drag undoes that.
+
+  /** Space kept between a region's border and the elements in it. */
+  const FIT_MARGIN = 10;
+  /** Smallest extent of a region along its state's region layout. */
+  const MIN_REGION = 40;
+  /**
+   * Header height each composite state's regions were laid out for (by state id): when its internal
+   * activities change it, the state grows or shrinks by the difference and its regions' contents move
+   * with them. Reset whenever the model comes from the document.
+   */
+  let layoutHeader = new Map();
+
+  const boxOf = (v) => ({ x: v.x, y: v.y, w: v.w, h: v.h });
+
+  /** Records the current header height of every composite state. */
+  function resetHeaders() {
+    layoutHeader = new Map();
+    for (const v of model.vertices) if ((v.regions || []).length) layoutHeader.set(v.id, headerHeight(v));
+  }
+
+  /** Geometry of every element (with region sizes and bend points), for `restoreLayout`. */
+  function layoutSnapshot() {
+    return {
+      vertices: model.vertices.map((v) => ({ v, box: boxOf(v), sizes: (v.regions || []).map((r) => r.size) })),
+      points: model.transitions.map((t) => ({ t, points: t.points && t.points.map((q) => ({ ...q })) })),
+      headers: new Map(layoutHeader),
+    };
+  }
+  function restoreLayout(snap) {
+    for (const { v, box, sizes } of snap.vertices) {
+      Object.assign(v, box);
+      (v.regions || []).forEach((r, i) => {
+        if (sizes[i] === undefined) delete r.size;
+        else r.size = sizes[i];
+      });
+    }
+    for (const { t, points } of snap.points) {
+      if (points) t.points = points.map((q) => ({ ...q }));
+      else delete t.points;
+    }
+    layoutHeader = new Map(snap.headers);
+  }
+
+  /** The vertices in region `id`, at any depth. */
+  function regionContents(id) {
+    const ids = new Set();
+    for (const v of model.vertices) {
+      if (v.parent !== id) continue;
+      ids.add(v.id);
+      for (const d of descendants(v)) ids.add(d.id);
+    }
+    return ids;
+  }
+
+  /** Bounding box of the vertices directly in region `id`, or null when it is empty. */
+  function contentsBox(id) {
+    const kids = model.vertices.filter((v) => v.parent === id);
+    if (!kids.length) return null;
+    const x = Math.min(...kids.map((v) => v.x));
+    const y = Math.min(...kids.map((v) => v.y));
+    return { x, y, right: Math.max(...kids.map((v) => v.x + v.w)), bottom: Math.max(...kids.map((v) => v.y + v.h)) };
+  }
+
+  /** Moves the vertices `ids` by `dx`, `dy`, with the bend points of the transitions between them. */
+  function shiftVertices(ids, dx, dy) {
+    if ((!dx && !dy) || !ids.size) return;
+    for (const v of model.vertices) {
+      if (!ids.has(v.id)) continue;
+      v.x += dx;
+      v.y += dy;
+    }
+    for (const t of model.transitions) {
+      if (t.points && t.points.length && ids.has(t.source) && ids.has(t.target)) t.points = t.points.map((q) => ({ x: q.x + dx, y: q.y + dy }));
+    }
+  }
+
+  /** Moves the contents of `s`'s regions `from`..`to` (inclusive) by `dx`, `dy`. */
+  function shiftRegions(s, from, to, dx, dy) {
+    const ids = new Set();
+    s.regions.forEach((r, i) => {
+      if (i >= from && i <= to) for (const id of regionContents(r.id)) ids.add(id);
+    });
+    shiftVertices(ids, dx, dy);
+  }
+
+  /** Keeps the points on the border of `s` on the edge they were on when its box was `old`. */
+  function followBorder(s, old) {
+    for (const cp of model.vertices) {
+      if (cp.parent !== s.id || !isCP(cp)) continue;
+      const c = center(cp);
+      const d = [Math.abs(c.x - old.x), Math.abs(old.x + old.w - c.x), Math.abs(c.y - old.y), Math.abs(old.y + old.h - c.y)];
+      const m = Math.min(...d);
+      const p = m === d[0] ? { x: s.x, y: c.y } : m === d[1] ? { x: s.x + s.w, y: c.y } : m === d[2] ? { x: c.x, y: s.y } : { x: c.x, y: s.y + s.h };
+      snapToBorder(cp, s, p);
+    }
+  }
+
+  /** Stores the drawn size of each of `s`'s regions, so that they can change one by one. */
+  function keepRegionSizes(s) {
+    const horizontal = s.regionLayout === 'horizontal';
+    regionRects(s).forEach((r, i) => {
+      s.regions[i].size = horizontal ? r.w : r.h;
+    });
+  }
+
+  /**
+   * Changes the size of region `i` of `s` by `d` at its far end (bottom, or right side by side): the
+   * state changes with it and the later regions move with their contents.
+   */
+  function resizeRegionEnd(s, i, d) {
+    if (!d) return;
+    keepRegionSizes(s);
+    s.regions[i].size += d;
+    if (s.regionLayout === 'horizontal') {
+      s.w += d;
+      shiftRegions(s, i + 1, s.regions.length - 1, d, 0);
+    } else {
+      s.h += d;
+      shiftRegions(s, i + 1, s.regions.length - 1, 0, d);
+    }
+  }
+
+  /**
+   * Grows region `i` of `s` by `d` = { l, r, t, b } (each >= 0) on its sides: the state grows on the
+   * same sides, and what lies beyond the region in its state moves with that side.
+   */
+  function growRegion(s, i, d) {
+    const old = boxOf(s);
+    keepRegionSizes(s);
+    if (s.regionLayout === 'horizontal') {
+      s.y -= d.t;
+      s.h += d.t + d.b;
+      if (d.l) {
+        s.x -= d.l;
+        s.w += d.l;
+        s.regions[i].size += d.l;
+        shiftRegions(s, 0, i - 1, -d.l, 0);
+      }
+      resizeRegionEnd(s, i, d.r);
+    } else {
+      s.x -= d.l;
+      s.w += d.l + d.r;
+      if (d.t) {
+        s.y -= d.t;
+        s.h += d.t;
+        s.regions[i].size += d.t;
+        shiftRegions(s, 0, i - 1, 0, -d.t);
+      }
+      resizeRegionEnd(s, i, d.b);
+    }
+    followBorder(s, old);
+    keepHeader(s);
+  }
+
+  /**
+   * After a change of `s`'s header height (its internal activities, or its width rewrapping them),
+   * moves its bottom edge by the difference: its regions keep their sizes and their contents move
+   * with them. Returns whether it changed.
+   */
+  function keepHeader(s) {
+    if (!(s.regions || []).length) return false;
+    const h = headerHeight(s);
+    const before = layoutHeader.get(s.id);
+    layoutHeader.set(s.id, h);
+    if (before === undefined || before === h) return false;
+    const old = boxOf(s);
+    s.h += h - before;
+    shiftRegions(s, 0, s.regions.length - 1, 0, h - before);
+    followBorder(s, old);
+    return true;
+  }
+
+  /** `keepHeader` for every composite state, growing the states around those that grew. */
+  function keepHeaders() {
+    for (const s of model.vertices.filter((v) => (v.regions || []).length).sort((a, b) => depth(b) - depth(a))) {
+      const old = boxOf(s);
+      if (keepHeader(s)) fitInRegion(s, old, false);
+    }
+  }
+
+  /**
+   * Grows the region holding `v` (with its state, and the states around it in turn) so that `v` lies
+   * inside it with the margin. `old` is `v`'s box before the change, or null for a new element: where it
+   * already came closer to the region's border, that smaller gap is kept. The growth is a multiple of
+   * the grid unless `exact`.
+   */
+  function fitInRegion(v, old, exact) {
+    if (isCP(v)) return;
+    const s = regionOwner.get(v.parent);
+    if (!s) return;
+    const i = s.regions.findIndex((r) => r.id === v.parent);
+    const R = regionRects(s)[i];
+    const gap = (g) => (old ? Math.min(FIT_MARGIN, g) : FIT_MARGIN);
+    const gl = gap(old ? old.x - R.x : 0);
+    const gr = gap(old ? R.x + R.w - old.x - old.w : 0);
+    const gt = gap(old ? old.y - R.y : 0);
+    const gb = gap(old ? R.y + R.h - old.y - old.h : 0);
+    const up = (n) => (n <= 1e-6 ? 0 : exact ? n : Math.ceil(n / GRID - 1e-6) * GRID);
+    const d = {
+      l: up(R.x + gl - v.x),
+      r: up(v.x + v.w + gr - R.x - R.w),
+      t: up(R.y + gt - v.y),
+      b: up(v.y + v.h + gb - R.y - R.h),
+    };
+    if (!d.l && !d.r && !d.t && !d.b) return;
+    const before = boxOf(s);
+    growRegion(s, i, d);
+    fitInRegion(s, before, exact);
+  }
+
+  /**
+   * How far each edge of composite state `s` can move inward without leaving any of its contents
+   * outside their region: the largest left and top, the smallest right and bottom. A gap already
+   * smaller than the margin is kept, and each region keeps at least MIN_REGION.
+   */
+  function resizeLimits(s) {
+    const rects = regionRects(s);
+    const n = rects.length;
+    const boxes = rects.map((r) => contentsBox(r.id));
+    const all = boxes.filter(Boolean);
+    const union = all.length
+      ? { x: Math.min(...all.map((b) => b.x)), y: Math.min(...all.map((b) => b.y)), right: Math.max(...all.map((b) => b.right)), bottom: Math.max(...all.map((b) => b.bottom)) }
+      : null;
+    // The edge at `edge` may come up to `content` minus the margin, or stay where it is when already closer.
+    const lo = (content, edge) => Math.max(content - FIT_MARGIN, Math.min(edge, content));
+    const hi = (content, edge) => Math.min(content + FIT_MARGIN, Math.max(edge, content));
+    const first = rects[0];
+    const last = rects[n - 1];
+    const header = first.y - s.y;
+    const lim = { left: Infinity, right: -Infinity, top: Infinity, bottom: -Infinity };
+    if (s.regionLayout === 'horizontal') {
+      lim.left = first.x + first.w - MIN_REGION;
+      if (boxes[0]) lim.left = Math.min(lim.left, lo(boxes[0].x, first.x));
+      lim.right = last.x + MIN_REGION;
+      if (boxes[n - 1]) lim.right = Math.max(lim.right, hi(boxes[n - 1].right, last.x + last.w));
+      lim.top = s.y + s.h - MIN_REGION - header;
+      lim.bottom = first.y + MIN_REGION;
+      if (union) {
+        lim.top = Math.min(lim.top, lo(union.y, first.y) - header);
+        lim.bottom = Math.max(lim.bottom, hi(union.bottom, s.y + s.h));
+      }
+    } else {
+      if (union) {
+        lim.left = lo(union.x, s.x);
+        lim.right = hi(union.right, s.x + s.w);
+      }
+      lim.top = first.y + first.h - MIN_REGION - header;
+      if (boxes[0]) lim.top = Math.min(lim.top, lo(boxes[0].y, first.y) - header);
+      lim.bottom = last.y + MIN_REGION;
+      if (boxes[n - 1]) lim.bottom = Math.max(lim.bottom, hi(boxes[n - 1].bottom, last.y + last.h));
+    }
+    return lim;
+  }
+
+  /**
+   * Switches `s` between stacked and side-by-side regions: they share it equally again, any region too
+   * small for its contents grows (with the state), and each region's contents move with it.
+   */
+  function setRegionLayout(s, layout) {
+    const old = boxOf(s);
+    const before = regionRects(s);
+    // Each region's contents, relative to the region's top-left corner.
+    const rel = before.map((r) => {
+      const b = contentsBox(r.id);
+      return b ? { right: b.right - r.x, bottom: b.bottom - r.y } : { right: 0, bottom: 0 };
+    });
+    const n = before.length;
+    s.regionLayout = layout;
+    for (const r of s.regions) delete r.size;
+    const body = s.h - (before[0].y - s.y);
+    if (layout === 'horizontal') {
+      const sizes = rel.map((c) => Math.max(s.w / n, c.right + FIT_MARGIN, MIN_REGION));
+      s.w = sizes.reduce((a, b) => a + b, 0);
+      s.regions.forEach((r, i) => (r.size = sizes[i]));
+      s.h = headerHeight(s) + Math.max(body, ...rel.map((c) => c.bottom + FIT_MARGIN));
+    } else {
+      s.w = Math.max(s.w, ...rel.map((c) => c.right + FIT_MARGIN));
+      const sizes = rel.map((c) => Math.max(body / n, c.bottom + FIT_MARGIN, MIN_REGION));
+      s.regions.forEach((r, i) => (r.size = sizes[i]));
+      s.h = headerHeight(s) + sizes.reduce((a, b) => a + b, 0);
+    }
+    layoutHeader.set(s.id, headerHeight(s));
+    const after = regionRects(s);
+    before.forEach((r, i) => shiftVertices(regionContents(r.id), after[i].x - r.x, after[i].y - r.y));
+    followBorder(s, old);
+    fitInRegion(s, old, false);
+  }
+
+  /** Warnings for elements whose boxes overlap, other than a state and what it contains; comments don't count. */
+  function overlapIssues() {
+    const out = [];
+    const vs = model.vertices.filter((v) => v.type !== 'comment');
+    const describe = (v) => (v.name ? `'${v.name}'` : `an unnamed ${TYPE_LABEL[v.type]}`);
+    for (let i = 0; i < vs.length; i++) {
+      const a = vs[i];
+      for (let j = i + 1; j < vs.length; j++) {
+        const b = vs[j];
+        if (!(a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h)) continue;
+        if (isInside(a, b.id) || isInside(b, a.id)) continue;
+        out.push({ id: a.id, severity: 'warning', message: `Overlaps ${describe(b)}.` });
+        out.push({ id: b.id, severity: 'warning', message: `Overlaps ${describe(a)}.` });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Aligns the selected states (without a selected ancestor) with `anchorId`: on its horizontal center
+   * line when `horizontally`, else on its vertical one. Each state moves with its contents and stays in
+   * its region; the enclosing composite states grow so that their regions still hold their states.
+   * Returns false, changing nothing, when fewer than two states are selected or when states of different
+   * regions of one state would overlap along its region layout.
+   */
+  function align(anchorId, horizontally) {
+    const states = selectionRoots().filter((v) => v.type === 'state');
+    const clicked = V.get(anchorId);
+    if (!clicked) return false;
+    const anchor = ancestors(clicked).filter((a) => selection.has(a.id)).pop() || clicked;
+    if (states.length < 2 || !states.includes(anchor)) return false;
+
+    const snap0 = layoutSnapshot();
+    const moved = [];
+    for (const v of states) {
+      const dx = horizontally ? 0 : center(anchor).x - center(v).x;
+      const dy = horizontally ? center(anchor).y - center(v).y : 0;
+      if (dx === 0 && dy === 0) continue;
+      const old = boxOf(v);
+      moved.push({ v, old });
+      shiftVertices(new Set([v.id, ...descendants(v).map((x) => x.id)]), dx, dy);
+    }
+    if (!moved.length) return false;
+
+    // Innermost first: a state that grows may no longer fit in its own region.
+    moved.sort((a, b) => depth(b.v) - depth(a.v));
+    for (const { v, old } of moved) fitInRegion(v, old, true);
+    const along = (v) => (horizontally ? center(v).y : center(v).x);
+    const off = states.find((v) => Math.abs(along(v) - along(anchor)) > 0.5);
+    if (off) {
+      // Growing one region moved the others: states in different regions of one state can't line up.
+      restoreLayout(snap0);
+      const shared = ancestors(off).find((a) => isInside(anchor, a.id));
+      toast(`The states cannot be aligned: they would leave their regions of '${shared ? shared.name : ''}'.`);
+      return false;
+    }
+    commit({ props: true });
+    return true;
+  }
+
+  /** Selected elements without a selected ancestor, which lead a move. */
+  function selectionRoots() {
+    return [...selection].map((id) => V.get(id)).filter((v) => v && !ancestors(v).some((a) => selection.has(a.id)));
   }
 
   function removeVertices(ids, transitionIds = new Set()) {
@@ -1614,20 +2189,9 @@ ${scene(true)}
       commit({ props: true });
       return;
     }
-    if (source.type === 'connectionPointRef' && refKind(source) === 'entry') {
-      toast('An entry reference only receives transitions; execution continues inside the submachine.');
-      return;
-    }
-    if (target.type === 'connectionPointRef' && refKind(target) === 'exit') {
-      toast('An exit reference only has outgoing transitions; it is reached when the submachine exits.');
-      return;
-    }
-    if (source.type === 'final' || source.type === 'terminate') {
-      toast(`A ${TYPE_LABEL[source.type].toLowerCase()} cannot have outgoing transitions.`);
-      return;
-    }
-    if (target.type === 'initial') {
-      toast('An initial pseudostate cannot be the target of a transition.');
+    const problem = connectProblem(source, target);
+    if (problem) {
+      toast(problem);
       return;
     }
     const t = { id: uid('t'), source: source.id, target: target.id, kind: 'external', triggers: [], guard: '', effect: '' };
@@ -1635,6 +2199,42 @@ ${scene(true)}
     selection = new Set([t.id]);
     commit({ props: true });
     if (source.type === 'state') setTimeout(() => startInlineEdit(t.id), 0);
+  }
+
+  /** Why a transition can't go from `source` to `target`, or null when it can. */
+  function connectProblem(source, target) {
+    if (source.type === 'connectionPointRef' && refKind(source) === 'entry') {
+      return 'An entry reference only receives transitions; execution continues inside the submachine.';
+    }
+    if (target.type === 'connectionPointRef' && refKind(target) === 'exit') {
+      return 'An exit reference only has outgoing transitions; it is reached when the submachine exits.';
+    }
+    if (source.type === 'final' || source.type === 'terminate') {
+      return `A ${TYPE_LABEL[source.type].toLowerCase()} cannot have outgoing transitions.`;
+    }
+    if (target.type === 'initial') return 'An initial pseudostate cannot be the target of a transition.';
+    return null;
+  }
+
+  /**
+   * Moves the `end` ('source' or 'target') of `t` to vertex `v`. Its bend points stay, unless it
+   * becomes or stops being a state's self-transition loop, whose bend points are its corners.
+   */
+  function reconnect(t, end, v) {
+    if (t[end] === v.id) return;
+    const source = end === 'source' ? v : V.get(t.source);
+    const target = end === 'target' ? v : V.get(t.target);
+    if (!source || !target) return;
+    const problem = connectProblem(source, target);
+    if (problem) {
+      toast(problem);
+      render();
+      return;
+    }
+    const wasLoop = isLoop(t);
+    t[end] = v.id;
+    if (isLoop(t) !== wasLoop) delete t.points;
+    commit({ props: true });
   }
 
   // ---------------------------------------------------------------- clipboard
@@ -1652,27 +2252,47 @@ ${scene(true)}
     return JSON.parse(JSON.stringify({ fsmClipboard: 1, vertices, transitions }));
   }
 
-  function pasteData(data) {
+  /**
+   * Adds a copy of clipboard `data`. Without `at` (keyboard paste, duplicate), each element goes into its
+   * original's region when there is one, offset further at each repeat; with `at` (context menu), the
+   * copy's top-left corner goes there, into the region under it. Regions grow to hold the copy.
+   */
+  function pasteData(data, at) {
     if (aiRun) return;
     if (!data || !Array.isArray(data.vertices)) return;
     reindex();
-    pasteCount++;
-    const off = 20 * pasteCount;
     const map = new Map();
     for (const v of data.vertices) {
       map.set(v.id, uid('v'));
       for (const r of v.regions || []) map.set(r.id, uid('r'));
     }
+    let offX;
+    let offY;
+    let target = null;
+    if (at) {
+      const roots = data.vertices.filter((v) => !map.has(v.parent));
+      offX = snap(at.x) - Math.min(...roots.map((v) => v.x));
+      offY = snap(at.y) - Math.min(...roots.map((v) => v.y));
+      target = regionAt(at, new Set());
+    } else {
+      pasteCount++;
+      offX = offY = 20 * pasteCount;
+    }
+    const off = { x: offX, y: offY };
     const added = [];
     for (const src of data.vertices) {
       const v = JSON.parse(JSON.stringify(src));
       v.id = map.get(src.id);
-      v.x += off;
-      v.y += off;
+      v.x += off.x;
+      v.y += off.y;
       v.regions = (v.regions || []).map((r) => ({ ...r, id: map.get(r.id) }));
       if (map.has(v.parent)) v.parent = map.get(v.parent);
-      else if (isCP(v) ? !V.has(v.parent) : !regionOwner.has(v.parent)) {
-        if (isCP(v)) continue;
+      else if (isCP(v)) {
+        if (!V.has(v.parent)) continue;
+        if (at) snapToBorder(v, V.get(v.parent), center(v));
+      } else if (at && v.type !== 'entryPoint' && v.type !== 'exitPoint') {
+        v.parent = target ? target.id : rootRegion();
+      } else if (at || !regionOwner.has(v.parent)) {
         v.parent = rootRegion();
       }
       if (v.anchors) v.anchors = v.anchors.map((a) => map.get(a)).filter(Boolean);
@@ -1685,12 +2305,14 @@ ${scene(true)}
       t.id = uid('t');
       t.source = map.get(src.source);
       t.target = map.get(src.target);
-      if (t.points) t.points = t.points.map((p) => ({ x: p.x + off, y: p.y + off }));
+      if (t.points) t.points = t.points.map((p) => ({ x: p.x + off.x, y: p.y + off.y }));
       model.transitions.push(t);
     }
     reindex();
     const addedIds = new Set(added.map((v) => v.id));
-    selection = new Set(added.filter((v) => !ancestors(v).some((a) => addedIds.has(a.id))).map((v) => v.id));
+    const roots = added.filter((v) => !ancestors(v).some((a) => addedIds.has(a.id)));
+    for (const v of roots) fitInRegion(v, null, false);
+    selection = new Set(roots.map((v) => v.id));
     commit({ props: true });
   }
 
@@ -1738,6 +2360,11 @@ ${scene(true)}
       const [id, i] = String(wp.getAttribute('data-wp')).split(':');
       return { kind: 'wp', id, index: Number(i) };
     }
+    const end = e.closest('[data-end]');
+    if (end) {
+      const [id, which] = String(end.getAttribute('data-end')).split(':');
+      return { kind: 'end', id, end: which };
+    }
     const label = e.closest('[data-label]');
     if (label) return { kind: 'label', id: label.getAttribute('data-label') };
     const item = e.closest('[data-id]');
@@ -1758,6 +2385,16 @@ ${scene(true)}
     return null;
   }
 
+  /** The topmost state or pseudostate under the pointer, through transitions and comments. */
+  function connectableUnder(e) {
+    for (const el of document.elementsFromPoint(e.clientX, e.clientY)) {
+      const item = el.closest && el.closest('[data-id]');
+      const v = item && V.get(item.getAttribute('data-id'));
+      if (v && v.type !== 'comment') return v.id;
+    }
+    return null;
+  }
+
   /** Time and position of the last plain pointerdown, for double-click detection. */
   let lastDown = null;
 
@@ -1767,11 +2404,12 @@ ${scene(true)}
     commitInlineEdit();
     hideProblems();
     const p = toWorld(e);
-    const hit = hitTarget(e.target);
+    let hit = hitTarget(e.target);
 
     if (e.button === 1 || e.button === 2 || spaceDown || tool) lastDown = null;
     if (e.button === 1 || e.button === 2 || spaceDown) {
-      drag = { kind: 'pan', sx: e.clientX, sy: e.clientY, vx: view.x, vy: view.y };
+      // A right-button press that doesn't move opens the context menu.
+      drag = { kind: 'pan', sx: e.clientX, sy: e.clientY, vx: view.x, vy: view.y, right: e.button === 2 && !spaceDown, moved: false, start: p, target: e.target };
       svg.classList.add('panning');
       capture(e);
       e.preventDefault();
@@ -1815,16 +2453,35 @@ ${scene(true)}
       return;
     }
 
+    // A composite state moves by its title bar: its regions are empty canvas, for a selection band.
+    if (hit.kind === 'vertex' && regionRects(V.get(hit.id)).some((r) => inRect(r, p))) hit = { kind: 'empty' };
+
     switch (hit.kind) {
       case 'handle': {
+        if (hit.handle.startsWith('sep:')) {
+          const k = hit.handle.lastIndexOf(':');
+          const s = V.get(hit.handle.slice(4, k));
+          const i = Number(hit.handle.slice(k + 1));
+          if (s && i < s.regions.length - 1) {
+            keepRegionSizes(s);
+            drag = { kind: 'region', v: s, i, start: p, size0: s.regions[i].size, snap: layoutSnapshot() };
+          }
+          break;
+        }
         const v = V.get([...selection][0]);
         if (!v) break;
-        if (hit.handle.startsWith('resize-')) drag = { kind: 'resize', corner: hit.handle.slice(7), v, start: p, x0: v.x, y0: v.y, w0: v.w, h0: v.h };
+        if (hit.handle.startsWith('resize-')) {
+          if ((v.regions || []).length) keepRegionSizes(v);
+          drag = { kind: 'resize', corner: hit.handle.slice(7), v, start: p, x0: v.x, y0: v.y, w0: v.w, h0: v.h, snap: layoutSnapshot() };
+        }
         else startConnect(v, p);
         break;
       }
       case 'wp':
         drag = { kind: 'wp', t: T.get(hit.id), index: hit.index };
+        break;
+      case 'end':
+        drag = { kind: 'reconnect', t: T.get(hit.id), end: hit.end, cur: p, hover: null };
         break;
       case 'label': {
         const t = T.get(hit.id);
@@ -1869,6 +2526,15 @@ ${scene(true)}
     drag = { kind: 'connect', source, cur: p, hover: null };
   }
 
+  /**
+   * Region a moved element is dropped into: the deepest one holding its whole box, when that is its own
+   * region or lies inside it (an element never leaves its region by a drag); null to keep its region.
+   */
+  function dropRegionOf(v, exclude) {
+    const r = regionHolding(v, exclude);
+    return r && r.id !== v.parent && regionWithin(r.id, v.parent) ? r : null;
+  }
+
   function startMove(p, noSnap, clickedId) {
     const moving = new Map();
     const roots = [];
@@ -1884,7 +2550,8 @@ ${scene(true)}
     const trans = model.transitions
       .filter((t) => t.points && t.points.length && moving.has(t.source) && moving.has(t.target))
       .map((t) => ({ t, pts0: t.points.map((q) => ({ ...q })) }));
-    drag = { kind: 'move', start: p, items, trans, roots, moving, moved: false, noSnap, clickedId };
+    const boxes = new Map(roots.map((v) => [v.id, boxOf(v)]));
+    drag = { kind: 'move', start: p, items, trans, roots, moving, moved: false, noSnap, clickedId, snap: layoutSnapshot(), boxes };
   }
 
   window.addEventListener('pointermove', (e) => {
@@ -1892,6 +2559,8 @@ ${scene(true)}
     const p = toWorld(e);
     switch (drag.kind) {
       case 'pan':
+        if (!drag.moved && Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) < 3) return;
+        drag.moved = true;
         view.x = drag.vx + e.clientX - drag.sx;
         view.y = drag.vy + e.clientY - drag.sy;
         break;
@@ -1906,6 +2575,8 @@ ${scene(true)}
           dx = snap(it.x0 + dx) - it.x0;
           dy = snap(it.y0 + dy) - it.y0;
         }
+        // From the layout at the start: the regions grown for the previous position shrink back.
+        restoreLayout(drag.snap);
         for (const it of drag.items) {
           it.v.x = it.x0 + dx;
           it.v.y = it.y0 + dy;
@@ -1915,42 +2586,85 @@ ${scene(true)}
         if (drag.roots.length === 1 && isCP(lead)) {
           const s = V.get(lead.parent);
           if (s) snapToBorder(lead, s, p);
+        } else {
+          for (const r of drag.roots) fitInRegion(r, drag.boxes.get(r.id), e.altKey);
         }
-        const probe = lead ? center(lead) : p;
         const exclude = new Set(drag.moving.keys());
-        const rr = drag.roots.every((r) => !isCP(r)) ? regionAt(probe, exclude) : null;
+        const rr = lead && drag.roots.every((r) => !isCP(r)) ? dropRegionOf(lead, exclude) || regionRects(regionOwner.get(lead.parent) || {}).find((r) => r.id === lead.parent) : null;
         drag.dropRegion = rr ? rr.id : null;
         drag.dropState = rr ? regionOwner.get(rr.id)?.id : null;
         break;
       }
       case 'resize': {
+        restoreLayout(drag.snap);
         const v = drag.v;
+        const start = boxOf(v);
         const west = drag.corner.includes('w');
         const north = drag.corner.includes('n');
         const dx = p.x - drag.start.x;
         const dy = p.y - drag.start.y;
+        const n = (v.regions || []).length;
+        const horizontal = v.regionLayout === 'horizontal';
         const minW = v.type === 'fork' || v.type === 'join' ? 6 : 40;
+        let lim = n ? resizeLimits(v) : null;
         if (west) {
           // The right edge stays put.
           const right = drag.x0 + drag.w0;
           v.x = Math.min(right - minW, e.altKey ? drag.x0 + dx : snap(drag.x0 + dx));
+          if (lim) v.x = Math.min(v.x, lim.left);
           v.w = right - v.x;
+          // Side by side, the left edge resizes the first region.
+          if (n > 1 && horizontal) v.regions[0].size -= v.x - drag.x0;
         } else {
           v.w = Math.max(minW, e.altKey ? drag.w0 + dx : snap(v.x + drag.w0 + dx) - v.x);
+          if (lim) v.w = Math.max(v.w, lim.right - v.x);
         }
         // After the width: the wrapped text depends on it.
-        const minH = v.type === 'fork' || v.type === 'join' ? 6 : v.type === 'state' ? headerHeight(v) + ((v.regions || []).length ? 30 : 6) : 30;
+        if (n) {
+          keepHeader(v);
+          lim = resizeLimits(v);
+        }
+        const y1 = v.y;
+        const h1 = v.h;
+        const minH = v.type === 'fork' || v.type === 'join' ? 6 : v.type === 'state' ? headerHeight(v) + (n ? 20 : 6) : 30;
         if (north) {
           // The bottom edge stays put.
-          const bottom = drag.y0 + drag.h0;
+          const bottom = y1 + h1;
           v.y = Math.min(bottom - minH, e.altKey ? drag.y0 + dy : snap(drag.y0 + dy));
+          if (lim) v.y = Math.min(v.y, lim.top);
           v.h = bottom - v.y;
+          // Stacked, the top edge resizes the first region.
+          if (n > 1 && !horizontal) v.regions[0].size -= v.y - y1;
         } else {
-          v.h = Math.max(minH, e.altKey ? drag.h0 + dy : snap(v.y + drag.h0 + dy) - v.y);
+          v.h = Math.max(minH, e.altKey ? h1 + dy : snap(v.y + h1 + dy) - v.y);
+          if (lim) v.h = Math.max(v.h, lim.bottom - v.y);
         }
-        for (const cp of model.vertices) {
-          if (cp.parent === v.id && isCP(cp)) snapToBorder(cp, v, center(cp));
+        followBorder(v, start);
+        fitInRegion(v, start, e.altKey);
+        break;
+      }
+      case 'region': {
+        // The line after region i: the region resizes, its state with it, and the later regions move.
+        restoreLayout(drag.snap);
+        const v = drag.v;
+        const start = boxOf(v);
+        const horizontal = v.regionLayout === 'horizontal';
+        const r = regionRects(v)[drag.i];
+        const from = horizontal ? r.x : r.y;
+        const end0 = from + drag.size0;
+        const delta = horizontal ? p.x - drag.start.x : p.y - drag.start.y;
+        let end = end0 + (e.altKey ? delta : snap(delta));
+        let min = from + MIN_REGION;
+        const c = contentsBox(r.id);
+        if (c) {
+          const far = horizontal ? c.right : c.bottom;
+          min = Math.max(min, Math.min(far + FIT_MARGIN, Math.max(end0, far)));
         }
+        end = Math.max(end, min);
+        resizeRegionEnd(v, drag.i, end - end0);
+        followBorder(v, start);
+        keepHeader(v);
+        fitInRegion(v, start, e.altKey);
         break;
       }
       case 'connect':
@@ -1958,9 +2672,16 @@ ${scene(true)}
         drag.hover = vertexUnder(e);
         if (drag.hover && !V.has(drag.hover) && drag.source.type !== 'comment') drag.hover = null;
         break;
-      case 'wp':
-        drag.t.points[drag.index] = e.altKey ? { x: p.x, y: p.y } : { x: snap(p.x), y: snap(p.y) };
+      case 'reconnect':
+        drag.cur = p;
+        drag.hover = connectableUnder(e);
         break;
+      case 'wp': {
+        const q = e.altKey ? { x: p.x, y: p.y } : { x: snap(p.x), y: snap(p.y) };
+        if (isLoop(drag.t)) moveLoopCorner(drag.t, V.get(drag.t.source), drag.index, q);
+        else drag.t.points[drag.index] = q;
+        break;
+      }
       case 'label':
         drag.moved = true;
         drag.t.labelOffset = { x: Math.round(drag.off0.x + p.x - drag.start.x), y: Math.round(drag.off0.y + p.y - drag.start.y) };
@@ -1989,6 +2710,7 @@ ${scene(true)}
       case 'pan':
         saveView();
         render();
+        if (d.right && !d.moved) showContextMenu(d.target, e.clientX, e.clientY);
         break;
       case 'move':
         if (!d.moved) {
@@ -2012,12 +2734,13 @@ ${scene(true)}
             } else v.parent = rootRegion();
             continue;
           }
-          const rr = regionAt(center(v), exclude);
-          v.parent = rr ? rr.id : rootRegion();
+          const rr = dropRegionOf(v, exclude);
+          if (rr) v.parent = rr.id;
         }
         commit({ props: true });
         break;
       case 'resize':
+      case 'region':
       case 'wp':
         commit();
         break;
@@ -2032,6 +2755,12 @@ ${scene(true)}
         toolDone();
         break;
       }
+      case 'reconnect': {
+        const v = V.get(connectableUnder(e) || '');
+        if (v) reconnect(d.t, d.end, v);
+        else render();
+        break;
+      }
       case 'band':
         renderProps();
         render();
@@ -2043,13 +2772,16 @@ ${scene(true)}
   function doubleClick(e, hit, p) {
     if (hit.kind === 'wp') {
       const t = T.get(hit.id);
-      t.points.splice(hit.index, 1);
-      if (!t.points.length) delete t.points;
+      if (isLoop(t)) delete t.points; // back to the default loop
+      else t.points.splice(hit.index, 1);
+      if (t.points && !t.points.length) delete t.points;
       commit();
     } else if (hit.kind === 'label') {
       startInlineEdit(hit.id);
     } else if (hit.kind === 'transition') {
-      addWaypoint(T.get(hit.id), p);
+      const t = T.get(hit.id);
+      if (isLoop(t)) return false; // a self-transition loop has no bend points but its corners
+      addWaypoint(t, p);
     } else if (hit.kind === 'vertex') {
       const v = V.get(hit.id);
       if (v.type === 'state' && v.submachine && e.altKey) vscode.postMessage({ type: 'openSubmachine', href: v.submachine });
@@ -2143,7 +2875,7 @@ ${scene(true)}
 
   // ---------------------------------------------------------------- keyboard
   window.addEventListener('keydown', (e) => {
-    if (isEditable(/** @type {Element} */ (e.target)) || !model) return;
+    if (isEditable(/** @type {Element} */ (e.target)) || propsPop?.el.contains(/** @type {Node} */ (e.target)) || !model) return;
     const mod = e.metaKey || e.ctrlKey;
     if (e.key === ' ' && !spaceDown) {
       spaceDown = true;
@@ -2186,6 +2918,7 @@ ${scene(true)}
         return;
       case 'Escape':
         if (drag) {
+          if (drag.snap) restoreLayout(drag.snap);
           drag = null;
           render();
         } else if (tool) setTool(null);
@@ -2196,30 +2929,6 @@ ${scene(true)}
         }
         hideProblems();
         return;
-      case 'ArrowLeft':
-      case 'ArrowRight':
-      case 'ArrowUp':
-      case 'ArrowDown': {
-        const step = e.shiftKey ? GRID : 1;
-        const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
-        const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;
-        const moved = new Set();
-        for (const id of selection) {
-          const v = V.get(id);
-          if (!v || ancestors(v).some((a) => selection.has(a.id))) continue;
-          for (const x of [v, ...descendants(v)]) {
-            if (moved.has(x.id)) continue;
-            moved.add(x.id);
-            x.x += dx;
-            x.y += dy;
-          }
-        }
-        if (moved.size) {
-          e.preventDefault();
-          commit();
-        }
-        return;
-      }
       case 'Enter':
       case 'F2':
         if (selection.size === 1) {
@@ -2402,6 +3111,160 @@ ${scene(true)}
     return h('div', { className: 'field' }, head, input, error);
   }
 
+  // ---------------------------------------------------------------- properties window
+  /** The floating properties window opened from the context menu: `id` is the element it shows, null for the machine. */
+  let propsPop = null;
+  document.addEventListener('pointerdown', (e) => {
+    const target = /** @type {Node} */ (e.target);
+    if (propsPop && !propsPop.el.contains(target) && !colorPop?.contains(target) && !contextMenu?.contains(target)) closePropsPop();
+  }, true);
+  document.addEventListener('keydown', (e) => {
+    // Registered before the context menu and color picker handlers, which close themselves first.
+    const target = /** @type {Element} */ (e.target);
+    if (propsPop && e.key === 'Escape' && !contextMenu && !colorPop && (propsPop.el.contains(target) || !isEditable(target))) {
+      e.stopPropagation();
+      closePropsPop();
+      svg.focus();
+    }
+  }, true);
+
+  /** Opens the properties of element `id` (null: the machine) in a window at (cx, cy), selecting the element. */
+  function openPropsPop(id, cx, cy) {
+    closePropsPop();
+    selection = id ? new Set([id]) : new Set();
+    const close = h('button', { className: 'tbtn', title: 'Close (Esc)', onclick: () => closePropsPop() });
+    close.innerHTML = ICONS.close;
+    const body = h('div', { className: 'props' });
+    const el = h('div', { className: 'props-pop', role: 'dialog', 'aria-label': 'Properties', tabindex: '-1' },
+      h('div', { className: 'side-head' }, h('span', {}, 'Properties'), close), body);
+    propsPop = { el, body, id };
+    document.body.append(el);
+    renderProps();
+    render();
+    const w = el.offsetWidth;
+    const top = clamp(cy, 4, Math.max(4, window.innerHeight - el.offsetHeight - 4));
+    el.style.left = `${clamp(cx, 4, Math.max(4, window.innerWidth - w - 4))}px`;
+    el.style.top = `${top}px`;
+    el.style.maxHeight = `${window.innerHeight - top - 4}px`;
+    el.focus();
+  }
+
+  function closePropsPop() {
+    if (!propsPop) return;
+    const { el } = propsPop;
+    propsPop = null;
+    // Apply the field being edited (its change event) before the window goes away.
+    const active = /** @type {HTMLElement} */ (document.activeElement);
+    if (active && el.contains(active)) active.blur();
+    el.remove();
+  }
+
+  // ---------------------------------------------------------------- context menu
+  let contextMenu = null;
+  /** Clipboard of the context menu: its last read (by request number), and the menu's Paste item. */
+  const clipboard = { request: 0, data: null, button: null };
+
+  function clipboardCopy(cut) {
+    const data = collectSelection();
+    if (!data) return;
+    vscode.postMessage({ type: 'clipboardWrite', text: JSON.stringify(data) });
+    pasteCount = 0;
+    if (cut) deleteSelection();
+  }
+
+  /** The selected elements (without a selected ancestor) when they all lie in a composite state's region. */
+  function leavingElements() {
+    const roots = selectionRoots();
+    return roots.length && roots.every((v) => !isCP(v) && regionOwner.get(v.parent)) ? roots : [];
+  }
+  const canLeaveParent = () => leavingElements().length > 0;
+
+  /** Moves the selected elements up one level, out of their composite state, without moving them on the diagram. */
+  function leaveParent() {
+    const roots = leavingElements();
+    if (!roots.length) return;
+    for (const v of roots) v.parent = regionOwner.get(v.parent).parent;
+    commit({ props: true });
+  }
+
+  function closeContextMenu() {
+    if (contextMenu) contextMenu.remove();
+    contextMenu = null;
+  }
+  document.addEventListener('pointerdown', (e) => {
+    if (contextMenu && !contextMenu.contains(/** @type {Node} */ (e.target))) closeContextMenu();
+  }, true);
+  document.addEventListener('keydown', (e) => {
+    if (contextMenu && e.key === 'Escape') {
+      e.stopPropagation();
+      closeContextMenu();
+    }
+  }, true);
+  window.addEventListener('blur', closeContextMenu);
+
+  /**
+   * The menu of a right-click on an element or on empty canvas (`target`, the element pressed).
+   * A right-click on an element selects it unless it is already selected.
+   */
+  function showContextMenu(target, cx, cy) {
+    closeContextMenu();
+    if (tool || aiRun) return;
+    const hit = hitTarget(target);
+    const id = hit.kind === 'vertex' || hit.kind === 'transition' || hit.kind === 'label' || hit.kind === 'wp' ? hit.id
+      : hit.kind === 'handle' && selection.size === 1 ? [...selection][0]
+      : null;
+    if (id && !selection.has(id)) {
+      selection = new Set([id]);
+      renderProps();
+      render();
+    }
+    const item = (label, onclick, disabled = false) =>
+      h('button', {
+        className: 'ctx-item',
+        role: 'menuitem',
+        disabled,
+        onclick: () => {
+          closeContextMenu();
+          onclick();
+        },
+      }, label);
+    const items = [];
+    const sep = () => h('div', { className: 'ctx-sep', role: 'separator' });
+    const v = id ? V.get(id) : null;
+    if (v && v.type === 'state') {
+      const canAlign = selectionRoots().filter((x) => x.type === 'state').length >= 2;
+      items.push(
+        item('Align Horizontally', () => align(v.id, true), !canAlign),
+        item('Align Vertically', () => align(v.id, false), !canAlign),
+        sep(),
+      );
+    }
+    if (canLeaveParent()) items.push(item('Leave Parent', leaveParent), sep());
+    const at = toWorld({ clientX: cx, clientY: cy });
+    const copyable = !!collectSelection();
+    const paste = item('Paste', () => pasteData(clipboard.data, at), true);
+    items.push(
+      item('Cut', () => clipboardCopy(true), !copyable),
+      item('Copy', () => clipboardCopy(false), !copyable),
+      paste,
+      sep(),
+    );
+    // Paste is offered once the extension has read the clipboard.
+    const requestId = ++clipboard.request;
+    clipboard.data = null;
+    clipboard.button = paste;
+    vscode.postMessage({ type: 'clipboardRead', requestId });
+    if (id) items.push(item('Delete', deleteSelection), sep());
+    items.push(item('Properties…', () => openPropsPop(id, cx, cy)));
+    contextMenu = h('div', { className: 'ctx-menu', role: 'menu' }, ...items);
+    contextMenu.addEventListener('contextmenu', (e) => e.preventDefault());
+    document.body.append(contextMenu);
+    const mw = contextMenu.offsetWidth;
+    const mh = contextMenu.offsetHeight;
+    contextMenu.style.left = `${clamp(cx, 4, window.innerWidth - mw - 4)}px`;
+    contextMenu.style.top = `${cy + mh + 4 > window.innerHeight ? Math.max(4, cy - mh) : cy}px`;
+  }
+
   // ---------------------------------------------------------------- color picker
   let colorPop = null;
   let colorAnchor = null;
@@ -2505,16 +3368,31 @@ ${scene(true)}
     return h('div', {}, h('h4', {}, 'Problems'), ...list.map((i) => h('div', { className: `issue ${i.severity}` }, i.message)));
   }
 
+  /** Rebuilds the side panel, and the properties window if it still shows the selection. */
   function renderProps() {
     closeColorPopover();
-    propsEl.innerHTML = '';
-    if (!model) return;
-    reindex();
+    if (model) reindex();
+    if (propsPop) {
+      const id = propsPop.id;
+      const shown = id ? selection.size === 1 && selection.has(id) && (V.has(id) || T.has(id)) : selection.size === 0;
+      if (!model || !shown) closePropsPop();
+    }
+    try {
+      for (const el of propsPop ? [propsPane, propsPop.body] : [propsPane]) {
+        propsEl = el;
+        el.innerHTML = '';
+        if (model) buildProps();
+      }
+    } finally {
+      propsEl = propsPane;
+    }
+  }
+
+  function buildProps() {
     const ids = [...selection];
     if (ids.length > 1) {
       propsEl.append(
         h('h3', {}, `${ids.length} elements selected`),
-        h('button', { className: 'pbtn', onclick: deleteSelection }, 'Delete'),
         h('p', { className: 'muted' }, 'Drag to move them together. Ctrl/Cmd+D duplicates, Ctrl/Cmd+C and V copy between diagrams.'),
       );
       return;
@@ -2548,7 +3426,11 @@ ${scene(true)}
         ['Double-click', 'empty canvas to add a state; a name or label to edit it.'],
         ['Drag', 'the ⊕ handle of a selected element to draw a transition.'],
         ['Double-click', 'a transition to add a bend point, a bend point to remove it.'],
-        ['Drop', 'an element into a region to nest it.'],
+        ['Drag', 'an end of a selected transition onto another element to reconnect it.'],
+        ['Drag', 'a corner of a selected self-transition to reshape its loop; the far corner moves it to another corner of the state.'],
+        ['Drop', 'an element entirely inside a region to nest it. It then stays in its region, which grows to hold it; right-click › Leave Parent takes it out.'],
+        ['Drag', 'the line between two regions to resize the region before it.'],
+        ['Drag', 'a composite state by its title bar; dragging inside its regions selects what it encloses.'],
         ['Right-drag', 'Space+drag, middle-drag or two fingers pan; the wheel or a pinch zooms; F fits.'],
         ['Shift+click', 'a tool keeps it active.'],
         ['Label syntax', model.kind === 'protocol' ? '[isReady()] event / [isDone()]' : 'event, after(2s) [isReady() && !isBusy()] / doIt(); log()'],
@@ -2570,6 +3452,7 @@ ${scene(true)}
     if (group) {
       propsEl.append(selectField('Kind', v.type, group.map((t) => [t, TYPE_LABEL[t]]), (t) => {
         const c = center(v);
+        const old = boxOf(v);
         v.type = t;
         const def = TOOL_BY_ID.get(t)?.create?.();
         if (def) {
@@ -2578,6 +3461,7 @@ ${scene(true)}
           v.x = c.x - v.w / 2;
           v.y = c.y - v.h / 2;
         }
+        fitInRegion(v, old, false);
         commit({ props: true });
       }));
     }
@@ -2665,7 +3549,8 @@ ${scene(true)}
         propsEl.append(h('button', { className: 'pbtn', onclick: () => addRegion(v) }, '+ Add region'));
         if ((v.regions || []).length > 1) {
           propsEl.append(selectField('Region layout', v.regionLayout || 'vertical', [['vertical', 'Stacked (top to bottom)'], ['horizontal', 'Side by side']], (val) => {
-            v.regionLayout = val;
+            if (val === (v.regionLayout || 'vertical')) return;
+            setRegionLayout(v, val);
             commit();
           }));
         }
@@ -2700,13 +3585,8 @@ ${scene(true)}
       } }, '+ Add internal transition'));
     }
 
-    const own = owner(v);
-    propsEl.append(h('h4', {}, 'Location'), h('div', { className: 'muted' },
-      own ? `${isCP(v) ? 'On the border of' : 'Inside'} ${own.name || TYPE_LABEL[own.type]}` : isPointType(v.type) ? 'Connection point of the state machine' : 'Top level',
-      ` · ${Math.round(v.x)}, ${Math.round(v.y)} · ${Math.round(v.w)}×${Math.round(v.h)}`));
     const vi = issuesFor(v.id);
     if (vi) propsEl.append(vi);
-    propsEl.append(h('div', { style: 'margin-top:12px' }, h('button', { className: 'pbtn', onclick: deleteSelection }, 'Delete')));
   }
 
   function refProps(v) {
@@ -2848,7 +3728,6 @@ ${scene(true)}
     );
     const ti = issuesFor(t.id);
     if (ti) propsEl.append(ti);
-    propsEl.append(h('div', { style: 'margin-top:12px' }, h('button', { className: 'pbtn', onclick: deleteSelection }, 'Delete')));
   }
 
   // ---------------------------------------------------------------- chrome
@@ -2985,9 +3864,9 @@ ${scene(true)}
   }
 
   function renderStatus() {
-    const e = issues.filter((i) => i.severity === 'error').length;
-    const w = issues.filter((i) => i.severity === 'warning').length;
-    const inf = issues.length - e - w;
+    const e = allIssues.filter((i) => i.severity === 'error').length;
+    const w = allIssues.filter((i) => i.severity === 'warning').length;
+    const inf = allIssues.length - e - w;
     statusEl.innerHTML = '';
     const prob = h('span', { className: 'problems', title: 'Show problems', onclick: toggleProblems },
       h('span', { className: e ? 'e' : '' }, `✕ ${e}`), '  ',
@@ -3011,12 +3890,12 @@ ${scene(true)}
   }
   function renderProblems() {
     problemsEl.innerHTML = '';
-    if (!issues.length) {
+    if (!allIssues.length) {
       problemsEl.append(h('div', { className: 'empty' }, 'No problems. The state machine is well-formed.'));
       return;
     }
     const order = { error: 0, warning: 1, info: 2 };
-    for (const i of [...issues].sort((a, b) => order[a.severity] - order[b.severity])) {
+    for (const i of [...allIssues].sort((a, b) => order[a.severity] - order[b.severity])) {
       problemsEl.append(h('div', { className: `item ${i.severity}`, onclick: () => {
         if (i.id) {
           selection = new Set([i.id]);

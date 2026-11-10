@@ -37,6 +37,7 @@ interface MachineSummary {
 /** Per-editor state shared with the message handler. */
 interface EditorContext {
   document: vscode.TextDocument;
+  webview: vscode.Webview;
   sync: () => void;
   /** The last XMI written for the webview, with the model JSON it came from. */
   echo?: { xmi: string; json: string };
@@ -87,7 +88,7 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
 
     let timer: ReturnType<typeof setTimeout> | undefined;
     let generation = 0;
-    const ctx: EditorContext = { document, sync: () => scheduleSync() };
+    const ctx: EditorContext = { document, webview: panel.webview, sync: () => scheduleSync() };
     const sync = async () => {
       const current = ++generation;
       const xmi = document.getText();
@@ -189,6 +190,13 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
         break;
       case 'info':
         void vscode.window.showInformationMessage(String(msg.message));
+        break;
+      // Cut, Copy and Paste of the diagram's context menu: the webview can't use the clipboard on its own.
+      case 'clipboardWrite':
+        if (typeof msg.text === 'string') await vscode.env.clipboard.writeText(msg.text);
+        break;
+      case 'clipboardRead':
+        void ctx.webview.postMessage({ type: 'clipboard', requestId: msg.requestId, text: await vscode.env.clipboard.readText() });
         break;
     }
   }
@@ -368,7 +376,7 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
         <div id="toast" hidden></div>
         <div id="parse-error" hidden></div>
       </div>
-      <aside id="props-pane" class="side right"><div class="side-head"><span>Properties</span></div><div id="props"></div></aside>
+      <aside id="props-pane" class="side right"><div class="side-head"><span>Properties</span></div><div id="props" class="props"></div></aside>
     </div>
     <div id="statusbar"></div>
   </div>
