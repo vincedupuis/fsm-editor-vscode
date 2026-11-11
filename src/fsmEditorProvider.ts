@@ -1,7 +1,8 @@
 import * as vscode from 'vscode';
 import { ConnectionPointInfo, FsmModel, MachineInfo, SubmachineInfo, defaultModel, machineConnectionPoints, normalizeModel } from './model';
+import { ExtractError, extractSubmachine, proposedName } from './extract';
 import { Issue, validate } from './validation';
-import { basename, decodeText, dirname, relative } from './util';
+import { basename, decodeText, dirname, encodeText, relative } from './util';
 import { fromXmi, toXmi } from './xmi';
 
 interface ActiveEditor {
@@ -180,6 +181,12 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
       case 'openSubmachine':
         await this.openSubmachine(document, String(msg.href ?? ''));
         break;
+      case 'extractCheck':
+        void ctx.webview.postMessage({ type: 'extractCheck', requestId: msg.requestId, problem: this.extractProblem(document, msg.text, msg.ids) });
+        break;
+      case 'extract':
+        if (typeof msg.text === 'string' && Array.isArray(msg.ids)) await this.extract(ctx, msg.text, msg.ids.map(String));
+        break;
       case 'info':
         void vscode.window.showInformationMessage(String(msg.message));
         break;
@@ -190,6 +197,70 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
       case 'clipboardRead':
         void ctx.webview.postMessage({ type: 'clipboard', requestId: msg.requestId, text: await vscode.env.clipboard.readText() });
         break;
+    }
+  }
+
+  /**
+   * Extract to Submachine: moves the selected elements (`ids` of the webview's model `text`) into a new
+   * state machine file next to the document, and puts a submachine state referencing it in their place.
+   * One workspace edit creates the file and changes the document, so undo takes back both.
+   */
+  private async extract(ctx: EditorContext, text: string, ids: string[]) {
+    const { document } = ctx;
+    const toast = (message: string) => void ctx.webview.postMessage({ type: 'toast', message });
+    // The context menu only offers it after the same check; the model may have changed since.
+    const problem = this.extractProblem(document, text, ids);
+    if (problem) {
+      toast(problem);
+      return;
+    }
+    const model = normalizeModel(JSON.parse(text));
+    const folder = vscode.Uri.joinPath(document.uri, '..');
+    const fileOf = (name: string) => vscode.Uri.joinPath(folder, `${name}.fsm`);
+    const exists = async (uri: vscode.Uri) => {
+      try {
+        await vscode.workspace.fs.stat(uri);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    let value = proposedName(model, ids);
+    for (let n = 2; await exists(fileOf(value)); n++) value = `${proposedName(model, ids)}${n}`;
+    const name = await vscode.window.showInputBox({
+      title: 'Extract to Submachine',
+      prompt: 'Name of the new state machine, saved next to this one',
+      value,
+      validateInput: async (v) =>
+        !/^[\w .-]+$/.test(v) ? 'Use letters, digits, spaces, dots, dashes or underscores.'
+          : (await exists(fileOf(v))) ? `${v}.fsm already exists.`
+            : undefined,
+    });
+    if (!name) return;
+    const uri = fileOf(name);
+    const { parent, machine } = extractSubmachine(model, ids, name, `${encodeURI(name)}.fsm#sm`);
+    const contents = encodeText(toXmi(machine));
+    const edit = new vscode.WorkspaceEdit();
+    const metadata = { label: 'Extract to Submachine', needsConfirmation: false };
+    edit.createFile(uri, { contents }, metadata);
+    edit.replace(document.uri, new vscode.Range(0, 0, document.lineCount, 0), toXmi(parent), metadata);
+    if (!(await vscode.workspace.applyEdit(edit))) {
+      toast(`${name}.fsm could not be created.`);
+      return;
+    }
+    // VS Code versions without file contents in workspace edits create an empty file.
+    if ((await vscode.workspace.fs.stat(uri)).size === 0) await vscode.workspace.fs.writeFile(uri, contents);
+  }
+
+  /** Why the selected `ids` of the webview's model `text` can't be extracted to a submachine, or undefined when they can. */
+  private extractProblem(document: vscode.TextDocument, text: unknown, ids: unknown): string | undefined {
+    if (document.isUntitled) return 'Save the state machine first: the submachine goes in a file next to it.';
+    try {
+      if (typeof text !== 'string' || !Array.isArray(ids)) throw new Error('no selection');
+      extractSubmachine(normalizeModel(JSON.parse(text)), ids.map(String), 'Submachine', 'Submachine.fsm#sm');
+      return undefined;
+    } catch (e) {
+      return e instanceof ExtractError ? e.message : `The selection can't be extracted: ${e instanceof Error ? e.message : e}`;
     }
   }
 

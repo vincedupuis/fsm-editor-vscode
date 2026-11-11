@@ -1130,6 +1130,12 @@
       } catch {
         // not state machine elements
       }
+    } else if (msg.type === 'extractCheck') {
+      if (msg.requestId !== extractCheck.request || !extractCheck.button) return;
+      extractCheck.button.disabled = !!msg.problem;
+      extractCheck.button.title = msg.problem || '';
+    } else if (msg.type === 'toast') {
+      toast(String(msg.message));
     } else if (msg.type === 'requestSvg') {
       vscode.postMessage({ type: 'svg', requestId: msg.requestId, svg: exportSvg() });
     } else if (msg.type === 'requestPng') {
@@ -2863,6 +2869,17 @@ ${scene(true)}
     commit({ props: true });
   }
 
+  /**
+   * Extract to Submachine: the extension checks the selection (src/extract.ts) when the context menu opens,
+   * which enables the menu item or puts the reason it can't in its tooltip. On a click, it asks for the new
+   * machine's name and makes the change.
+   */
+  const extractCheck = { request: 0, button: null };
+
+  function extractSelection() {
+    vscode.postMessage({ type: 'extract', ids: [...selection], text: JSON.stringify(model) });
+  }
+
   // ---------------------------------------------------------------- groups
   /** Members of group `id`, in file order. */
   const groupMembers = (id) => (id ? model.vertices.filter((v) => v.group === id) : []);
@@ -2999,6 +3016,14 @@ ${scene(true)}
     }
     if (v && !isCP(v)) items.push(item('Group', groupSelection, !canGroup()), item('Ungroup', ungroupSelection, !canUngroup()), sep());
     if (canLeaveParent()) items.push(item('Leave Parent', leaveParent), sep());
+    if (v && !isCP(v)) {
+      // Enabled once the extension has checked the selection.
+      const extract = item('Extract to Submachine…', extractSelection, true);
+      const requestId = ++extractCheck.request;
+      extractCheck.button = extract;
+      vscode.postMessage({ type: 'extractCheck', requestId, ids: [...selection], text: JSON.stringify(model) });
+      items.push(extract, sep());
+    }
     const at = toWorld({ clientX: cx, clientY: cy });
     const copyable = !!collectSelection();
     const paste = item('Paste', () => pasteData(clipboard.data, at), true);
