@@ -1758,23 +1758,23 @@ ${scene(true)}
   }
 
   /**
-   * Aligns the selected states (without a selected ancestor) with `anchorId`: on its horizontal center
-   * line when `horizontally`, else on its vertical one. Each state moves with its contents and stays in
-   * its region; the enclosing composite states grow so that their regions still hold their states.
-   * Returns false, changing nothing, when fewer than two states are selected or when states of different
-   * regions of one state would overlap along its region layout.
+   * Aligns the selected elements (without a selected ancestor) with `anchorId`: on its horizontal center
+   * line when `horizontally`, else on its vertical one. Elements on a state's border don't align. Each
+   * element moves with its contents and stays in its region; the enclosing composite states grow so that
+   * their regions still hold their elements. Returns false, changing nothing, when fewer than two elements
+   * are selected or when elements of different regions of one state would overlap along its region layout.
    */
   function align(anchorId, horizontally) {
-    const states = selectionRoots().filter((v) => v.type === 'state');
+    const items = alignable();
     const clicked = V.get(anchorId);
     if (!clicked) return false;
     const anchor = ancestors(clicked).filter((a) => selection.has(a.id)).pop() || clicked;
-    if (states.length < 2 || !states.includes(anchor)) return false;
+    if (items.length < 2 || !items.includes(anchor)) return false;
 
     const snap0 = layoutSnapshot();
     const moved = [];
     const roots = selectionRoots();
-    for (const v of states) {
+    for (const v of items) {
       const dx = horizontally ? 0 : center(anchor).x - center(v).x;
       const dy = horizontally ? center(anchor).y - center(v).y : 0;
       if (dx === 0 && dy === 0) continue;
@@ -1797,17 +1797,20 @@ ${scene(true)}
     moved.sort((a, b) => depth(b.v) - depth(a.v));
     for (const { v, old } of moved) fitInRegion(v, old, true);
     const along = (v) => (horizontally ? center(v).y : center(v).x);
-    const off = states.find((v) => Math.abs(along(v) - along(anchor)) > 0.5);
+    const off = items.find((v) => Math.abs(along(v) - along(anchor)) > 0.5);
     if (off) {
-      // Growing one region moved the others: states in different regions of one state can't line up.
+      // Growing one region moved the others: elements in different regions of one state can't line up.
       restoreLayout(snap0);
       const shared = ancestors(off).find((a) => isInside(anchor, a.id));
-      toast(`The states cannot be aligned: they would leave their regions of '${shared ? shared.name : ''}'.`);
+      toast(`The elements cannot be aligned: they would leave their regions of '${shared ? shared.name : ''}'.`);
       return false;
     }
     commit({ props: true });
     return true;
   }
+
+  /** The selected elements (without a selected ancestor) that Align moves: all but those on a state's border. */
+  const alignable = () => selectionRoots().filter((v) => !isCP(v));
 
   /** Selected elements without a selected ancestor, which lead a move. */
   function selectionRoots() {
@@ -2986,8 +2989,8 @@ ${scene(true)}
     const items = [];
     const sep = () => h('div', { className: 'ctx-sep', role: 'separator' });
     const v = id ? V.get(id) : null;
-    if (v && v.type === 'state') {
-      const canAlign = selectionRoots().filter((x) => x.type === 'state').length >= 2;
+    if (v && !isCP(v)) {
+      const canAlign = alignable().length >= 2;
       items.push(
         item('Align Horizontally', () => align(v.id, true), !canAlign),
         item('Align Vertically', () => align(v.id, false), !canAlign),
