@@ -87,6 +87,11 @@ export interface Vertex {
   anchors?: string[];
   color?: string;
   itemColors?: ItemColors;
+  /**
+   * Id of the group the vertex belongs to, for the diagram: its members move together. Groups are flat,
+   * their members share one region, and vertices on a state's border are never grouped (see normalizeGroups).
+   */
+  group?: string;
 }
 
 export interface Transition {
@@ -194,6 +199,7 @@ export function normalizeModel(m: FsmModel): FsmModel {
     v.name = v.name ?? '';
     v.regions = v.regions ?? [];
   }
+  normalizeGroups(m);
   const types = new Map(m.vertices.map((v) => [v.id, v.type]));
   for (const t of m.transitions) {
     t.triggers = t.triggers ?? [];
@@ -209,6 +215,31 @@ export function normalizeModel(m: FsmModel): FsmModel {
     }
   }
   return m;
+}
+
+/**
+ * Keeps the groups the diagram can show. A group is the vertices sharing a `group` id: those on a state's
+ * border leave it, and so do those outside the region of its first member (in file order). A group left
+ * with fewer than two members is dissolved.
+ */
+export function normalizeGroups(m: FsmModel): void {
+  const vertices = new Map(m.vertices.map((v) => [v.id, v]));
+  const parents = new Map<string, string>();
+  const counts = new Map<string, number>();
+  for (const v of m.vertices) {
+    if (typeof v.group !== 'string' || !v.group || isBorderVertex(v, vertices)) {
+      delete v.group;
+      continue;
+    }
+    const parent = parents.get(v.group);
+    if (parent === undefined) parents.set(v.group, v.parent);
+    else if (parent !== v.parent) {
+      delete v.group;
+      continue;
+    }
+    counts.set(v.group, (counts.get(v.group) ?? 0) + 1);
+  }
+  for (const v of m.vertices) if (v.group && (counts.get(v.group) ?? 0) < 2) delete v.group;
 }
 
 /** Helper giving tree navigation over the flat model. */

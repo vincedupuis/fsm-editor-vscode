@@ -377,6 +377,7 @@ textarea.inline-edit { text-align: left; resize: none; }
 .drop-region { fill: var(--fsm-accent); opacity: 0.08; pointer-events: none; }
 
 .sel-box { fill: none; stroke: var(--fsm-accent); stroke-width: 1; stroke-dasharray: 4 3; pointer-events: none; }
+.group-box { fill: none; stroke: var(--fsm-accent); stroke-width: 1.5; stroke-dasharray: 0 4; stroke-linecap: round; pointer-events: none; }
 .handle { fill: var(--fsm-accent); stroke: var(--fsm-bg); stroke-width: 1; cursor: nwse-resize; }
 .handle-ne, .handle-sw { cursor: nesw-resize; }
 .region-sep { fill: transparent; }

@@ -10,9 +10,11 @@
  *   label offset;
  * - the region layout of an orthogonal state, and each region's size along it,
  *   follow from its region shapes;
- * - colors are kept in one xmi:Extension at the end of the diagram, with a
- *   <style element="id" color="#rrggbb" background="#rrggbb" entry="#rrggbb" …/>
- *   per colored vertex or transition (UML DI has no color).
+ * - colors and groups are kept in one xmi:Extension at the end of the diagram,
+ *   with a <style element="id" color="#rrggbb" background="#rrggbb" entry="#rrggbb" …/>
+ *   per colored vertex or transition (UML DI has no color), then a
+ *   <group id="g" members="id id …"/> per group of vertices (members in file
+ *   order, groups in the order of their first member).
  */
 import { FsmModel, ITEM_COLOR_KEYS, ItemColors, PointKind, Region, Transition, Vertex, VertexType, isColor, normalizeModel } from './model';
 import { Node, XmlElement, parseXml, writeXml } from './xml';
@@ -390,6 +392,11 @@ export function toXmi(model: FsmModel): string {
     }
     if (Object.keys(attrs).length) styles.push(['style', { element: e.id, ...attrs }]);
   }
+  const groups = new Map<string, string[]>();
+  for (const v of m.vertices) {
+    if (v.group) groups.set(v.group, [...(groups.get(v.group) ?? []), v.id]);
+  }
+  for (const [id, members] of groups) styles.push(['group', { id, members: members.join(' ') }]);
   const diagram: Node = [
     'umldi:UMLStateMachineDiagram',
     { 'xmi:id': `${smId}_diagram`, name: m.name, modelElement: smId, isFrame: 'false' },
@@ -628,6 +635,15 @@ export function fromXmi(text: string): FsmModel {
           if (isColor(c)) items[k] = c;
         }
         if (Object.keys(items).length) e.itemColors = items;
+      }
+      // A vertex listed in several groups stays in the first.
+      for (const g of kids(ext, 'group')) {
+        const id = g.attrs.id ?? '';
+        if (!id) continue;
+        for (const member of (g.attrs.members ?? '').split(/\s+/)) {
+          const v = V.get(member);
+          if (v && !v.group) v.group = id;
+        }
       }
     }
     for (const el of walk(d)) {

@@ -929,6 +929,11 @@
     for (const v of sel) {
       s += `<rect class="sel-box" x="${v.x - 4}" y="${v.y - 4}" width="${v.w + 8}" height="${v.h + 8}" rx="3"/>`;
     }
+    // The groups of the selected elements: a dotted rectangle around their members.
+    for (const g of new Set(sel.map((v) => v.group).filter(Boolean))) {
+      const b = unionBox(groupMembers(g));
+      if (b) s += `<rect class="group-box" x="${n1(b.x - 10)}" y="${n1(b.y - 10)}" width="${n1(b.w + 20)}" height="${n1(b.h + 20)}" rx="4"/>`;
+    }
     if (sel.length === 1 && selection.size === 1) {
       const v = sel[0];
       if (RESIZABLE.has(v.type)) {
@@ -1028,6 +1033,7 @@
   // ---------------------------------------------------------------- persistence
   function commit(opts = {}) {
     reindex();
+    cleanGroups();
     keepHeaders();
     const text = JSON.stringify(model, null, 2) + '\n';
     lastText = text;
@@ -1931,9 +1937,15 @@ ${scene(true)}
     }
     const off = { x: offX, y: offY };
     const added = [];
+    const groups = new Map();
     for (const src of data.vertices) {
       const v = JSON.parse(JSON.stringify(src));
       v.id = map.get(src.id);
+      // A copied group is a new group; a lone copied member belongs to none (see cleanGroups).
+      if (v.group) {
+        if (!groups.has(v.group)) groups.set(v.group, uid('g'));
+        v.group = groups.get(v.group);
+      }
       v.x += off.x;
       v.y += off.y;
       v.regions = (v.regions || []).map((r) => ({ ...r, id: map.get(r.id) }));
@@ -2180,10 +2192,11 @@ ${scene(true)}
   function startMove(p, noSnap, clickedId) {
     const moving = new Map();
     const roots = [];
-    for (const id of selection) {
-      const v = V.get(id);
-      if (!v) continue;
-      if (ancestors(v).some((a) => selection.has(a.id))) continue;
+    // The selected elements and the other members of their groups, which move with them.
+    const picked = withGroupMates([...selection].map((id) => V.get(id)).filter(Boolean));
+    const pickedIds = new Set(picked.map((v) => v.id));
+    for (const v of picked) {
+      if (ancestors(v).some((a) => pickedIds.has(a.id))) continue;
       roots.push(v);
       moving.set(v.id, v);
       for (const d of descendants(v)) moving.set(d.id, d);
@@ -2232,7 +2245,7 @@ ${scene(true)}
           for (const r of drag.roots) fitInRegion(r, drag.boxes.get(r.id), e.altKey);
         }
         const exclude = new Set(drag.moving.keys());
-        const rr = lead && drag.roots.every((r) => !isCP(r)) ? dropRegionOf(lead, exclude) || regionRects(regionOwner.get(lead.parent) || {}).find((r) => r.id === lead.parent) : null;
+        const rr = lead && drag.roots.every((r) => !isCP(r)) ? dropRegionOf(dropBox(lead), exclude) || regionRects(regionOwner.get(lead.parent) || {}).find((r) => r.id === lead.parent) : null;
         drag.dropRegion = rr ? rr.id : null;
         drag.dropState = rr ? regionOwner.get(rr.id)?.id : null;
         break;
@@ -2367,6 +2380,13 @@ ${scene(true)}
         for (const v of d.roots) {
           if (isCP(v)) continue;
           const exclude = new Set(d.moving.keys());
+          if (v.group) {
+            // A group drops as a whole: into the region that holds all its members, or nowhere.
+            if (v !== d.roots.find((r) => r.group === v.group)) continue;
+            const rr = dropRegionOf(dropBox(v), exclude);
+            if (rr) for (const m of groupMembers(v.group)) m.parent = rr.id;
+            continue;
+          }
           if (v.type === 'entryPoint' || v.type === 'exitPoint') {
             // A machine-level point dropped on a state becomes that state's point; elsewhere it stays top-level.
             const s = stateAt(center(v), exclude);
@@ -2579,6 +2599,9 @@ ${scene(true)}
         return;
       case 'f':
         fit();
+        return;
+      case 'g':
+        toggleGroup();
         return;
       case 'v':
         setTool(null);
@@ -2812,9 +2835,9 @@ ${scene(true)}
     if (cut) deleteSelection();
   }
 
-  /** The selected elements (without a selected ancestor) when they all lie in a composite state's region. */
+  /** The selected elements (without a selected ancestor) and their groups, when they all lie in a composite state's region. */
   function leavingElements() {
-    const roots = selectionRoots();
+    const roots = withGroupMates(selectionRoots());
     return roots.length && roots.every((v) => !isCP(v) && regionOwner.get(v.parent)) ? roots : [];
   }
   const canLeaveParent = () => leavingElements().length > 0;
@@ -2825,6 +2848,88 @@ ${scene(true)}
     if (!roots.length) return;
     for (const v of roots) v.parent = regionOwner.get(v.parent).parent;
     commit({ props: true });
+  }
+
+  // ---------------------------------------------------------------- groups
+  /** Members of group `id`, in file order. */
+  const groupMembers = (id) => (id ? model.vertices.filter((v) => v.group === id) : []);
+
+  /** Box around vertices `vs`, or null when there are none. */
+  function unionBox(vs) {
+    if (!vs.length) return null;
+    const x = Math.min(...vs.map((v) => v.x));
+    const y = Math.min(...vs.map((v) => v.y));
+    return { x, y, w: Math.max(...vs.map((v) => v.x + v.w)) - x, h: Math.max(...vs.map((v) => v.y + v.h)) - y };
+  }
+
+  /** `vs` with the other members of their groups, each once. */
+  function withGroupMates(vs) {
+    const out = new Map(vs.map((v) => [v.id, v]));
+    for (const v of vs) for (const m of groupMembers(v.group)) if (!out.has(m.id)) out.set(m.id, m);
+    return [...out.values()];
+  }
+
+  /** The box a moved element drops by: with a group, the box around all its members. */
+  function dropBox(v) {
+    return { ...(v.group ? unionBox(groupMembers(v.group)) : boxOf(v)), parent: v.parent };
+  }
+
+  /**
+   * The elements a Group makes one group of: the selected ones and their groups' other members, when there
+   * are at least two, in one region, none on a state's border, and they aren't already one group.
+   */
+  function groupable() {
+    const vs = withGroupMates(selectionRoots());
+    if (vs.length < 2 || vs.some((v) => isCP(v) || v.parent !== vs[0].parent)) return [];
+    return vs[0].group && vs.every((v) => v.group === vs[0].group) ? [] : vs;
+  }
+  const canGroup = () => groupable().length > 0;
+  const canUngroup = () => [...selection].some((id) => V.get(id)?.group);
+
+  function groupSelection() {
+    const vs = groupable();
+    if (!vs.length) return;
+    const id = uid('g');
+    for (const v of vs) v.group = id;
+    commit({ props: true });
+  }
+
+  /** Dissolves the groups of the selected elements. */
+  function ungroupSelection() {
+    const ids = new Set([...selection].map((id) => V.get(id)?.group).filter(Boolean));
+    if (!ids.size) return;
+    for (const v of model.vertices) if (ids.has(v.group)) delete v.group;
+    commit({ props: true });
+  }
+
+  /** G: ungroups the selection when an element of it is in a group, groups it otherwise. */
+  function toggleGroup() {
+    if (canUngroup()) ungroupSelection();
+    else if (canGroup()) groupSelection();
+    else toast('Select two or more elements in the same region to group them.');
+  }
+
+  /**
+   * Drops the group memberships the diagram can't show, as normalizeGroups (src/model.ts) does: on a state's
+   * border, outside the region of the group's first member, or in a group of one.
+   */
+  function cleanGroups() {
+    const parents = new Map();
+    const counts = new Map();
+    for (const v of model.vertices) {
+      if (typeof v.group !== 'string' || !v.group || isCP(v)) {
+        delete v.group;
+        continue;
+      }
+      const parent = parents.get(v.group);
+      if (parent === undefined) parents.set(v.group, v.parent);
+      else if (parent !== v.parent) {
+        delete v.group;
+        continue;
+      }
+      counts.set(v.group, (counts.get(v.group) || 0) + 1);
+    }
+    for (const v of model.vertices) if (v.group && counts.get(v.group) < 2) delete v.group;
   }
 
   function closeContextMenu() {
@@ -2879,6 +2984,7 @@ ${scene(true)}
         sep(),
       );
     }
+    if (v && !isCP(v)) items.push(item('Group', groupSelection, !canGroup()), item('Ungroup', ungroupSelection, !canUngroup()), sep());
     if (canLeaveParent()) items.push(item('Leave Parent', leaveParent), sep());
     const at = toWorld({ clientX: cx, clientY: cy });
     const copyable = !!collectSelection();
