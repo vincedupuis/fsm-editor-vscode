@@ -1773,13 +1773,23 @@ ${scene(true)}
 
     const snap0 = layoutSnapshot();
     const moved = [];
+    const roots = selectionRoots();
     for (const v of states) {
       const dx = horizontally ? 0 : center(anchor).x - center(v).x;
       const dy = horizontally ? center(anchor).y - center(v).y : 0;
       if (dx === 0 && dy === 0) continue;
-      const old = boxOf(v);
-      moved.push({ v, old });
-      shiftVertices(new Set([v.id, ...descendants(v).map((x) => x.id)]), dx, dy);
+      // A group follows its only selected member, unless the anchor is in it: aligning several members of a
+      // group, or members with the anchor's group, moves just them.
+      const mates = v.group && v.group !== anchor.group && roots.filter((x) => x.group === v.group).length === 1
+        ? groupMembers(v.group).filter((m) => m !== v)
+        : [];
+      const ids = new Set();
+      for (const x of [v, ...mates]) {
+        moved.push({ v: x, old: boxOf(x) });
+        ids.add(x.id);
+        for (const d of descendants(x)) ids.add(d.id);
+      }
+      shiftVertices(ids, dx, dy);
     }
     if (!moved.length) return false;
 
