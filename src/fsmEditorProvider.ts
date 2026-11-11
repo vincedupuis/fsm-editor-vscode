@@ -14,6 +14,7 @@ const WEBVIEW_COMMANDS = new Set([
   'undo',
   'redo',
   'fsmEditor.exportSvg',
+  'fsmEditor.exportPng',
   'fsmEditor.generateCode',
   'fsmEditor.openAsText',
 ]);
@@ -45,7 +46,8 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
 
   private active: ActiveEditor | undefined;
   private readonly diagnostics = vscode.languages.createDiagnosticCollection('fsm');
-  private readonly pendingSvg = new Map<number, (svg: string) => void>();
+  /** Exports asked of a webview, by request id: the result, or the error the webview reported. */
+  private readonly pendingExports = new Map<number, (result: { data?: string; error?: string }) => void>();
   private nextRequest = 1;
   /** Re-sync callbacks of every open editor, run when any .fsm file changes (submachines may be affected). */
   private readonly resyncs = new Set<() => void>();
@@ -168,10 +170,11 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
       case 'command':
         if (WEBVIEW_COMMANDS.has(msg.command)) await vscode.commands.executeCommand(msg.command);
         break;
-      case 'svg': {
-        const resolve = this.pendingSvg.get(msg.requestId);
-        this.pendingSvg.delete(msg.requestId);
-        resolve?.(msg.svg);
+      case 'svg':
+      case 'png': {
+        const resolve = this.pendingExports.get(msg.requestId);
+        this.pendingExports.delete(msg.requestId);
+        resolve?.({ data: msg.type === 'svg' ? msg.svg : msg.png, error: msg.error });
         break;
       }
       case 'openSubmachine':
@@ -192,13 +195,25 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
 
   /** Asks the active diagram to render itself as a standalone SVG. */
   requestSvg(editor: ActiveEditor): Promise<string> {
+    return this.requestExport(editor, 'requestSvg');
+  }
+
+  /** Asks the active diagram to render itself as a PNG image, base64-encoded. */
+  requestPng(editor: ActiveEditor): Promise<string> {
+    return this.requestExport(editor, 'requestPng');
+  }
+
+  private requestExport(editor: ActiveEditor, type: 'requestSvg' | 'requestPng'): Promise<string> {
     const requestId = this.nextRequest++;
     return new Promise((resolve, reject) => {
-      this.pendingSvg.set(requestId, resolve);
-      void editor.panel.webview.postMessage({ type: 'requestSvg', requestId });
+      this.pendingExports.set(requestId, ({ data, error }) => {
+        if (typeof data === 'string') resolve(data);
+        else reject(new Error(error || 'The diagram sent no image.'));
+      });
+      void editor.panel.webview.postMessage({ type, requestId });
       setTimeout(() => {
-        if (this.pendingSvg.delete(requestId)) reject(new Error('The diagram did not respond.'));
-      }, 5000);
+        if (this.pendingExports.delete(requestId)) reject(new Error('The diagram did not respond.'));
+      }, 10000);
     });
   }
 

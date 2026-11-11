@@ -91,6 +91,17 @@ export function activate(context: vscode.ExtensionContext) {
         void vscode.window.showErrorMessage(`SVG export failed: ${e instanceof Error ? e.message : e}`);
       }
     }),
+
+    vscode.commands.registerCommand('fsmEditor.exportPng', async () => {
+      const editor = provider.activeEditor;
+      if (!editor) return noEditor();
+      try {
+        const png = await provider.requestPng(editor);
+        await saveExport(editor.document.uri, '.png', { PNG: ['png'] }, decodeBase64(png));
+      } catch (e) {
+        void vscode.window.showErrorMessage(`PNG export failed: ${e instanceof Error ? e.message : e}`);
+      }
+    }),
   );
 }
 
@@ -100,14 +111,19 @@ function noEditor() {
   void vscode.window.showWarningMessage('Open a .fsm state machine in the FSM Editor first.');
 }
 
-async function saveExport(source: vscode.Uri, ext: string, filters: Record<string, string[]>, content: string) {
+/** Bytes of base64 text, in the desktop and the web extension hosts alike. */
+function decodeBase64(text: string): Uint8Array {
+  return Uint8Array.from(atob(text), (c) => c.charCodeAt(0));
+}
+
+async function saveExport(source: vscode.Uri, ext: string, filters: Record<string, string[]>, content: string | Uint8Array) {
   const base = basename(source.path, extname(source.path));
   const target = await vscode.window.showSaveDialog({
     defaultUri: vscode.Uri.joinPath(source, '..', base + ext),
     filters,
   });
   if (!target) return;
-  await vscode.workspace.fs.writeFile(target, encodeText(content));
+  await vscode.workspace.fs.writeFile(target, typeof content === 'string' ? encodeText(content) : content);
   const open = await vscode.window.showInformationMessage(`Exported to ${basename(target.path)}.`, 'Open');
   if (open) await vscode.commands.executeCommand('vscode.open', target);
 }

@@ -2,7 +2,7 @@
 
 [![Visual Studio Marketplace version](https://badgen.net/vs-marketplace/v/VinceGoSoftware.fsm-editor)](https://marketplace.visualstudio.com/items?itemName=VinceGoSoftware.fsm-editor)
 
-A visual editor and code generator for UML 2.5.1 state machines. Draw a machine in any `*.fsm` file, with a toolbox, a properties panel, live validation and SVG export, then generate its source code from templates, in VS Code or with the standalone `fsm` command-line generator. Files are standard XMI 2.5.1: the UML model plus its diagram layout in UML DI, in the same file.
+A visual editor and code generator for UML 2.5.1 state machines. Draw a machine in any `*.fsm` file, with a toolbox, a properties panel, live validation and SVG and PNG export, then generate its source code from templates, in VS Code or with the standalone `fsm` command-line generator. Files are standard XMI 2.5.1: the UML model plus its diagram layout in UML DI, in the same file.
 
 It also works in VS Code for the Web: open a repository on [github.dev](https://github.dev) (press `.` on any GitHub repository) or a folder on [vscode.dev](https://vscode.dev), install FSM Editor from the Extensions view, and open a `.fsm` file.
 
@@ -44,7 +44,7 @@ See **[docs/UML-CONFORMANCE.md](docs/UML-CONFORMANCE.md)** for:
 - how the model and layout are stored in XMI and UML DI;
 - where and why the tool deviates from UML 2.5.1;
 - every validation rule;
-- what the SVG export contains.
+- what the SVG and PNG exports contain.
 
 ## Using the editor
 
@@ -62,7 +62,7 @@ See **[docs/UML-CONFORMANCE.md](docs/UML-CONFORMANCE.md)** for:
 - **Editing**: Delete removes the selection. Ctrl/Cmd+C/X/V copies, cuts and pastes, including between diagrams. Ctrl/Cmd+D duplicates. *Cut*, *Copy* and *Paste* are also in the context menu, which pastes where you right-clicked. Undo and redo are VS Code's own.
 - **Shortcuts**: S state, X final, I initial, H history, C choice, J junction, N comment, T transition, R region, V/Esc select. Shift+click a tool to keep it active.
 
-Commands (Command Palette → "FSM"): *New State Machine*, *New Untitled State Machine*, *Generate Code…*, *Export as SVG*, *Open as XMI Text*, *Open in FSM Editor*. *New Untitled State Machine* is also *State Machine* in **File › New File…**.
+Commands (Command Palette → "FSM"): *New State Machine*, *New Untitled State Machine*, *Generate Code…*, *Export as SVG*, *Export as PNG*, *Open as XMI Text*, *Open in FSM Editor*. *New Untitled State Machine* is also *State Machine* in **File › New File…**.
 
 ## Development
 

@@ -1126,6 +1126,11 @@
       }
     } else if (msg.type === 'requestSvg') {
       vscode.postMessage({ type: 'svg', requestId: msg.requestId, svg: exportSvg() });
+    } else if (msg.type === 'requestPng') {
+      exportPng().then(
+        (png) => vscode.postMessage({ type: 'png', requestId: msg.requestId, png }),
+        (err) => vscode.postMessage({ type: 'png', requestId: msg.requestId, error: String((err && err.message) || err) }),
+      );
     }
   });
 
@@ -1203,6 +1208,31 @@ text{font-family:-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;fill:#1f1f1
 ${scene(true)}
 </svg>
 `;
+  }
+
+  /** Largest side of a canvas the browser draws reliably. */
+  const PNG_MAX_SIDE = 16384;
+
+  /** The SVG export drawn at twice its size (less for a very large diagram), as a base64-encoded PNG. */
+  function exportPng() {
+    const svgText = exportSvg();
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const w = img.naturalWidth || 400;
+        const h = img.naturalHeight || 300;
+        const scale = Math.min(2, PNG_MAX_SIDE / Math.max(w, h));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(w * scale));
+        canvas.height = Math.max(1, Math.round(h * scale));
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return reject(new Error('No canvas to draw the diagram on.'));
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/png').replace(/^data:image\/png;base64,/, ''));
+      };
+      img.onerror = () => reject(new Error('The diagram could not be drawn as an image.'));
+      img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgText);
+    });
   }
 
   // ---------------------------------------------------------------- view
@@ -3394,6 +3424,7 @@ ${scene(true)}
       h('span', { className: 'spacer' }),
       btn('code', 'Generate code from a template', cmd('fsmEditor.generateCode'), 'Code'),
       btn('export', 'Export as SVG', cmd('fsmEditor.exportSvg'), 'SVG'),
+      btn('export', 'Export as PNG', cmd('fsmEditor.exportPng'), 'PNG'),
       h('span', { className: 'sep' }),
       btn('json', 'Open as XMI text', cmd('fsmEditor.openAsText'), 'XMI'),
       h('span', { className: 'sep' }),
