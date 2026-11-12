@@ -103,6 +103,7 @@ order.activeStates;      // ['Payment']
 - **Submachines:** each machine gets its own class. `OrderActions.submachines.Payment` gives the actions of the `Payment` submachine state. The parent routes events to the running submachine and follows its exit points. `Order.ts` imports `Payment.ts`, so generate `Payment.fsm` too, for example with `fsm "models/*.fsm" …`.
 - **Constraints:** invariants, preconditions and postconditions call `onConstraintViolation(kind, element)`.
 - `terminate` calls `onTerminate()` and stops the machine.
+- **Tracing:** pass `onTrace` in the options to know what the machine does, for example to write a log for the [Trace Player](#tracing).
 - **Other methods:** `startAt(point)` enters through one of the machine's entry points. `stop()` leaves every state. `resume()` re-enters what was active when it was stopped.
 - Identifiers that are TypeScript keywords get a `_` suffix (`delete()` → `delete_()`).
 
@@ -139,7 +140,7 @@ order.activeStates();                  // {OrderState::Payment}
 - **Do activities** become `startBlinkLed()` and `stopBlinkLed()`; call `activityDone(MediaPlayerActivity::blinkLed)` when one ends by itself.
 - **Timers** go through `FsmTimers`, which you implement once and pass to the constructor of every machine with time events, `Order(actions, timers)`. A machine passes it on to its submachines. `startTimer(delay, fire)` must call `fire()` once after `delay` unless `cancelTimer()` comes first, on the thread that sends the events. Delays are rounded up to whole milliseconds. A late `fire()` does nothing.
 - **Submachines:** each machine gets its own class, run by its submachine states. `OrderActions::submachinePayment()` gives the actions of the `Payment` submachine state. Generate `Payment.fsm` too.
-- **Other methods:** `startMachineAt(point)` enters through an entry point, `stopMachine()` leaves every state, `resumeMachine()` re-enters what was active when it was stopped. `setListener()` is told when the machine finishes or leaves through an exit point. They are named so that they don't clash with events such as `start` or `stop`.
+- **Other methods:** `startMachineAt(point)` enters through an entry point, `stopMachine()` leaves every state, `resumeMachine()` re-enters what was active when it was stopped. `setListener()` is told when the machine finishes or leaves through an exit point, and through `Listener::onTrace()` what the machine does (see [Tracing](#tracing)). They are named so that they don't clash with events such as `start` or `stop`.
 - Identifiers that are C++ keywords get a `_` suffix.
 
 Boost.SML runs the transition tables: one per composite state, with a `*` initial state per region, and the machine's own. The runtime around them gives the machine UML's semantics where Boost.SML's differ: the event queue, completion events (processed before other events), deferred events (dispatched again after the next state change, after the completion events), timers, constraints and submachines. Boost.SML has no counterpart for some UML features; the template works around them, keeping the order of exits, effects and entries, and prints a warning for each:
@@ -152,6 +153,37 @@ Boost.SML runs the transition tables: one per composite state, with a `*` initia
 | Orthogonal regions reacting to the same event | Boost.SML fires the transitions region after region, so a later region's guards see the earlier regions' effects (UML selects them all first). This is the one difference in behavior, hence the warning. |
 
 What it cannot express stops the generation with an error, and nothing is written: a transition between top-level regions, a local transition of a state with several regions, and names that would not compile (an event named like a method of the generated class, a function used both as a behavior and as a condition).
+
+## Tracing
+
+Both templates report what the machine does through a hook, always generated and doing nothing until you give it something to do: `onTrace` in the TypeScript options, `Listener::onTrace()` in C++ (set with `setListener()`). It is called with four strings:
+
+| Argument | |
+| --- | --- |
+| `machine` | The machine's name. For a submachine, followed by the submachine states leading to it: `Order.Payment`. |
+| `kind` | `event` (an event or time event is processed), `enter` (a state is entered, before its entry behavior), `exit` (a state was left, after its exit behavior), `transition` (a transition is taken, before its effect). |
+| `id` | The xmi:id of the state or transition; for an event, its name. |
+| `name` | The name of the state, the transition (`Cart -> Payment (checkout)`) or the event. |
+
+A compound transition reports each of its transitions: through junctions and choices, the branches taken. Writing them as lines in the Trace Player's built-in format, `fsm <machine> <kind> <id> <name>` after a timestamp, lets FSM Editor replay the log on the diagrams (see the [README](../README.md#trace-player)):
+
+```ts
+const order = new Order(new MyOrderActions(), {
+  onTrace: (machine, kind, id, name) => console.log(`${new Date().toISOString()} fsm ${machine} ${kind} ${id} ${name}`),
+});
+```
+
+```cpp
+struct TraceToLog : Order::Listener {
+    void onTrace(const char* machine, const char* kind, const char* id, const char* name) override {
+        std::clog << timestamp() << " fsm " << machine << ' ' << kind << ' ' << id << ' ' << name << '\n';
+    }
+};
+TraceToLog tracer;
+order.setListener(&tracer);
+```
+
+A template prints the `transition` steps (see [Steps](#steps)) and the table action of the same name to report transitions.
 
 ## Writing a template
 
@@ -293,6 +325,7 @@ A **condition** is `{ op: "call", name }`, `{ op: "not", arg }`, or `{ op: "and"
 | `exitMachine` | `point` | Leave through the machine's exit point: exit every state, then tell the parent machine. |
 | `terminate` | | Stop the machine without exit behaviors. |
 | `check` | `constraint` (`postcondition`), `element`, `condition` | Report a violation when the condition is false. |
+| `transition` | `id`, `label` | A transition is taken (one of the transitions of a compound transition, before its effect): report it for [tracing](#tracing), or print nothing. |
 
 `exit`, `exitRegion`, `enterRegion` and `restoreHistory` depend on the configuration at run time. They need a small runtime: an active state per region, a history per region, and the tables in the code model. See `templates/ts.hbs`.
 
@@ -317,7 +350,7 @@ A **row** has a `source` and a `target` (null for an internal transition), each 
 
 Guard terms: `condition`, `precondition` (`condition`, `label`), `requires` (joins), `offer` (the submachine of `state` uses the event), `routed` (`region`, `route`), `restores` (`region`, `route`, `state`), `defaults` (`region`).
 
-Actions: `stateEntry` and `stateExit` (with the `state`, whose `entry`/`exit` steps to run), `call`, `postcondition`, `terminate`, `exitMachine`, `continue` (post the continuation `event`), `route` (`region`, `route`, `history`: 0, 1 shallow, 2 deep), `submachineAt` (`state`, `point`, `pointIndex`), `entering` and `restore` (the region forgets its route), `defer`, `noBranch` (`label`).
+Actions: `stateEntry` and `stateExit` (with the `state`, whose `entry`/`exit` steps to run), `call`, `transition` (`id`, `label`: for tracing, as the step), `postcondition`, `terminate`, `exitMachine`, `continue` (post the continuation `event`), `route` (`region`, `route`, `history`: 0, 1 shallow, 2 deep), `submachineAt` (`state`, `point`, `pointIndex`), `entering` and `restore` (the region forgets its route), `defer`, `noBranch` (`label`).
 
 ## Semantics of the generated code
 

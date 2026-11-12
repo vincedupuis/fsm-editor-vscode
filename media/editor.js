@@ -60,6 +60,7 @@
     export: I('<path d="M12 3v12M7 8l5-5 5 5"/><path d="M5 14v6h14v-6"/>'),
     json: I('<path d="M8 4c-2 0-2 2-2 4s-2 4-2 4 2 0 2 4 0 4 2 4M16 4c2 0 2 2 2 4s2 4 2 4-2 0-2 4 0 4-2 4"/>'),
     code: I('<path d="M8 7l-5 5 5 5M16 7l5 5-5 5M14 4l-4 16"/>'),
+    trace: I('<path d="M3 12h4l3-7 4 14 3-7h4"/>'),
     trash: I('<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>'),
     close: I('<path d="M7 7l10 10M17 7L7 17"/>'),
     sideLeft: I('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/>'),
@@ -120,6 +121,13 @@
   let allIssues = [];
   let issuesById = new Map();
   let selection = new Set();
+  /**
+   * The Trace Player's highlights, or null without a trace: by element id, the colors of the instances where it is
+   * active, taken (transitions and the pseudostates on their way) or current (-1: the only instance of this machine).
+   */
+  let trace = null;
+  /** Instance colors of the Trace Player (classes trace-c0… in editor.css). */
+  const TRACE_COLORS = 6;
   const saved = vscode.getState() || {};
   let view = saved.view || { x: 40, y: 40, zoom: 1 };
   let tool = null;
@@ -652,6 +660,30 @@
     return '';
   }
 
+  /**
+   * Classes of the Trace Player's highlight: active state, taken transition or pseudostate on their way, current
+   * element, and the color of the (first) instance it is highlighted for when the machine has several.
+   */
+  function traceClasses(id) {
+    if (!trace) return [];
+    const out = [];
+    const active = trace.active.get(id);
+    const taken = trace.taken.get(id);
+    if (active) out.push('trace-active');
+    if (taken) out.push('trace-taken');
+    if (trace.current.has(id)) out.push('trace-current');
+    const color = (active || taken || [-1])[0];
+    if (color >= 0) out.push(`trace-c${color % TRACE_COLORS}`);
+    return out;
+  }
+
+  /** A dot per instance in the color of each, above the top right corner of a state active in several instances. */
+  function traceDots(v) {
+    const colors = trace && trace.active.get(v.id);
+    if (!colors || colors.length < 2) return '';
+    return colors.map((c, i) => `<circle class="trace-dot trace-c${c % TRACE_COLORS}" cx="${n1(v.x + v.w - 6 - (colors.length - 1 - i) * 11)}" cy="${n1(v.y - 7)}" r="4"/>`).join('');
+  }
+
   function textLine(x, y, cls, text, anchor = 'middle', color = null) {
     return `<text class="${cls}" x="${n1(x)}" y="${n1(y)}" text-anchor="${anchor}"${styleAttr(color && `fill:${color}`)}>${esc(text)}</text>`;
   }
@@ -698,6 +730,7 @@
       const ic = issueClass(v.id);
       if (ic) cls.push(ic);
       if (drag && drag.dropState === v.id) cls.push('drop-target');
+      cls.push(...traceClasses(v.id));
     }
     let s = `<g class="${cls.join(' ')}" data-id="${esc(v.id)}">`;
     const { x, y, w, h } = v;
@@ -837,6 +870,7 @@
     } else if (!exporting && (v.type === 'fork' || v.type === 'join') && Math.min(w, h) < 14) {
       s += `<rect class="hit" x="${x - 4}" y="${y - 5}" width="${w + 8}" height="${h + 10}"/>`;
     }
+    if (!exporting) s += traceDots(v);
     return s + '</g>';
   }
 
@@ -859,6 +893,7 @@
       if (selection.has(t.id)) cls.push('selected');
       const ic = issueClass(t.id);
       if (ic) cls.push(ic);
+      cls.push(...traceClasses(t.id));
     }
     let s = `<g class="${cls.join(' ')}" data-id="${esc(t.id)}">`;
     // Selection and problem highlights keep their own line color.
@@ -1134,6 +1169,21 @@
       if (msg.requestId !== extractCheck.request || !extractCheck.button) return;
       extractCheck.button.disabled = !!msg.problem;
       extractCheck.button.title = msg.problem || '';
+    } else if (msg.type === 'trace') {
+      const view = msg.highlight;
+      if (view && view.instances.length) {
+        trace = { instances: view.instances, active: new Map(), taken: new Map(), current: new Set(), event: '' };
+        const add = (map, id, color) => (map.get(id) || map.set(id, []).get(id)).push(color);
+        for (const inst of view.instances) {
+          for (const id of inst.active) add(trace.active, id, inst.color);
+          for (const id of [...inst.taken, ...inst.via]) add(trace.taken, id, inst.color);
+          for (const id of inst.current) trace.current.add(id);
+        }
+        // The event of the instance of the current record, else of the first instance that has one.
+        const at = view.instances.find((i) => i.current.length) || view.instances.find((i) => i.event);
+        trace.event = (at && at.event) || '';
+      } else trace = null;
+      render();
     } else if (msg.type === 'toast') {
       toast(String(msg.message));
     } else if (msg.type === 'requestSvg') {
@@ -3566,6 +3616,7 @@ ${scene(true)}
       h('span', { className: 'sep' }),
       btn('trash', 'Delete selection (Del)', () => deleteSelection()),
       h('span', { className: 'spacer' }),
+      btn('trace', 'Show the Trace Player: replay a log on the diagrams', cmd('fsmEditor.tracePlayer.focus'), 'Trace'),
       btn('code', 'Generate code from a template', cmd('fsmEditor.generateCode'), 'Code'),
       btn('export', 'Export as SVG', cmd('fsmEditor.exportSvg'), 'SVG'),
       btn('export', 'Export as PNG', cmd('fsmEditor.exportPng'), 'PNG'),
@@ -3611,6 +3662,8 @@ ${scene(true)}
       prob,
       h('span', {}, `${model ? model.vertices.filter((v) => v.type === 'state').length : 0} states · ${model ? model.transitions.length : 0} transitions`),
       h('span', { className: 'spacer' }),
+      trace ? h('span', { className: 'trace-status', title: 'Trace Player' }, `▶ Trace${trace.event ? ` · event ${trace.event}` : ''}`,
+        ...trace.instances.filter((i) => i.color >= 0).map((i) => h('span', { className: `trace-key trace-c${i.color % TRACE_COLORS}` }, `● ${i.label}`))) : '',
       h('span', {}, tool ? `Tool: ${TOOL_BY_ID.get(tool)?.label}${toolSticky ? ' (sticky)' : ''}` : selection.size ? `${selection.size} selected` : ''),
     );
   }

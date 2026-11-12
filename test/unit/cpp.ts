@@ -5,6 +5,7 @@
  *
  * The driver reads one command per line: `start`, `startAt <point>`, `resume`,
  * `stop`, `listen` (record the listener's calls as `@finished`, `@exit <point>`),
+ * `trace` (listen, and record onTrace calls as `~<machine> <kind> <id>`),
  * `e <event>`, `set <condition> 0|1`, `fire` (every pending timer), `done
  * <activity>`, `clear` (forget the calls so far), and queries that print one
  * line: `take` (calls since the last take or clear), `active`, `pending`
@@ -177,6 +178,7 @@ function driver(machines: string[], files: Map<string, string>): string {
     '    std::map<std::string, bool> conditions;',
     '    std::map<std::uint64_t, std::pair<long long, std::function<void()>>> timers;',
     '    std::uint64_t next = 1;',
+    '    bool tracing = false;',
     '    void call(const std::string& name) { calls.push_back(name); }',
     '    bool condition(const std::string& prefix, const std::string& name) { call(prefix + name); return conditions[name]; }',
     '};',
@@ -241,6 +243,8 @@ function driver(machines: string[], files: Map<string, string>): string {
     out.push(`struct ${m}Listener final : ${m}::Listener {`);
     out.push('    explicit ' + `${m}Listener(Log& log) : log(log) {}`, '    Log& log;');
     out.push('    void onFinished() override { log.call("@finished"); }');
+    out.push('    void onTrace(const char* machine, const char* kind, const char* id, const char* name) override {');
+    out.push('        (void)name;', '        if (log.tracing) log.call(std::string("~") + machine + " " + kind + " " + id);', '    }');
     if (exits.length) {
       out.push(`    void onExitPoint(${m}ExitPoint point) override {`);
       out.push(`        static const char* const names[] = {${exits.map((e) => `"${e}"`).join(', ')}};`);
@@ -263,6 +267,7 @@ function driver(machines: string[], files: Map<string, string>): string {
     out.push('            else if (cmd == "resume") machine.resumeMachine();');
     out.push('            else if (cmd == "stop") machine.stopMachine();');
     out.push('            else if (cmd == "listen") machine.setListener(&listener);');
+    out.push('            else if (cmd == "trace") { log.tracing = true; machine.setListener(&listener); }');
     for (const [, name] of ev.matchAll(/virtual void (\w+)\(\) = 0;/g)) out.push(`            else if (cmd == "e" && arg == "${name}") machine.${name}();`);
     for (const a of enumValues(ev, `${m}Activity`)) out.push(`            else if (cmd == "done" && arg == "${a}") machine.activityDone(${m}Activity::${a});`);
     out.push('            else if (cmd == "set") log.conditions[arg] = value == "1";');

@@ -12,7 +12,7 @@ on:
 
 env:
   # Release of fsm-generator (github.com/vincedupuis/fsm-generator) the VSIX bundles.
-  FSM_GENERATOR_VERSION: 0.1.1
+  FSM_GENERATOR_VERSION: 0.6.0
 
 jobs:
   release:

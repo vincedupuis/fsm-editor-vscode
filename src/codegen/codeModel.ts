@@ -277,7 +277,8 @@ export type Step =
   | { kind: 'stopSubmachine'; state: string; stateIndex: number }
   | { kind: 'exitMachine'; point: string }
   | { kind: 'terminate' }
-  | { kind: 'check'; constraint: 'postcondition'; element: string; condition: Condition };
+  | { kind: 'check'; constraint: 'postcondition'; element: string; condition: Condition }
+  | { kind: 'transition'; id: string; label: string };
 
 export interface ChoiceBranch {
   /** Null for `else` (always last) or an unguarded branch. */
@@ -671,8 +672,11 @@ class Builder {
     return this.condition(t.guard, `Guard of ${this.transitionLabel(t)}`, t.id);
   }
 
+  /** Taking the transition (one segment of a compound transition): its `transition` step, for tracing, then its effect. */
   private effect(t: Transition): Step[] {
-    return this.calls(t.effect, `Effect of ${this.transitionLabel(t)}`, t.id, this.actions).map((action) => ({ kind: 'call', action }));
+    const label = this.transitionLabel(t);
+    const calls = this.calls(t.effect, `Effect of ${label}`, t.id, this.actions).map((action): Step => ({ kind: 'call', action }));
+    return [{ kind: 'transition', id: t.id, label }, ...calls];
   }
 
   private transitionLabel(t: Transition): string {

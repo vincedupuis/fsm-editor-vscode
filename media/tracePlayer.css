@@ -1,0 +1,83 @@
+body {
+  margin: 0;
+  padding: 0 8px 8px;
+  color: var(--vscode-foreground);
+  font-family: var(--vscode-font-family, sans-serif);
+  font-size: var(--vscode-font-size, 13px);
+}
+#player { display: flex; flex-direction: column; gap: 6px; height: 100vh; box-sizing: border-box; padding-top: 6px; }
+
+.empty { padding: 8px 0; color: var(--vscode-descriptionForeground); }
+.empty p { margin: 0 0 10px; max-width: 60em; }
+
+.bar { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.sep { width: 8px; }
+.pos { margin-left: 8px; color: var(--vscode-descriptionForeground); font-variant-numeric: tabular-nums; }
+
+.btn {
+  border: 1px solid transparent;
+  border-radius: 3px;
+  padding: 2px 8px;
+  background: var(--vscode-button-secondaryBackground, rgba(128, 128, 128, 0.2));
+  color: var(--vscode-button-secondaryForeground, inherit);
+  font: inherit;
+  cursor: pointer;
+}
+.btn:hover:not(:disabled) { background: var(--vscode-button-secondaryHoverBackground, rgba(128, 128, 128, 0.3)); }
+.btn:disabled { opacity: 0.4; cursor: default; }
+.btn.primary { background: var(--vscode-button-background, #007acc); color: var(--vscode-button-foreground, #fff); }
+.btn.live.on { background: var(--vscode-charts-red, #e51400); color: #fff; }
+.btn.close { background: transparent; padding: 0 6px; }
+.btn.icon { padding: 1px 6px; line-height: 0; }
+.btn.icon svg { width: 16px; height: 16px; }
+
+select {
+  background: var(--vscode-dropdown-background);
+  color: var(--vscode-dropdown-foreground);
+  border: 1px solid var(--vscode-dropdown-border, transparent);
+  font: inherit;
+}
+
+.slider { width: 100%; margin: 0; accent-color: var(--vscode-focusBorder, #007acc); }
+
+.traces { display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.trace { display: flex; align-items: center; gap: 6px; }
+.trace.error .muted { color: var(--vscode-errorForeground, #e51400); }
+.trace .name { font-weight: 600; }
+.muted { color: var(--vscode-descriptionForeground); }
+
+/* One color per trace, the same in the list of traces and in the records. */
+.swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: hsl(calc(var(--i) * 67 + 200), 60%, 55%);
+}
+
+.problems { color: var(--vscode-editorWarning-foreground, #bf8803); }
+
+.rest { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 6px; }
+.records { flex: 1; min-height: 60px; overflow: auto; border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35)); }
+.records table { border-collapse: collapse; width: 100%; font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; }
+.records td { padding: 1px 8px 1px 0; white-space: nowrap; }
+.records td.what { white-space: normal; width: 100%; }
+.records tr { cursor: pointer; }
+.records tr:hover { background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.15)); }
+.records tr.current { background: var(--vscode-list-activeSelectionBackground, rgba(0, 122, 204, 0.3)); color: var(--vscode-list-activeSelectionForeground, inherit); }
+.records tr.future { opacity: 0.55; }
+.records tr.unresolved .what { text-decoration: line-through; opacity: 0.6; }
+.records .time { color: var(--vscode-descriptionForeground); font-variant-numeric: tabular-nums; }
+.records .kind { font-weight: 600; }
+.k-event { color: var(--vscode-charts-blue, #1a85ff); }
+.k-enter { color: var(--vscode-charts-green, #388a34); }
+.k-exit { color: var(--vscode-descriptionForeground); }
+.k-transition { color: var(--vscode-charts-orange, #d18616); }
+
+/* Instance colors in the diagrams, when a machine has several instances (as in editor.css). */
+.ic0 { color: var(--vscode-charts-green, #388a34); }
+.ic1 { color: var(--vscode-charts-blue, #1a85ff); }
+.ic2 { color: var(--vscode-charts-purple, #652d90); }
+.ic3 { color: var(--vscode-charts-orange, #d18616); }
+.ic4 { color: #00a3a3; }
+.ic5 { color: #d16da8; }

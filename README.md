@@ -24,6 +24,38 @@ fsm "models/**/*.fsm" --template sml --out src/generated
 
 See **[docs/CODEGEN.md](docs/CODEGEN.md)** for the command line, the bundled templates, writing templates for other languages, and the code model they receive.
 
+## Trace Player
+
+*Open Trace…* (also in the **Trace** button of the diagram's toolbar, which shows the panel) replays logs of your running state machines on their diagrams: the active states, the transitions taken by the current step, and the branches chosen at choices and junctions. Open several logs at once for concurrent machines: the **Trace Player** panel merges them on one timeline by their timestamps. Step through the records, drag the timeline, play them back at a chosen speed, or turn on **Live** to follow the files as your application writes them (playing to the end turns it on; desktop only: the web edition reads the files once).
+
+A submachine state shows as active in its parent's diagram, and the states inside it light up in the submachine's own diagram when that file is open. When a machine runs several times at once (several logs, or a submachine used by several states), each instance has its own color in the diagram, shown in the status bar and in the panel's records.
+
+The generated code reports what it does through an `onTrace` hook (see [CODEGEN.md](docs/CODEGEN.md#tracing)); have it write lines in the built-in format, after any prefix your logger adds:
+
+```
+2026-11-11T10:02:03.120Z INFO fsm Order event checkout checkout
+2026-11-11T10:02:03.121Z INFO fsm Order transition ot2 Cart -> Payment (checkout)
+2026-11-11T10:02:03.121Z INFO fsm Order.Payment enter p_auth Authorizing
+```
+
+That is `fsm <machine> <kind> <id> <name>`, with `kind` one of `event`, `enter`, `exit`, `transition`, and an optional ISO 8601 time (or time of day) earlier on the line. `examples/demo.log` replays the three examples. Other logs are read with formats of the `fsmEditor.trace.formats` setting: regular expressions whose named groups give the record, for example:
+
+```json
+"fsmEditor.trace.formats": [
+  {
+    "name": "My service",
+    "time": "^(?<time>\\S+)",
+    "rules": [
+      { "kind": "event", "match": "received (?<name>\\w+)" },
+      { "kind": "enter", "match": "entering (?<name>[\\w:]+)" },
+      { "kind": "transition", "match": "(?<source>\\w+) -> (?<target>\\w+)" }
+    ]
+  }
+]
+```
+
+Groups: `time`, `machine` (the machine's name, then the submachine states leading to a submachine: `Order.Payment`), `id` (xmi:id), `name` (a name or a path of names such as `On::Playing`), `source` and `target` (a transition by its ends, through any pseudostates between them), and `kind` when the rule doesn't give one. When the lines of a log name no machine (and its format gives none), the Trace Player asks which machine they are about; click the machine next to the log in the panel to change it. A log with transitions but no `enter` lines still shows the active states, from the transitions' targets.
+
 ## UML support
 
 The editor covers UML 2.5.1 state machines: composite, orthogonal and submachine states, all pseudostates, connection point references, entry/exit/do behaviors, deferrable events, the external, local and internal transition kinds, time triggers, and protocol state machines. A validator checks the well-formedness rules as you edit.
@@ -64,7 +96,7 @@ See **[docs/UML-CONFORMANCE.md](docs/UML-CONFORMANCE.md)** for:
 - **Editing**: Delete removes the selection. Ctrl/Cmd+C/X/V copies, cuts and pastes, including between diagrams. Ctrl/Cmd+D duplicates. *Cut*, *Copy* and *Paste* are also in the context menu, which pastes where you right-clicked. Undo and redo are VS Code's own.
 - **Shortcuts**: S state, X final, I initial, H history, C choice, J junction, N comment, T transition, R region, G group/ungroup, V/Esc select. Shift+click a tool to keep it active.
 
-Commands (Command Palette → "FSM"): *New State Machine*, *New Untitled State Machine*, *Generate Code…*, *Export as SVG*, *Export as PNG*, *Open as XMI Text*, *Open in FSM Editor*. *New Untitled State Machine* is also *State Machine* in **File › New File…**.
+Commands (Command Palette → "FSM"): *New State Machine*, *New Untitled State Machine*, *Generate Code…*, *Open Trace…*, *Export as SVG*, *Export as PNG*, *Open as XMI Text*, *Open in FSM Editor*. *New Untitled State Machine* is also *State Machine* in **File › New File…**.
 
 ## Development
 

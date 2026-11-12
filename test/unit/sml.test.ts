@@ -306,6 +306,25 @@ function clockHost(): FsmModel {
   return b.model;
 }
 
+/** A junction leading to a choice, for tracing: every segment taken is reported. */
+function traced(): FsmModel {
+  const b = new ModelBuilder('Traced');
+  const s = b.state('S');
+  const x = b.state('X');
+  const y = b.state('Y');
+  const j = b.vertex('junction', 'r_root', { id: 'j' });
+  const c = b.vertex('choice', 'r_root', { id: 'c' });
+  b.t(b.vertex('initial', 'r_root', { id: 'i' }), s, { id: 'tInit' });
+  b.t(s, j, { triggers: ['e'], id: 'tSJ' });
+  b.t(j, c, { guard: 'g()', id: 'tJC' });
+  b.t(j, y, { guard: 'else', id: 'tJY' });
+  b.t(c, x, { guard: 'h()', id: 'tCX' });
+  b.t(c, y, { guard: 'else', id: 'tCY' });
+  b.t(x, s, { triggers: ['back'], id: 'tXS' });
+  b.t(y, s, { triggers: ['back'], id: 'tYS' });
+  return b.model;
+}
+
 /** Deep history over a submachine state resumes the submachine. */
 function host(): FsmModel {
   const b = new ModelBuilder('Host');
@@ -357,7 +376,7 @@ const cases: Record<string, Case> = {
   examples: { machines: { 'MediaPlayer.fsm': example('MediaPlayer.fsm'), 'Order.fsm': example('Order.fsm'), 'Payment.fsm': example('Payment.fsm') } },
   features: {
     machines: Object.fromEntries(
-      [forks(), priority(), defer(), deferCompletion(), junctions(), local(), history('shallowHistory'), history('deepHistory'), points(), nested(), self(), term(), choice(), work(), door(), keywords(), hops(), composite(), sub(), host(), orthoTerm(), entryMachine(), clocked(), clockHost()].map((m) => [`${m.name}.fsm`, m]),
+      [forks(), priority(), defer(), deferCompletion(), junctions(), local(), history('shallowHistory'), history('deepHistory'), points(), nested(), self(), term(), choice(), work(), door(), keywords(), hops(), composite(), sub(), host(), orthoTerm(), entryMachine(), clocked(), clockHost(), traced()].map((m) => [`${m.name}.fsm`, m]),
     ),
   },
 };
@@ -452,6 +471,30 @@ describe('Boost.SML: examples', () => {
   it(
     'Payment on its own: entry points, exit points and the listener',
     check('Payment', ['listen', 'startAt retry', 'take => resetAttempt,requestAuthorization', 'e declined', 'take => @exit failed', 'active => ']),
+  );
+});
+
+describe('Boost.SML: tracing', () => {
+  it(
+    'reports events, states entered and left, and every segment of the transitions taken',
+    check('Traced', [
+      'trace',
+      'start',
+      'take => ~Traced transition tInit,~Traced enter S',
+      'e e',
+      'take => ~Traced event e,g,g,~Traced exit S,~Traced transition tSJ,~Traced transition tJY,~Traced enter Y',
+      'e back',
+      'set g 1',
+      'set h 1',
+      'clear',
+      'e e',
+      'take => ~Traced event e,g,~Traced exit S,~Traced transition tSJ,~Traced transition tJC,h,~Traced transition tCX,~Traced enter X',
+    ]),
+  );
+
+  it(
+    'names a submachine by the submachine states leading to it',
+    check('Order', ['trace', 'start', 'clear', 'e checkout', 'take => ~Order event checkout,~Order exit o_cart,~Order transition ot2,~Order enter o_pay,~Order.Payment transition pt1,~Order.Payment enter p_auth,Payment.requestAuthorization']),
   );
 });
 

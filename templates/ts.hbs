@@ -48,6 +48,8 @@ this.exitMachine({{quote point}});
 this.terminate();
 {{else if (eq kind "check")}}
 if (!({{guard condition}})) this.actions.onConstraintViolation('{{constraint}}', {{quote element}});
+{{else if (eq kind "transition")}}
+this.trace('transition', {{quote id}}, {{quote label}});
 {{/if}}
 {{/each}}
 {{/inline}}
@@ -123,6 +125,9 @@ export type {{machine.name}}EntryPoint = {{#if entryPoints.length}}{{#each entry
 /** Exit points, reported to onExitPoint. */
 export type {{machine.name}}ExitPoint = {{#if exitPoints.length}}{{#each exitPoints}}{{#unless @first}} | {{/unless}}{{quote name}}{{/each}}{{else}}never{{/if}};
 
+/** What onTrace reports: an event processed, a state entered or left, a transition taken. */
+export type {{machine.name}}TraceKind = 'event' | 'enter' | 'exit' | 'transition';
+
 /**
  * What {{machine.displayName}} calls: implement it to give the machine its behavior.
 {{#if machine.documentation}}
@@ -175,6 +180,13 @@ export interface {{machine.name}}Options {
   onFinished?(): void;
   /** The machine left through one of its exit points. */
   onExitPoint?(point: {{machine.name}}ExitPoint): void;
+  /**
+   * Tracing, e.g. to a log for FSM Editor's Trace Player: called for each event processed, state entered or left, and
+   * transition taken (each segment of a compound transition, so the branches taken at choices and junctions too).
+   * `machine` is the machine's name, followed for a submachine by the submachine states leading to it
+   * (`{{machine.name}}.State`); `id` is the xmi:id of the state or transition (the name of an event), and `name` its name.
+   */
+  onTrace?(machine: string, kind: {{machine.name}}TraceKind, id: string, name: string): void;
 }
 {{/file}}
 {{#file (concat machine.name ".ts")}}
@@ -189,6 +201,7 @@ import type {
   {{machine.name}}ExitPoint,
   {{machine.name}}Options,
   {{machine.name}}State,
+  {{machine.name}}TraceKind,
 } from './{{machine.name}}Actions';
 {{#each submachines}}
 import { {{name}} } from './{{name}}';
@@ -203,6 +216,7 @@ export type {
   {{machine.name}}ExitPoint,
   {{machine.name}}Options,
   {{machine.name}}State,
+  {{machine.name}}TraceKind,
 };
 
 const NONE = 0;
@@ -212,6 +226,8 @@ const COMPLETION = 0;
 const EXIT_POINT = 1;
 
 const STATE_NAMES: readonly {{machine.name}}State[] = [{{#each states}}{{#unless @first}}, {{/unless}}{{quote name}}{{/each}}];
+/** xmi:id of each state, for tracing. */
+const STATE_IDS: readonly string[] = [{{#each states}}{{#unless @first}}, {{/unless}}{{quote id}}{{/each}}];
 /** Region containing each state. */
 const REGION_OF: readonly number[] = [{{join states ", " "regionIndex"}}];
 /** Regions of each state. */
@@ -290,6 +306,7 @@ export class {{machine.name}} {
       clock: options.clock,
       onFinished: () => this.post(COMPLETION, {{index}}, ''),
       onExitPoint: (point: string) => this.post(EXIT_POINT, {{index}}, point),
+      onTrace: (machine, kind, id, name) => this.options.onTrace?.(`{{@root.machine.name}}.{{name}}${machine.includes('.') ? machine.slice(machine.indexOf('.')) : ''}`, kind, id, name),
     });
 {{/if}}
 {{/each}}
@@ -438,6 +455,7 @@ export class {{machine.name}} {
 
   /** One run-to-completion step: selects the enabled transitions, then fires them. */
   private process(signal: number): number {
+    this.trace('event', SIGNAL_NAMES[signal], SIGNAL_NAMES[signal]);
 {{#if features.preconditions}}
     this.preconditionFailed = '';
 {{/if}}
@@ -564,6 +582,7 @@ export class {{machine.name}} {
   private enter(s: number): void {
     this.active[REGION_OF[s]] = s;
     this.completed[s] = false;
+    this.trace('enter', STATE_IDS[s], STATE_NAMES[s]);
 {{#if features.activities}}
     if (COMPLETES[s] === 'activities') this.pending[s] = STATE_ACTIVITIES[s].length;
 {{/if}}
@@ -597,6 +616,7 @@ export class {{machine.name}} {
     this.active[region] = -1;
     this.history[region] = IS_FINAL[s] ? -1 : s;
     this.completed[s] = false;
+    this.trace('exit', STATE_IDS[s], STATE_NAMES[s]);
   }
 
   private exitRegion(region: number): void {
@@ -677,6 +697,10 @@ export class {{machine.name}} {
     throw new Error(`{{machine.name}}: no branch of the ${choice} can be taken.`);
   }
 {{/if}}
+
+  private trace(kind: {{machine.name}}TraceKind, id: string, name: string): void {
+    this.options.onTrace?.({{quote machine.name}}, kind, id, name);
+  }
 
   private checkInvariants(): void {
 {{#each invariants}}

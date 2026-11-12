@@ -132,6 +132,8 @@ export type TableAction =
   /** Leaving `state` (its regions have been left): run its `exit` steps, then record it as its region's history. */
   | { kind: 'stateExit'; state: CodeState }
   | { kind: 'call'; action: string }
+  /** Taking the transition `id` (one segment of a compound transition), for tracing. */
+  | { kind: 'transition'; id: string; label: string }
   | { kind: 'postcondition'; index: number }
   | { kind: 'terminate' }
   | { kind: 'exitMachine'; point: string }
@@ -580,7 +582,7 @@ class Lowering {
       this.problems.push({ kind: 'topRegions', id: origin.id, element: origin.label, state: '', detail: '' });
       return;
     }
-    while (i < steps.length && (steps[i].kind === 'exit' || steps[i].kind === 'call')) {
+    while (i < steps.length && (steps[i].kind === 'exit' || isCall(steps[i]))) {
       const st = steps[i++];
       if (st.kind === 'exit') {
         const prev = hops[hops.length - 1];
@@ -678,7 +680,8 @@ class Lowering {
       const st = steps[i];
       switch (st.kind) {
         case 'call':
-          actions.push({ kind: 'call', action: st.action });
+        case 'transition':
+          actions.push(...this.callActions([st]));
           i++;
           break;
         case 'enter': {
@@ -753,7 +756,7 @@ class Lowering {
     let first = true;
     while (i < steps.length) {
       const st = steps[i];
-      if (st.kind === 'call' && first && regions.size) {
+      if (isCall(st) && first && regions.size) {
         prefix.push(st);
         i++;
         continue;
@@ -783,7 +786,8 @@ class Lowering {
         continue;
       }
       // The region's own default entry needs no route.
-      if (!pre.length && JSON.stringify(regionSteps) === JSON.stringify(cm.regions[r].defaultSteps)) continue;
+      // Its transitions aside: tracing them differently is no reason for a route.
+      if (!pre.length && untraced(regionSteps) === untraced(cm.regions[r].defaultSteps)) continue;
       if (state) this.find(origin, { entered: { state: state.name, target: st.kind === 'enter' ? st.state : st.kind === 'choice' ? 'a choice' : 'its history' }, way: null });
       const history = st.kind === 'restoreHistory' ? (st.deep ? 2 : 1) : 0;
       actions.push({ kind: 'route', region: r, route: this.route(r, [...pre, ...regionSteps], origin), history });
@@ -798,7 +802,7 @@ class Lowering {
     let first = true;
     while (i < steps.length) {
       const st = steps[i];
-      if (st.kind === 'call' && first && regions.size) {
+      if (isCall(st) && first && regions.size) {
         i++;
         continue;
       }
@@ -831,7 +835,7 @@ class Lowering {
   }
 
   private callActions(steps: Step[]): TableAction[] {
-    return steps.filter((s): s is Extract<Step, { kind: 'call' }> => s.kind === 'call').map((s) => ({ kind: 'call', action: s.action }));
+    return steps.flatMap((s): TableAction[] => (s.kind === 'call' ? [{ kind: 'call', action: s.action }] : s.kind === 'transition' ? [{ kind: 'transition', id: s.id, label: s.label }] : []));
   }
 
   // -------------------------------------------------------------- notes
@@ -898,6 +902,12 @@ function wayVia(via: CodeVia[], steps: Step[]): CodeVia[] {
   visit(steps);
   return via.filter((v) => !branches.has(v.id));
 }
+
+/** `steps` as JSON without their `transition` steps, to compare what they do. */
+const untraced = (steps: Step[]): string => JSON.stringify(steps, (_, v) => (Array.isArray(v) ? v.filter((x) => !(x && typeof x === 'object' && x.kind === 'transition')) : v));
+
+/** Steps done in place, as table actions: behavior calls, and the transitions taken (for tracing). */
+const isCall = (st: Step): boolean => st.kind === 'call' || st.kind === 'transition';
 
 function pseudo(name: string, role: TableState['role']): TableState {
   return { kind: 'pseudo', name, index: -1, composite: false, role };

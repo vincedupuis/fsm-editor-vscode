@@ -21,11 +21,12 @@ const common = {
   logLevel: 'info',
 };
 
-// The web build can't run executables: it gets src/fsmGenerator.web.ts in place of src/fsmGenerator.ts.
+// The web build can't run executables or use Node's file system: it gets src/fsmGenerator.web.ts in place of
+// src/fsmGenerator.ts, and src/trace/tail.web.ts in place of src/trace/tail.ts.
 const webGenerator = {
   name: 'web-generator',
   setup(build) {
-    build.onResolve({ filter: /\/fsmGenerator$/ }, (args) => ({ path: join(args.resolveDir, args.path + '.web.ts') }));
+    build.onResolve({ filter: /\/(fsmGenerator|tail)$/ }, (args) => ({ path: join(args.resolveDir, args.path + '.web.ts') }));
   },
 };
 

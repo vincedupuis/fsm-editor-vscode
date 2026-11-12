@@ -65,6 +65,7 @@ options:
   {{#case "stateEntry"}} c.enter({{state.index}});{{> steps steps=state.entry}}{{#if state.submachine}} c.startSubmachine({{state.index}});{{/if}} c.entered({{state.index}});{{/case}}
   {{#case "stateExit"}}{{> steps steps=state.exit}} c.exited({{state.index}});{{/case}}
   {{#case "call"}} c.actions.{{id action}}();{{/case}}
+  {{#case "transition"}} c.trace("transition", {{quote id}}, {{quote label}});{{/case}}
   {{#case "postcondition"}} c.postcondition({{index}});{{/case}}
   {{#case "terminate"}} c.terminate();{{/case}}
   {{#case "exitMachine"}} c.exitMachine({{@root.machine.name}}ExitPoint::{{id point}});{{/case}}
@@ -367,6 +368,17 @@ public:
         /// The machine left through one of its exit points.
         virtual void onExitPoint({{machine.name}}ExitPoint point) { (void)point; }
 {{/if}}
+        /// Tracing, e.g. to a log for FSM Editor's Trace Player: called for each event processed ("event"), state
+        /// entered ("enter") or left ("exit"), and transition taken ("transition": each segment of a compound
+        /// transition, so the branches taken at choices and junctions too). `machine` is the machine's name, followed
+        /// for a submachine by the submachine states leading to it ("{{machine.name}}.State"); `id` is the xmi:id of
+        /// the state or transition (the name of an event), and `name` its name.
+        virtual void onTrace(const char* machine, const char* kind, const char* id, const char* name) {
+            (void)machine;
+            (void)kind;
+            (void)id;
+            (void)name;
+        }
     };
 
 {{#if features.anyTimers}}
@@ -433,6 +445,9 @@ inline constexpr std::array<int, STATE_COUNT> ACTIVITY_COUNT = { {{~#each states
 /// Table event of each state's completion (-1: no transition waits for it).
 inline constexpr std::array<int, STATE_COUNT> COMPLETION_EVENT = { {{~#each tables.completionEvents}}{{#unless @first}}, {{/unless}}{{#if this}}{{index}}{{else}}-1{{/if}}{{/each~}} };
 inline constexpr std::array<const char*, STATE_COUNT> STATE_NAMES = { {{~#each states}}{{#unless @first}}, {{/unless}}{{quote name}}{{/each~}} };
+/// xmi:id of each state, and the name of each signal (events, then timers), for tracing.
+inline constexpr std::array<const char*, STATE_COUNT> STATE_IDS = { {{~#each states}}{{#unless @first}}, {{/unless}}{{quote id}}{{/each~}} };
+inline constexpr std::array<const char*, {{signals.length}}> SIGNAL_NAMES = { {{~#each signals}}{{#unless @first}}, {{/unless}}{{quote name}}{{/each~}} };
 inline constexpr int START = {{#each tables.events}}{{#if (eq kind "start")}}{{index}}{{/if}}{{/each}};
 inline constexpr int STOP = {{#each tables.events}}{{#if (eq kind "stop")}}{{index}}{{/if}}{{/each}};
 /// Region entry routes: 0 by default, 1 deep resume (resumeMachine(), deep history); the others are in the tables.
@@ -520,6 +535,12 @@ struct {{id name}};
             c.run();
         }
 {{/if}}
+        void onTrace(const char* machine, const char* kind, const char* id, const char* name) override {
+            if (!c.listener) return;
+            const char* rest = std::strchr(machine, '.');
+            const std::string path = std::string("{{@root.machine.name}}.{{name}}") + (rest ? rest : "");
+            c.listener->onTrace(path.c_str(), kind, id, name);
+        }
         Context& c;
     };
     {{../name}} sub_{{name}};
@@ -606,9 +627,14 @@ struct Context {
 
     bool isActive(int s) const { return s >= 0 && active[REGION_OF[s]] == s; }
 
+    void trace(const char* kind, const char* id, const char* name) {
+        if (listener) listener->onTrace({{quote machine.name}}, kind, id, name);
+    }
+
     void enter(int s) {
         active[REGION_OF[s]] = s;
         completed[s] = false;
+        trace("enter", STATE_IDS[s], STATE_NAMES[s]);
         if (COMPLETES[s] == 1) pending[s] = ACTIVITY_COUNT[s];
     }
 
@@ -622,6 +648,7 @@ struct Context {
         active[r] = -1;
         history[r] = IS_FINAL[s] ? -1 : s;
         completed[s] = false;
+        trace("exit", STATE_IDS[s], STATE_NAMES[s]);
     }
 
     void finalReached(int region) {
@@ -884,6 +911,9 @@ struct Runtime final : Context {
 
     /// One run-to-completion step for `signal`: Boost.SML selects and fires the transitions.
     int process(int signal) {
+{{#if signals.length}}
+        trace("event", SIGNAL_NAMES[signal], SIGNAL_NAMES[signal]);
+{{/if}}
 {{#if features.preconditions}}
         preconditionFailed = nullptr;
 {{/if}}
@@ -1098,6 +1128,9 @@ bool {{machine.name}}::offer({{machine.name}}Event event) { return runtime_->off
 #include <chrono>
 #include <cstdint>
 {{/if}}
+{{#if features.submachines}}
+#include <cstring>
+{{/if}}
 #include <deque>
 #include <initializer_list>
 {{#if features.timers}}
@@ -1106,6 +1139,8 @@ bool {{machine.name}}::offer({{machine.name}}Event event) { return runtime_->off
 #include <optional>
 {{#if features.choices}}
 #include <stdexcept>
+{{/if}}
+{{#if (or features.choices features.submachines)}}
 #include <string>
 {{/if}}
 #include <vector>

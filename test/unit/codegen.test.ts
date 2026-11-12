@@ -90,7 +90,7 @@ describe('examples', () => {
     const eject = cm.transitions.find((t) => t.label === 'Stopped -> choice (eject)')!;
     assert.deepEqual(
       eject.steps.map((s) => s.kind),
-      ['exit', 'choice'],
+      ['exit', 'transition', 'choice'],
     );
   });
 });
@@ -381,6 +381,64 @@ describe('semantics', () => {
     rec.conditions.isClosed = false;
     m.dispatch('close');
     assert.deepEqual(rec.take(), ['isClosed', '!invariant: Closed']);
+  });
+});
+
+describe('tracing', () => {
+  /** onTrace calls as `machine kind id`, recorded in `log`. */
+  const tracer = (log: string[]) => ({ onTrace: (machine: string, kind: string, id: string) => log.push(`${machine} ${kind} ${id}`) });
+
+  it('reports events, states entered and left, and every segment of the transitions taken', async () => {
+    const b = new ModelBuilder('Traced');
+    const s = b.state('S');
+    const x = b.state('X');
+    const y = b.state('Y');
+    const j = b.vertex('junction', 'r_root', { id: 'j' });
+    const c = b.vertex('choice', 'r_root', { id: 'c' });
+    b.t(b.vertex('initial', 'r_root', { id: 'i' }), s, { id: 'tInit' });
+    b.t(s, j, { triggers: ['e'], id: 'tSJ' });
+    b.t(j, c, { guard: 'g()', id: 'tJC' });
+    b.t(j, y, { guard: 'else', id: 'tJY' });
+    b.t(c, x, { guard: 'h()', id: 'tCX' });
+    b.t(c, y, { guard: 'else', id: 'tCY' });
+    b.t(x, s, { triggers: ['back'], id: 'tXS' });
+    b.t(y, s, { triggers: ['back'], id: 'tYS' });
+    const { Traced } = await load({ 'Traced.fsm': b.model });
+    const log: string[] = [];
+    const rec = recorder();
+    const m = new Traced(rec.actions, tracer(log));
+    m.start();
+    assert.deepEqual(log.splice(0), ['Traced transition tInit', 'Traced enter S']);
+    m.dispatch('e'); // g() false: the junction's else branch
+    assert.deepEqual(log.splice(0), ['Traced event e', 'Traced exit S', 'Traced transition tSJ', 'Traced transition tJY', 'Traced enter Y']);
+    m.dispatch('back');
+    log.length = 0;
+    rec.conditions.g = true;
+    rec.conditions.h = true;
+    m.dispatch('e'); // through the junction to the choice, then its h() branch
+    assert.deepEqual(log.splice(0), ['Traced event e', 'Traced exit S', 'Traced transition tSJ', 'Traced transition tJC', 'Traced transition tCX', 'Traced enter X']);
+  });
+
+  it('names a submachine by the submachine states leading to it', async () => {
+    const { Order } = await load({ 'Order.fsm': example('Order.fsm'), 'Payment.fsm': example('Payment.fsm') });
+    const log: string[] = [];
+    const order = new Order(recorder().actions, tracer(log));
+    order.start();
+    order.dispatch('checkout');
+    const lines = log.splice(0);
+    assert.ok(lines.includes('Order event checkout'));
+    assert.ok(lines.includes('Order enter o_pay'));
+    assert.ok(lines.some((l) => l.startsWith('Order.Payment enter ')));
+    assert.ok(lines.indexOf('Order enter o_pay') < lines.findIndex((l) => l.startsWith('Order.Payment enter ')));
+    assert.ok(!lines.some((l) => l.startsWith('Payment ')));
+  });
+
+  it('is optional: machines run without onTrace', async () => {
+    const { Order } = await load({ 'Order.fsm': example('Order.fsm'), 'Payment.fsm': example('Payment.fsm') });
+    const order = new Order(recorder().actions);
+    order.start();
+    order.dispatch('checkout');
+    assert.ok(order.isIn('Payment'));
   });
 });
 

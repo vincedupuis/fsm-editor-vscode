@@ -8,6 +8,16 @@
   --fsm-error: var(--vscode-editorError-foreground, #e51400);
   --fsm-warn: var(--vscode-editorWarning-foreground, #bf8803);
   --fsm-info: var(--vscode-editorInfo-foreground, #1a85ff);
+  --fsm-trace: var(--vscode-charts-green, #388a34);
+  --fsm-trace-taken: var(--vscode-charts-orange, #d18616);
+  --fsm-trace-current: var(--vscode-charts-yellow, #cca700);
+  /* Instance colors, when a machine has several instances in the trace (as in tracePlayer.css). */
+  --fsm-trace-0: var(--vscode-charts-green, #388a34);
+  --fsm-trace-1: var(--vscode-charts-blue, #1a85ff);
+  --fsm-trace-2: var(--vscode-charts-purple, #652d90);
+  --fsm-trace-3: var(--vscode-charts-orange, #d18616);
+  --fsm-trace-4: #00a3a3;
+  --fsm-trace-5: #d16da8;
   --fsm-border: var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
   --fsm-grid: color-mix(in srgb, var(--fsm-fg) 14%, transparent);
   --fsm-muted: var(--vscode-descriptionForeground, #717171);
@@ -361,6 +371,25 @@ textarea.inline-edit { text-align: left; resize: none; }
   stroke-linejoin: round;
   cursor: move;
 }
+
+/* Trace Player: active states, transitions taken by the current step (and the pseudostates on their way), current element. */
+.vertex.trace-active > .shape { stroke: var(--fsm-trace); stroke-width: 3; }
+.vertex.trace-active > .fill { fill: var(--fsm-trace); }
+.vertex.trace-taken > .shape, .vertex.trace-taken > .stroke { stroke: var(--fsm-trace-taken); stroke-width: 2.4; }
+.vertex.trace-taken > .fill { fill: var(--fsm-trace-taken); }
+.transition.trace-taken .line, .transition.trace-taken .arrow { stroke: var(--fsm-trace-taken); stroke-width: 2.6; }
+.transition.trace-taken .tlabel { fill: var(--fsm-trace-taken); }
+.trace-current > .shape, .trace-current > .fill, .trace-current .line { filter: drop-shadow(0 0 4px var(--fsm-trace-current)); }
+.trace-status { color: var(--fsm-trace); font-weight: 600; }
+/* Several instances: active states and taken transitions in the color of their instance. */
+.trace-c0 { --fsm-trace: var(--fsm-trace-0); --fsm-trace-taken: var(--fsm-trace-0); }
+.trace-c1 { --fsm-trace: var(--fsm-trace-1); --fsm-trace-taken: var(--fsm-trace-1); }
+.trace-c2 { --fsm-trace: var(--fsm-trace-2); --fsm-trace-taken: var(--fsm-trace-2); }
+.trace-c3 { --fsm-trace: var(--fsm-trace-3); --fsm-trace-taken: var(--fsm-trace-3); }
+.trace-c4 { --fsm-trace: var(--fsm-trace-4); --fsm-trace-taken: var(--fsm-trace-4); }
+.trace-c5 { --fsm-trace: var(--fsm-trace-5); --fsm-trace-taken: var(--fsm-trace-5); }
+.trace-dot { fill: var(--fsm-trace); stroke: var(--fsm-bg); stroke-width: 1; }
+.trace-key { color: var(--fsm-trace); margin-left: 10px; }
 
 .vertex.selected > .shape, .vertex.selected > .stroke { stroke: var(--fsm-accent); stroke-width: 2.4; }
 .vertex.selected > .fill { fill: var(--fsm-accent); }

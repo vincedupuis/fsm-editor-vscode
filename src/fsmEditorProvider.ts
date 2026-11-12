@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { ConnectionPointInfo, FsmModel, MachineInfo, SubmachineInfo, defaultModel, machineConnectionPoints, normalizeModel } from './model';
 import { ExtractError, extractSubmachine, proposedName } from './extract';
 import { Issue, validate } from './validation';
+import { TraceView } from './trace/replay';
 import { basename, decodeText, dirname, encodeText, relative } from './util';
 import { fromXmi, toXmi } from './xmi';
 
@@ -18,6 +19,7 @@ const WEBVIEW_COMMANDS = new Set([
   'fsmEditor.exportPng',
   'fsmEditor.generateCode',
   'fsmEditor.openAsText',
+  'fsmEditor.tracePlayer.focus',
 ]);
 
 /** Which side panels of the diagram editor are shown, the same for every editor. */
@@ -56,6 +58,10 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
   private readonly webviews = new Set<vscode.Webview>();
   /** Parsed summaries of state machine files, keyed by URI, with the version they were read from. */
   private readonly summaries = new Map<string, { key: string; summary: MachineSummary | null }>();
+  /** Every open diagram with its document, for the Trace Player's highlights. */
+  private readonly diagrams = new Set<{ document: vscode.TextDocument; webview: vscode.Webview }>();
+  /** The Trace Player's highlights of each file, by URI; files without one show none. */
+  private traceHighlights = new Map<string, TraceView>();
 
   constructor(private readonly context: vscode.ExtensionContext) {
     const watcher = vscode.workspace.createFileSystemWatcher('**/*.fsm');
@@ -120,6 +126,8 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
     this.resyncs.add(scheduleSync);
     const webview = panel.webview;
     this.webviews.add(webview);
+    const diagram = { document, webview };
+    this.diagrams.add(diagram);
 
     const subs: vscode.Disposable[] = [
       panel.onDidChangeViewState((e) => {
@@ -134,6 +142,7 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
       if (timer) clearTimeout(timer);
       this.resyncs.delete(scheduleSync);
       this.webviews.delete(webview);
+      this.diagrams.delete(diagram);
       if (this.active?.panel === panel) this.active = undefined;
       subs.forEach((s) => s.dispose());
     });
@@ -144,6 +153,7 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
     switch (msg?.type) {
       case 'ready':
         ctx.sync();
+        void ctx.webview.postMessage({ type: 'trace', highlight: this.traceHighlights.get(document.uri.toString()) ?? null });
         break;
       case 'panels': {
         const panels: PanelState = { toolbox: msg.panels?.toolbox !== false, props: msg.panels?.props !== false };
@@ -261,6 +271,17 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
       return undefined;
     } catch (e) {
       return e instanceof ExtractError ? e.message : `The selection can't be extracted: ${e instanceof Error ? e.message : e}`;
+    }
+  }
+
+  /** Shows the Trace Player's highlights (by file URI) in the open diagrams; the other diagrams show none. */
+  setTraceHighlights(highlights: Map<string, TraceView>): void {
+    const before = this.traceHighlights;
+    this.traceHighlights = highlights;
+    for (const { document, webview } of this.diagrams) {
+      const key = document.uri.toString();
+      const h = highlights.get(key) ?? null;
+      if (JSON.stringify(h) !== JSON.stringify(before.get(key) ?? null)) void webview.postMessage({ type: 'trace', highlight: h });
     }
   }
 

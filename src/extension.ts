@@ -2,16 +2,22 @@ import * as vscode from 'vscode';
 import { GenerateArgs, generateCode } from './codegenCommand';
 import { FsmEditorProvider } from './fsmEditorProvider';
 import { defaultModel } from './model';
+import { TracePlayer } from './trace/player';
 import { basename, encodeText, extname } from './util';
 import { toXmi } from './xmi';
 
 export function activate(context: vscode.ExtensionContext) {
   const provider = new FsmEditorProvider(context);
+  const player = new TracePlayer(context, provider);
 
   context.subscriptions.push(
     vscode.window.registerCustomEditorProvider(FsmEditorProvider.viewType, provider, {
       webviewOptions: { retainContextWhenHidden: true },
     }),
+
+    vscode.window.registerWebviewViewProvider(TracePlayer.viewType, player, { webviewOptions: { retainContextWhenHidden: true } }),
+
+    vscode.commands.registerCommand('fsmEditor.openTrace', (uri?: vscode.Uri, uris?: vscode.Uri[]) => player.open(uris?.length ? uris : uri ? [uri] : undefined)),
 
     vscode.commands.registerCommand('fsmEditor.new', async (folder?: vscode.Uri) => {
       const name = await vscode.window.showInputBox({

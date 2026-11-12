@@ -66,6 +66,24 @@
         ]
       }
     ],
+    "viewsContainers": {
+      "panel": [
+        {
+          "id": "fsmTracePlayer",
+          "title": "Trace Player",
+          "icon": "$(debug-alt)"
+        }
+      ]
+    },
+    "views": {
+      "fsmTracePlayer": [
+        {
+          "type": "webview",
+          "id": "fsmEditor.tracePlayer",
+          "name": "Trace Player"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "fsmEditor.new",
@@ -91,6 +109,11 @@
       {
         "command": "fsmEditor.generateCode",
         "title": "Generate Code…",
+        "category": "FSM"
+      },
+      {
+        "command": "fsmEditor.openTrace",
+        "title": "Open Trace…",
         "category": "FSM"
       },
       {
@@ -167,6 +190,59 @@
           "default": "",
           "scope": "machine-overridable",
           "markdownDescription": "Path of `fsm-generator`, the code generator that runs Jinja templates (`.jinja`). Leave empty to use the one bundled with the extension, or else one found on the PATH. Not available in VS Code for the Web."
+        },
+        "fsmEditor.trace.formats": {
+          "type": "array",
+          "default": [],
+          "scope": "resource",
+          "markdownDescription": "Formats of the logs the Trace Player reads, besides its built-in format (`… fsm <machine> <kind> <id> <name>`, what an `onTrace` hook of the generated code can write). Each format has rules tried in order on each line: a regular expression whose named groups give the record (`time`, `machine`, `id`, `name`, and for transitions `source` and `target`) and its kind (`event`, `enter`, `exit` or `transition`, or a `kind` group). States and transitions are found by xmi:id, else by name; lines without a `machine` are about the format's `machine`, else a machine the Trace Player asks for.",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "rules"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Name shown in the Trace Player."
+              },
+              "rules": {
+                "type": "array",
+                "description": "Tried in order on each line; the first that matches makes the record.",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "match"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "event",
+                        "enter",
+                        "exit",
+                        "transition"
+                      ],
+                      "description": "Kind of the records of this rule (else the `kind` group)."
+                    },
+                    "match": {
+                      "type": "string",
+                      "description": "Regular expression (JavaScript) with named groups: time, machine, id, name, source, target, kind."
+                    }
+                  }
+                }
+              },
+              "time": {
+                "type": "string",
+                "description": "Optional regular expression whose `time` group gives the time of every line."
+              },
+              "machine": {
+                "type": "string",
+                "description": "Optional machine name for the lines without a `machine` group."
+              }
+            }
+          }
         }
       }
     }
