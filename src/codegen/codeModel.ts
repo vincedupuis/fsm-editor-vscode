@@ -82,6 +82,8 @@ export interface CodeMachine {
   documentation: string;
   /** Path of the `.fsm` file, as given to the generator. */
   sourceFile: string;
+  /** Hash of the model in the `.fsm` file (16 hex digits, see modelHash in xmi.ts); '' when not given. */
+  modelHash: string;
 }
 
 export interface Ref {
@@ -300,6 +302,8 @@ export interface ToCodeModelOptions {
   submachines?: Record<string, CodeModel>;
   /** Path of the `.fsm` file, shown in generated comments. */
   sourceFile?: string;
+  /** Hash of the model in the `.fsm` file (modelHash in xmi.ts), shown in generated comments. */
+  modelHash?: string;
 }
 
 export function toCodeModel(model: FsmModel, options: ToCodeModelOptions = {}): CodeModel {
@@ -525,6 +529,7 @@ class Builder {
         context: m.context ?? '',
         documentation: m.documentation ?? '',
         sourceFile: this.options.sourceFile ?? '',
+        modelHash: this.options.modelHash ?? '',
       },
       regions,
       topRegions: regions.filter((r) => r.top),

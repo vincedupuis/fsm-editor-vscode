@@ -6,7 +6,7 @@
  */
 import { FsmModel, SubmachineInfo, machineConnectionPoints } from '../model';
 import { Issue, validate } from '../validation';
-import { fromXmi } from '../xmi';
+import { fromXmi, modelHash } from '../xmi';
 import { CodeGenError, CodeModel, toCodeModel } from './codeModel';
 import { OutputFile, Template, TemplateIssue, render } from './render';
 
@@ -22,8 +22,16 @@ export interface FileIssue extends Issue {
   file: string;
 }
 
+/** A file to write, with the machine it was generated from. */
+export interface GeneratedFile extends OutputFile {
+  /** The machine's `.fsm` file, as displayed (for a file shared by several machines, the first one). */
+  source: string;
+  /** Its model hash (modelHash in xmi.ts). */
+  modelHash: string;
+}
+
 export interface GenerateResult {
-  files: OutputFile[];
+  files: GeneratedFile[];
   /** Validation problems; generation stops when one of them is an error. */
   issues: FileIssue[];
   /** The machines generated, as displayed paths. */
@@ -42,6 +50,8 @@ export class GenerateError extends Error {
 interface Loaded {
   path: string;
   model: FsmModel;
+  /** modelHash of the file. */
+  hash: string;
   /** href as written in this model → key of the loaded machine. */
   refs: Map<string, string>;
   code?: CodeModel;
@@ -71,7 +81,7 @@ export async function generate(sources: string[], template: Template, host: Gene
       throw new GenerateError(`${display(path)} is not a valid state machine file: ${e instanceof Error ? e.message : e}`);
     }
     if (expectedId && (model.id ?? 'sm') !== expectedId) throw new GenerateError(`${display(path)} has no state machine with id '${expectedId}'.`);
-    const entry: Loaded = { path, model, refs: new Map() };
+    const entry: Loaded = { path, model, hash: modelHash(text), refs: new Map() };
     loaded.set(path, entry);
 
     // Submachines, then validation with what is known about them.
@@ -115,7 +125,7 @@ export async function generate(sources: string[], template: Template, host: Gene
     const submachines: Record<string, CodeModel> = {};
     for (const [href, sub] of l.refs) submachines[href] = codeOf(sub);
     try {
-      l.code = toCodeModel(l.model, { submachines, sourceFile: display(path) });
+      l.code = toCodeModel(l.model, { submachines, sourceFile: display(path), modelHash: l.hash });
     } catch (e) {
       if (!(e instanceof CodeGenError)) throw e;
       // Reported at the element it is about, as a validation error would be.
@@ -127,7 +137,7 @@ export async function generate(sources: string[], template: Template, host: Gene
   };
 
   const targets = roots;
-  const files: OutputFile[] = [];
+  const files: GeneratedFile[] = [];
   const owner = new Map<string, string>();
   for (const path of [...new Set(targets)]) {
     const reported: TemplateIssue[] = [];
@@ -142,7 +152,7 @@ export async function generate(sources: string[], template: Template, host: Gene
         throw new GenerateError(`${display(path)} and ${display(other)} both generate '${f.path}': give the state machines different names.`);
       }
       owner.set(f.path, path);
-      files.push(f);
+      files.push({ ...f, source: display(path), modelHash: loaded.get(path)!.hash });
     }
   }
   const templateErrors = issues.filter((i) => i.severity === 'error');

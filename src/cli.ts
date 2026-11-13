@@ -7,7 +7,7 @@
  */
 import { existsSync, promises as fs, readdirSync, statSync } from 'node:fs';
 import * as path from 'node:path';
-import { FileIssue, GenerateError, GenerateHost, generate } from './codegen/generate';
+import { FileIssue, GenerateError, GenerateHost, GeneratedFile, generate } from './codegen/generate';
 import { TemplateError, parseTemplate } from './codegen/render';
 import { decodeHref } from './util';
 
@@ -25,10 +25,14 @@ Options:
   -t, --template <file>  Template (.hbs). A bare name such as "ts" means
                          templates/<name>.hbs next to this program.
   -o, --out <folder>     Output folder (default: the current folder).
+      --check            Write nothing: report the files of the output folder
+                         that are missing, or out of date because they don't
+                         hold the model hash of their .fsm file any more.
   -h, --help             Show this help.
   -v, --version          Show the version.
 
-Exit codes: 0 success, 1 errors in the state machines or the template, 2 bad usage.`;
+Exit codes: 0 success, 1 errors in the state machines or the template (with
+--check, also files missing or out of date), 2 bad usage.`;
 
 class UsageError extends Error {}
 
@@ -36,10 +40,11 @@ interface Args {
   files: string[];
   template?: string;
   out: string;
+  check: boolean;
 }
 
 function parseArgs(argv: string[]): Args | 'help' | 'version' {
-  const args: Args = { files: [], out: '.' };
+  const args: Args = { files: [], out: '.', check: false };
   const value = (i: number, flag: string) => {
     const v = argv[i + 1];
     if (v === undefined || v.startsWith('-')) throw new UsageError(`${flag} needs a value.`);
@@ -62,6 +67,9 @@ function parseArgs(argv: string[]): Args | 'help' | 'version' {
       case '-o':
       case '--out':
         args.out = inline ?? value(i++, flag);
+        break;
+      case '--check':
+        args.check = true;
         break;
       default:
         if (a.startsWith('-') && a !== '-') throw new UsageError(`Unknown option ${a}.`);
@@ -219,12 +227,48 @@ async function run(args: Args): Promise<number> {
   }
   await report(result.issues);
   const out = path.resolve(args.out);
+  if (args.check) return check(result.files, out);
   for (const f of result.files) {
     const target = path.join(out, ...f.path.split('/'));
     await fs.mkdir(path.dirname(target), { recursive: true });
     await fs.writeFile(target, f.content, 'utf8');
     process.stdout.write(`wrote ${display(target)}\n`);
   }
+  return 0;
+}
+
+// ------------------------------------------------------------------ checking
+
+/**
+ * `--check`: compares the files of the output folder with the model hashes of their `.fsm` files instead of
+ * writing them. Only files in which the template writes their machine's hash (`machine.modelHash`) are checked:
+ * up to date when the file in the folder holds that hash, missing when it can't be read, out of date otherwise.
+ * Returns the exit code.
+ */
+async function check(files: GeneratedFile[], out: string): Promise<number> {
+  let failed = 0;
+  for (const f of files) {
+    const at = f.modelHash ? f.content.indexOf(f.modelHash) : -1;
+    if (at < 0) continue;
+    const target = path.join(out, ...f.path.split('/'));
+    let text: string | undefined;
+    try {
+      text = await fs.readFile(target, 'utf8');
+    } catch {
+      text = undefined;
+    }
+    if (text?.includes(f.modelHash)) {
+      process.stdout.write(`up to date ${display(target)}\n`);
+      continue;
+    }
+    failed++;
+    const [line, message] =
+      text === undefined
+        ? [1, `Missing: not generated from ${f.source} yet.`]
+        : [f.content.slice(0, at).split('\n').length, `Out of date: ${f.source} has changed since it was generated (its model hash is now ${f.modelHash}).`];
+    process.stderr.write(`${display(target)}:${line}: error: ${message}\n`);
+  }
+  if (failed) throw new Error(`${failed} generated file${failed > 1 ? 's are' : ' is'} missing or out of date.`);
   return 0;
 }
 

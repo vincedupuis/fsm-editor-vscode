@@ -15,8 +15,13 @@
  *   per colored vertex or transition (UML DI has no color), then a
  *   <group id="g" members="id id …"/> per group of vertices (members in file
  *   order, groups in the order of their first member).
+ *
+ * The file ends with the model hash, in its own xmi:Extension:
+ * <modelHash value="…"/>, the first 16 hex digits of the SHA-256 of the
+ * document without its layout (see modelHash).
  */
 import { FsmModel, ITEM_COLOR_KEYS, ItemColors, PointKind, Region, Transition, Vertex, VertexType, isColor, normalizeModel } from './model';
+import { sha256 } from './sha256';
 import { Node, XmlElement, parseXml, writeXml } from './xml';
 
 export const NS = {
@@ -413,7 +418,7 @@ export function toXmi(model: FsmModel): string {
     ...(styles.length ? [['xmi:Extension', { extender: EXTENDER }, ...styles] as Node] : []),
   ];
 
-  return writeXml([
+  const doc: Node = [
     'xmi:XMI',
     {
       'xmi:version': '20131001',
@@ -427,7 +432,38 @@ export function toXmi(model: FsmModel): string {
     ['uml:Model', { 'xmi:id': `${smId}_model`, name: m.name }, ...profileApplication, ...packaged],
     diagram,
     ...applications,
-  ]);
+  ];
+  doc.push(['xmi:Extension', { extender: EXTENDER }, ['modelHash', { value: modelHash(writeXml(doc)) }]]);
+  return writeXml(doc);
+}
+
+// ------------------------------------------------------------------ model hash
+
+/**
+ * Hash of the state machine model in a file (`text`): the first 16 hex digits of the SHA-256 of the
+ * UTF-8 canonical form of its document element, leaving out the layout. The canonical form writes
+ * each element as `<name a="v" …>text children</name>`, with
+ * - names under the canonical prefixes (as parseXml gives them), attributes sorted by name, without
+ *   the namespace declarations;
+ * - the element's own text, left out when it is only XML white space (space, tab, CR, LF);
+ * - `&`, `<`, `>` and `"` written as `&amp;`, `&lt;`, `&gt;` and `&quot;` in values and text;
+ * - no UML DI elements (the diagram) and no FSM Editor xmi:Extension (colors, groups, the hash itself).
+ * Throws XmlError when the text isn't XML.
+ */
+export function modelHash(text: string): string {
+  const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const out: string[] = [];
+  const write = (el: XmlElement) => {
+    if (el.ns === NS.umldi || (el.name === 'xmi:Extension' && el.attrs.extender === EXTENDER)) return;
+    out.push(`<${el.name}`);
+    for (const k of Object.keys(el.attrs).sort()) out.push(` ${k}="${esc(el.attrs[k])}"`);
+    out.push('>');
+    if (/[^ \t\r\n]/.test(el.text)) out.push(esc(el.text));
+    for (const c of el.children) write(c);
+    out.push(`</${el.name}>`);
+  };
+  write(parseXml(text, CANONICAL));
+  return sha256(out.join('')).slice(0, 16);
 }
 
 // ------------------------------------------------------------------ reading
