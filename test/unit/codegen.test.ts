@@ -224,6 +224,25 @@ describe('semantics', () => {
     });
   }
 
+  it('a local transition to a point on its own state\'s border is a code generation error, not a crash', () => {
+    const b = new ModelBuilder('LocalToBorder');
+    const c = b.state('C', 'r_root', {}, 1);
+    const c1 = b.state('C1', 'C_r0');
+    const p = b.vertex('entryPoint', c, { name: 'in' });
+    b.init(c);
+    b.init(c1, 'C_r0');
+    b.t(p, c1);
+    const t = b.t(c, p, { kind: 'local', triggers: ['e'] });
+    assert.throws(
+      () => toCodeModel(b.model),
+      (e: unknown) => {
+        assert.ok(e instanceof CodeGenError);
+        assert.deepEqual([e.id, e.message], [t, 'Unknown region.']);
+        return true;
+      },
+    );
+  });
+
   it('local transitions do not leave their composite state; external ones do', async () => {
     const b = new ModelBuilder('Local');
     const c = b.state('C', 'r_root', { entry: 'enterC()', exit: 'exitC()' }, 1);

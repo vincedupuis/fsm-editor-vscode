@@ -786,7 +786,9 @@ class Builder {
         return one([...regions.map((r) => this.exitRegionStep(r)), ...this.effect(t), ...regions.map((r) => this.enterRegionStep(r))]);
       }
       const chain = this.chain(target);
-      const region = pos.regions.find((r) => chain.includes(r.id))!;
+      // A point on the state's own border is inside the state, but in none of its regions.
+      const region = pos.regions.find((r) => chain.includes(r.id));
+      if (!region) throw new CodeGenError('Unknown region.', t.id);
       return seq(one([this.exitRegionStep(region.id), ...this.effect(t)]), this.enterRegion(region.id, [target]));
     }
     const domain = this.commonRegion([pos, target]);

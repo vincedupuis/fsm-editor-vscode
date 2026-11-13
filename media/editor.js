@@ -3627,7 +3627,8 @@ ${scene(true)}
           return;
         }
         [t.source, t.target] = [t.target, t.source];
-        if (t.points) t.points.reverse();
+        // A self-transition loop's bend points are its corners, in drawing order: reversed, they would reshape it.
+        if (t.points && !isLoop(t)) t.points.reverse();
         commit({ props: true });
       } }, 'Reverse'),
     );

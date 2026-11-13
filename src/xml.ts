@@ -42,6 +42,9 @@ function decode(s: string, line: number): string {
  * `canonical` maps namespace URIs to the prefix used in the returned names.
  */
 export function parseXml(text: string, canonical: Record<string, string> = {}): XmlElement {
+  // Line ends as XML 1.0 (2.11) has them read: \r\n and a lone \r become \n (a &#13; reference still gives \r).
+  // Kept, a file with CRLF line ends would gain a \r in multi-line text on each save.
+  text = text.replace(/\r\n?/g, '\n');
   let i = 0;
   let line = 1;
   const advance = (to: number) => {

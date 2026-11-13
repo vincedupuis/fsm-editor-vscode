@@ -25,6 +25,18 @@ describe('XMI', () => {
     b.vertex('comment', 'r_root', { id: 'n1', text: '  indented\nnote\n\n', anchors: [] });
     assert.equal(fromXmi(toXmi(b.model)).vertices.find((v) => v.id === 'n1')?.text, '  indented\nnote\n\n');
   });
+
+  it('reads CRLF line ends as line feeds, so that a CRLF file is stable across saves', () => {
+    const b = new ModelBuilder('Notes');
+    b.state('A');
+    b.init('A');
+    b.vertex('comment', 'r_root', { id: 'n1', text: 'a\nb\r', anchors: [] });
+    const crlf = toXmi(b.model).replace(/\n/g, '\r\n');
+    const back = fromXmi(crlf);
+    // The literal line break is read as \n; the trailing \r, written as &#13;, stays.
+    assert.equal(back.vertices.find((v) => v.id === 'n1')?.text, 'a\nb\r');
+    assert.equal(toXmi(back), toXmi(fromXmi(toXmi(b.model))));
+  });
 });
 
 describe('XMI: a state inside its own region', () => {
