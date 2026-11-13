@@ -285,7 +285,7 @@ export function validate(model: FsmModel, submachines: SubmachineInfo = {}): Iss
       add(t.id, 'warning', 'Pre/postconditions only apply to protocol state machines and are ignored.');
     }
     if (s.type === 'state' && g.type === 'state' && !t.triggers.length && !t.guard && s !== g && !(s.regions?.length)) {
-      if (ix.outgoing(s.id).filter((o) => o.kind !== 'internal' && !o.triggers.length).length > 1) {
+      if (ix.outgoing(s.id).filter((o) => o.kind !== 'internal' && !o.triggers.length && !o.guard).length > 1) {
         add(t.id, 'warning', `${name(s)} has several completion transitions without triggers or guards.`);
       }
     }

@@ -18,7 +18,7 @@
 import * as vscode from 'vscode';
 import { FsmEditorProvider } from '../fsmEditorProvider';
 import { FsmModel, ModelIndex } from '../model';
-import { basename, decodeText } from '../util';
+import { basename, decodeHref, decodeText } from '../util';
 import { fromXmi } from '../xmi';
 import { TraceFormat, TraceRecord, detectFormat, traceFormats } from './format';
 import { Instance, TimelineEntry, TraceView, isResolved, replay } from './replay';
@@ -461,7 +461,7 @@ export class TracePlayer implements vscode.WebviewViewProvider {
         return null;
       }
       const [file, id = 'sm'] = state.submachine!.split('#');
-      const uri = vscode.Uri.joinPath(vscode.Uri.parse(machine.uri), '..', decodeURI(file));
+      const uri = vscode.Uri.joinPath(vscode.Uri.parse(machine.uri), '..', decodeHref(file));
       let sub = this.machines.get(uri.toString());
       if (!sub) {
         sub = (await this.readMachine(uri)) ?? undefined;

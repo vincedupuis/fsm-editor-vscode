@@ -3,7 +3,7 @@ import { ConnectionPointInfo, FsmModel, MachineInfo, SubmachineInfo, defaultMode
 import { ExtractError, extractSubmachine, proposedName } from './extract';
 import { Issue, validate } from './validation';
 import { TraceView } from './trace/replay';
-import { basename, decodeText, dirname, encodeText, relative } from './util';
+import { basename, decodeHref, decodeText, dirname, encodeText, relative } from './util';
 import { fromXmi, toXmi } from './xmi';
 
 interface ActiveEditor {
@@ -340,7 +340,7 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
 
   private resolveHref(document: vscode.TextDocument, href: string): { uri: vscode.Uri; id: string } {
     const [file, id = ''] = href.split('#');
-    return { uri: vscode.Uri.joinPath(this.location(document), '..', decodeURI(file)), id };
+    return { uri: vscode.Uri.joinPath(this.location(document), '..', decodeHref(file)), id };
   }
 
   /** Where `document` is, or for an untitled one, where it will be saved (its path in the workspace's file system). */

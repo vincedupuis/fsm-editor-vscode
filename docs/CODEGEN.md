@@ -98,7 +98,7 @@ order.activeStates;      // ['Payment']
 ```
 
 - **Actions:** every function called by an entry, exit or effect behavior is a `void` method of the actions interface. Every function called by a guard, invariant or pre/postcondition is a `boolean` method.
-- **Do activities** `do / blinkLed()` become `startBlinkLed()` and `stopBlinkLed()`. Call `machine.activityDone('blinkLed')` when an activity ends by itself. A state with do activities completes when all of them have ended.
+- **Do activities** `do / blinkLed()` become `startBlinkLed()` and `stopBlinkLed()`. Call `machine.activityDone('blinkLed')` when an activity ends by itself. A state with do activities completes when all of them have ended. An activity listed twice in one `do` is started, stopped and awaited once.
 - **Time events** `after(5m)` use `setTimeout`. Pass `{ clock }` to control time in tests.
 - **Submachines:** each machine gets its own class. `OrderActions.submachines.Payment` gives the actions of the `Payment` submachine state. The parent routes events to the running submachine and follows its exit points. `Order.ts` imports `Payment.ts`, so generate `Payment.fsm` too, for example with `fsm "models/*.fsm" …`.
 - **Constraints:** invariants, preconditions and postconditions call `onConstraintViolation(kind, element)`.

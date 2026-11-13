@@ -1056,7 +1056,8 @@ class Builder {
     const isFinal = v.type === 'final';
     const owner = this.ix.regionOwner.get(v.parent) ?? null;
     const regions = (v.regions ?? []).map((r) => this.regionRef(r.id));
-    const activities = isFinal ? [] : this.calls(v.doActivity, `do of ${what}`, v.id, this.activities);
+    // Listed twice, an activity is still started, stopped and awaited once.
+    const activities = isFinal ? [] : [...new Set(this.calls(v.doActivity, `do of ${what}`, v.id, this.activities))];
     const timers = this.timers.filter((t) => t.stateIndex === index).map((t) => ({ name: t.name, index: t.index }));
     const timerSteps = this.timers.filter((t) => t.stateIndex === index);
 
@@ -1184,7 +1185,15 @@ class Builder {
   private entryPoint(v: Vertex): CodeEntryPoint {
     const outs = this.ix.outgoing(v.id);
     let alts = one();
-    for (const t of outs) alts = seq(alts, this.segment(v, t));
+    for (const t of outs) {
+      // The machine is not active yet: a transition into another top-level region than the point's enters only
+      // that region (as a segment, it would exit every top-level region and enter them all).
+      const target = this.vertex(t.target);
+      const ways = this.commonRegion([v, target]) === null
+        ? seq(one(this.effect(t)), this.enterRegion(this.chain(target)[0], [target]))
+        : this.segment(v, t);
+      alts = seq(alts, ways);
+    }
     const entered = new Set(outs.map((t) => this.chain(this.vertex(t.target))[0]));
     const others = this.topRegionIds.filter((r) => !entered.has(r)).map((r) => this.enterRegionStep(r));
     const name = ident(v.name, 'entry');

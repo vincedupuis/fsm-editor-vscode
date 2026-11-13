@@ -361,6 +361,21 @@ describe('semantics', () => {
     assert.deepEqual(m.activeStates, ['Done']);
   });
 
+  it('do activities: one listed twice is started, stopped and awaited once', async () => {
+    const b = new ModelBuilder('Twice');
+    const w = b.state('Working', 'r_root', { doActivity: 'crunch(); crunch()' });
+    const d = b.state('Done');
+    b.init(w);
+    b.t(w, d);
+    const { Twice } = await load({ 'Twice.fsm': b.model });
+    const rec = recorder();
+    const m = new Twice(rec.actions);
+    m.start();
+    m.activityDone('crunch');
+    assert.deepEqual(rec.take(), ['startCrunch', 'stopCrunch']);
+    assert.deepEqual(m.activeStates, ['Done']);
+  });
+
   it('protocol machines check preconditions, postconditions and invariants', async () => {
     const b = new ModelBuilder('Door', 'protocol');
     const closed = b.state('Closed', 'r_root', { invariant: 'isClosed()' });
@@ -381,6 +396,32 @@ describe('semantics', () => {
     rec.conditions.isClosed = false;
     m.dispatch('close');
     assert.deepEqual(rec.take(), ['isClosed', '!invariant: Closed']);
+  });
+
+  it('enters each top-level region once through an entry point targeting another top-level region', async () => {
+    const sub = new ModelBuilder('Sub');
+    sub.model.regions = [{ id: 'r1', name: 'one' }, { id: 'r2', name: 'two' }];
+    sub.state('A', 'r1', { entry: 'enterA()' });
+    sub.state('B', 'r2', { entry: 'enterB()' });
+    sub.state('C', 'r2', { entry: 'enterC()' });
+    sub.init('A', 'r1');
+    sub.init('B', 'r2');
+    sub.t(sub.vertex('entryPoint', 'r1', { id: 'ep', name: 'in' }), 'C');
+    const top = new ModelBuilder('Top');
+    top.state('Idle');
+    top.init('Idle');
+    top.state('S', 'r_root', { submachine: 'Sub.fsm#sm' });
+    top.vertex('connectionPointRef', 'S', { id: 'ref', ref: 'ep', pointKind: 'entry' });
+    top.t('Idle', 'ref', { triggers: ['go'] });
+    const { Top } = await load({ 'Top.fsm': top.model, 'Sub.fsm': sub.model });
+    const rec = recorder();
+    const m = new Top(rec.actions);
+    m.start();
+    rec.take();
+    m.dispatch('go');
+    assert.deepEqual(rec.take(), ['S.enterC', 'S.enterA']);
+    const steps = toCodeModel(sub.model).entryPoints[0].steps;
+    assert.ok(!steps.some((s) => s.kind === 'exitRegion'));
   });
 });
 

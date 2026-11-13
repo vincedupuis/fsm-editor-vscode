@@ -168,7 +168,10 @@ export function toXmi(model: FsmModel): string {
     let id = events.get(trigger);
     if (id) return id;
     const time = /^after\((.+)\)$/.exec(trigger);
-    const safe = trigger.replace(/[^A-Za-z0-9_]/g, '_');
+    let safe = trigger.replace(/[^A-Za-z0-9_]/g, '_');
+    // after(1s) and an event named after_1s_ would share an id: the later one gets another _.
+    const taken = new Set(events.values());
+    while (taken.has(`ev_${safe}`)) safe += '_';
     if (time) {
       id = `ev_${safe}`;
       eventElements.push([
@@ -452,12 +455,12 @@ function refs(el: XmlElement, name: string): string[] {
 const localId = (ref: string) => (ref.includes('#') ? ref.slice(ref.indexOf('#') + 1) : ref);
 
 /** Text of an opaque behavior or constraint (its first body). */
-function bodyOf(el: XmlElement | undefined): string {
+function bodyOf(el: XmlElement | undefined, trim = true): string {
   if (!el) return '';
   const spec = kid(el, 'specification') ?? el;
   const b = kid(spec, 'body');
-  if (b) return b.text.trim();
-  return (spec.attrs.body ?? spec.attrs.value ?? '').trim();
+  const text = b ? b.text : spec.attrs.body ?? spec.attrs.value ?? '';
+  return trim ? text.trim() : text;
 }
 
 function* walk(el: XmlElement): Generator<XmlElement> {
@@ -597,7 +600,7 @@ export function fromXmi(text: string): FsmModel {
       if (c.name === 'subvertex') readVertex(c, id);
       else if (c.name === 'transition') readTransition(c);
       else if (c.name === 'ownedComment') {
-        model.vertices.push({ ...vertexBase(c, 'comment', id), text: bodyOf(c), anchors: refs(c, 'annotatedElement') });
+        model.vertices.push({ ...vertexBase(c, 'comment', id), text: bodyOf(c, false), anchors: refs(c, 'annotatedElement') });
       }
     }
   }

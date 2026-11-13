@@ -1,0 +1,40 @@
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import { decodeHref } from '../../src/util';
+import { fromXmi, toXmi } from '../../src/xmi';
+import { ModelBuilder } from './harness';
+
+describe('XMI', () => {
+  it('keeps a time trigger and an event whose ids would be the same apart', () => {
+    const b = new ModelBuilder('Ids');
+    b.state('A');
+    b.state('B');
+    b.init('A');
+    b.t('A', 'B', { triggers: ['after(1s)'] });
+    b.t('B', 'A', { triggers: ['after_1s_'] });
+    const xmi = toXmi(b.model);
+    assert.deepEqual(fromXmi(xmi).transitions.map((t) => t.triggers), [[], ['after(1s)'], ['after_1s_']]);
+    const ids = [...xmi.matchAll(/xmi:id="([^"]*)"/g)].map((m) => m[1]);
+    assert.equal(new Set(ids).size, ids.length, 'unique xmi:ids');
+  });
+
+  it('keeps the spaces and line breaks around a comment text', () => {
+    const b = new ModelBuilder('Notes');
+    b.state('A');
+    b.init('A');
+    b.vertex('comment', 'r_root', { id: 'n1', text: '  indented\nnote\n\n', anchors: [] });
+    assert.equal(fromXmi(toXmi(b.model)).vertices.find((v) => v.id === 'n1')?.text, '  indented\nnote\n\n');
+  });
+});
+
+describe('hrefs', () => {
+  it('decode as decodeURI does, keeping malformed escapes', () => {
+    assert.equal(decodeHref('My%20Machine.fsm'), 'My Machine.fsm');
+    assert.equal(decodeHref('caf%C3%A9.fsm'), 'café.fsm');
+    assert.equal(decodeHref('a%23b%2Fc'), 'a%23b%2Fc');
+    assert.equal(decodeHref('caf%C3%A9%zz'), 'café%zz');
+    assert.equal(decodeHref('a%E0.fsm'), 'a%E0.fsm');
+    assert.equal(decodeHref('a%E0%41.fsm'), 'a%E0A.fsm');
+    assert.equal(decodeHref('a%C0%80%'), 'a%C0%80%');
+  });
+});

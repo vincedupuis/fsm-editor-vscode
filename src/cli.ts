@@ -9,6 +9,7 @@ import { existsSync, promises as fs, readdirSync, statSync } from 'node:fs';
 import * as path from 'node:path';
 import { FileIssue, GenerateError, GenerateHost, generate } from './codegen/generate';
 import { TemplateError, parseTemplate } from './codegen/render';
+import { decodeHref } from './util';
 
 declare const FSM_VERSION: string;
 
@@ -150,9 +151,19 @@ function sources(patterns: string[]): string[] {
   return files;
 }
 
+const isFile = (p: string) => {
+  try {
+    return statSync(p).isFile();
+  } catch {
+    return false;
+  }
+};
+
 /** The template file: a path, or a bare name looked up in the templates folders next to the program. */
 function templatePath(name: string): string {
-  if (/[\\/]/.test(name) || /\.hbs$/i.test(name) || existsSync(name)) return path.resolve(name);
+  // A bare name is a file of the current folder only when there is one: a folder named like the template
+  // (e.g. the output folder of `-t ts -o ts`) is not.
+  if (/[\\/]/.test(name) || /\.hbs$/i.test(name) || isFile(name)) return path.resolve(name);
   const dirs = [path.dirname(process.execPath), __dirname, path.join(__dirname, '..')].map((d) => path.join(d, 'templates'));
   for (const d of dirs) {
     const f = path.join(d, `${name}.hbs`);
@@ -163,7 +174,7 @@ function templatePath(name: string): string {
 
 const host: GenerateHost = {
   readFile: (p) => fs.readFile(p, 'utf8'),
-  resolve: (from, href) => path.resolve(path.dirname(from), decodeURI(href)),
+  resolve: (from, href) => path.resolve(path.dirname(from), decodeHref(href)),
   display,
 };
 

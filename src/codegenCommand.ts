@@ -12,7 +12,7 @@ import * as vscode from 'vscode';
 import { GenerateError, GenerateHost, generate } from './codegen/generate';
 import { TemplateError, parseTemplate } from './codegen/render';
 import { generatorTemplates, locateGenerator, runGenerator } from './fsmGenerator';
-import { basename, decodeText, encodeText } from './util';
+import { basename, decodeHref, decodeText, encodeText } from './util';
 
 export interface GenerateArgs {
   template?: vscode.Uri | string;
@@ -107,7 +107,7 @@ export async function generateCode(context: vscode.ExtensionContext, source: vsc
       const open = vscode.workspace.textDocuments.find((d) => d.uri.toString() === p);
       return open ? open.getText() : decodeText(await vscode.workspace.fs.readFile(vscode.Uri.parse(p)));
     },
-    resolve: (from, href) => vscode.Uri.joinPath(vscode.Uri.parse(from), '..', decodeURI(href)).toString(),
+    resolve: (from, href) => vscode.Uri.joinPath(vscode.Uri.parse(from), '..', decodeHref(href)).toString(),
     display: (p) => vscode.workspace.asRelativePath(vscode.Uri.parse(p)),
   };
 

@@ -144,7 +144,40 @@
   const machineLabel = (href) =>
     (submachines[href] && submachines[href].name) ||
     (machines.find((m) => m.href === href) || {}).name ||
-    decodeURI(String(href).split('#')[0]).replace(/^.*\//, '').replace(/\.fsm$/, '');
+    decodeHref(String(href).split('#')[0]).replace(/^.*\//, '').replace(/\.fsm$/, '');
+  /** decodeURI keeping malformed escapes as they are instead of throwing (decodeHref of src/util.ts). */
+  function decodeHref(s) {
+    const at = (i) => (s[i] === '%' && /^[0-9A-Fa-f]{2}$/.test(s.slice(i + 1, i + 3)) ? parseInt(s.slice(i + 1, i + 3), 16) : -1);
+    const utf8 = new TextDecoder('utf-8', { fatal: true });
+    let out = '';
+    let i = 0;
+    while (i < s.length) {
+      const b = at(i);
+      if (b >= 0) {
+        const len = b < 0x80 ? 1 : b >= 0xc0 && b <= 0xdf ? 2 : b >= 0xe0 && b <= 0xef ? 3 : b >= 0xf0 && b <= 0xf7 ? 4 : 0;
+        const run = [b];
+        let j = i + 3;
+        while (run.length < len && at(j) >= 0) {
+          run.push(at(j));
+          j += 3;
+        }
+        let text = null;
+        try {
+          if (run.length === len) text = utf8.decode(new Uint8Array(run));
+        } catch {
+          text = null;
+        }
+        if (text !== null) {
+          out += len === 1 && ';/?:@&=+$,#'.includes(text) ? s.slice(i, j) : text;
+          i = j;
+          continue;
+        }
+      }
+      out += s[i];
+      i++;
+    }
+    return out;
+  }
   /** Name of the point `id` in the machine referenced by `state`. */
   const pointName = (state, id) => ((state && submachinePoints(state).find((q) => q.id === id)) || {}).name || '';
 
@@ -1067,6 +1100,8 @@
 
   // ---------------------------------------------------------------- persistence
   function commit(opts = {}) {
+    // The document can't be read: writing the model shown before would replace the text being fixed.
+    if (!parseErrorEl.hidden) return;
     reindex();
     cleanGroups();
     keepHeaders();
@@ -1124,6 +1159,8 @@
       submachines = msg.submachines || {};
       machines = msg.machines || [];
       if (msg.error) {
+        // Reloaded once readable again, even as the same text: what was changed meanwhile wasn't written.
+        lastText = null;
         showParseError(msg.error);
         return;
       }
@@ -1987,16 +2024,24 @@ ${scene(true)}
   function pasteData(data, at) {
     if (!data || !Array.isArray(data.vertices)) return;
     reindex();
+    // A connection point reference whose state is neither copied nor in this diagram is left out, with its transitions.
+    const copied = new Set(data.vertices.map((v) => v.id));
+    const vertices = data.vertices.filter((v) => v.type !== 'connectionPointRef' || copied.has(v.parent) || V.has(v.parent));
+    if (!vertices.length) return;
     const map = new Map();
-    for (const v of data.vertices) {
+    for (const v of vertices) {
       map.set(v.id, uid('v'));
       for (const r of v.regions || []) map.set(r.id, uid('r'));
     }
+    // Parents copied in a cycle (crafted clipboard text): nothing would be a root.
+    if (!vertices.some((v) => !map.has(v.parent))) return;
+    // Before the comments, whose anchors may be copied transitions.
+    for (const t of data.transitions || []) if (map.has(t.source) && map.has(t.target)) map.set(t.id, uid('t'));
     let offX;
     let offY;
     let target = null;
     if (at) {
-      const roots = data.vertices.filter((v) => !map.has(v.parent));
+      const roots = vertices.filter((v) => !map.has(v.parent));
       offX = snap(at.x) - Math.min(...roots.map((v) => v.x));
       offY = snap(at.y) - Math.min(...roots.map((v) => v.y));
       target = regionAt(at, new Set());
@@ -2007,7 +2052,7 @@ ${scene(true)}
     const off = { x: offX, y: offY };
     const added = [];
     const groups = new Map();
-    for (const src of data.vertices) {
+    for (const src of vertices) {
       const v = JSON.parse(JSON.stringify(src));
       v.id = map.get(src.id);
       // A copied group is a new group; a lone copied member belongs to none (see cleanGroups).
@@ -2034,7 +2079,7 @@ ${scene(true)}
     for (const src of data.transitions || []) {
       if (!map.has(src.source) || !map.has(src.target)) continue;
       const t = JSON.parse(JSON.stringify(src));
-      t.id = uid('t');
+      t.id = map.get(src.id);
       t.source = map.get(src.source);
       t.target = map.get(src.target);
       if (t.points) t.points = t.points.map((p) => ({ x: p.x + off.x, y: p.y + off.y }));
@@ -3551,7 +3596,8 @@ ${scene(true)}
         commit({ props: true });
       } }, 'Straighten'),
       h('button', { className: 'pbtn', onclick: () => {
-        if (!g || g.type === 'initial' || (s && (s.type === 'final' || s.type === 'terminate'))) {
+        // Reversed, the target becomes the source: refused as drawing it that way would be.
+        if (!g || !s || connectProblem(g, s)) {
           toast('This transition cannot be reversed.');
           return;
         }

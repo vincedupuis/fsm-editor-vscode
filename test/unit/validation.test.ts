@@ -181,3 +181,23 @@ describe('validation: cycles of pseudostates', () => {
     });
   });
 });
+
+describe('validation: completion transitions', () => {
+  const warned = (b: ModelBuilder) => validate(b.model).filter((i) => i.message.includes('several completion transitions')).map((i) => i.id);
+
+  it('warns about several completion transitions without guards', () => {
+    const b = machine();
+    b.state('C');
+    const t1 = b.t('A', 'B');
+    const t2 = b.t('A', 'C');
+    assert.deepEqual(warned(b), [t1, t2]);
+  });
+
+  it('does not count a guarded completion transition', () => {
+    const b = machine();
+    b.state('C');
+    b.t('A', 'B', { guard: 'ready()' });
+    b.t('A', 'C');
+    assert.deepEqual(warned(b), []);
+  });
+});
