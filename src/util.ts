@@ -31,12 +31,21 @@ export function relative(from: string, to: string): string {
   return [...Array(a.length - i).fill('..'), ...b.slice(i)].join('/');
 }
 
-const RESERVED = ';/?:@&=+$,#';
+/**
+ * The file part of an href: `encodeURI`, plus `#` and `?`, which would otherwise end the path (a file named
+ * `a#b.fsm` is `a%23b.fsm`).
+ */
+export function encodeHref(path: string): string {
+  return encodeURI(path).replace(/[#?]/g, (c) => (c === '#' ? '%23' : '%3F'));
+}
+
+const RESERVED = ';/:@&=+$,';
 const utf8 = new TextDecoder('utf-8', { fatal: true });
 
 /**
  * `decodeURI` without its URIError: decodes `%XX` escapes (UTF-8), except those of reserved characters
- * (`;/?:@&=+$,#`), and keeps malformed ones as they are (as fsm-generator does).
+ * (`;/:@&=+$,`; unlike `decodeURI`, `%23` and `%3F` give `#` and `?`, as `encodeHref` writes them), and keeps
+ * malformed ones as they are (as fsm-generator does).
  */
 export function decodeHref(s: string): string {
   const at = (i: number) => (s[i] === '%' && /^[0-9A-Fa-f]{2}$/.test(s.slice(i + 1, i + 3)) ? parseInt(s.slice(i + 1, i + 3), 16) : -1);

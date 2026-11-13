@@ -258,3 +258,15 @@ describe('extract to submachine: generated code behaves the same', () => {
     }
   });
 });
+
+describe('Extract to Submachine: ids used twice', () => {
+  it('names the exit point of a transition to a reference whose parent id is its own without recursing forever', () => {
+    const b = new ModelBuilder('M');
+    b.state('A');
+    b.init('A');
+    b.vertex('connectionPointRef', 'p', { id: 'p', pointKind: 'entry', ref: 'x' });
+    b.t('A', 'p', { triggers: ['e'] });
+    const r = extractSubmachine(b.model, ['A'], 'Sub', HREF);
+    assert.deepEqual(r.machine.vertices.filter((v) => v.type === 'exitPoint').map((v) => v.name), ['toPoint']);
+  });
+});

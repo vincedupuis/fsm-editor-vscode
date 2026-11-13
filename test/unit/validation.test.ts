@@ -201,3 +201,48 @@ describe('validation: completion transitions', () => {
     assert.deepEqual(warned(b), []);
   });
 });
+
+describe('validation: region ids', () => {
+  it('reports a region id used again, on the region id', () => {
+    const b = machine();
+    const s = b.state('S', 'r_root', {}, 1);
+    b.state('T', 'S_r0');
+    b.model.vertices.find((v) => v.id === s)!.regions![0].id = 'r_root';
+    b.state('U', 'r_root', { id: 'u' }, 1);
+    b.model.vertices.find((v) => v.id === 'u')!.regions![0].id = 'A';
+    const dup = validate(b.model).filter((i) => i.message.startsWith('Duplicate id'));
+    assert.deepEqual(dup.map((i) => [i.id, i.severity, i.message]), [
+      ['r_root', 'error', "Duplicate id 'r_root'."],
+      ['A', 'error', "Duplicate id 'A'."],
+    ]);
+  });
+});
+
+describe('validation: several top-level regions', () => {
+  it('enters the initial of every top-level region, and warns about each one without', () => {
+    const b = new ModelBuilder('M');
+    b.model.regions.push({ id: 'r2', name: '' }, { id: 'r3', name: '' }, { id: 'r4', name: '' });
+    b.state('A');
+    b.init('A');
+    b.state('B', 'r2');
+    b.init('B', 'r2');
+    b.state('C', 'r3');
+    b.vertex('final', 'r4');
+    const issues = validate(b.model).map((i) => [i.id, i.severity, i.message]);
+    assert.deepEqual(issues, [
+      ['', 'warning', 'The top-level region has no initial pseudostate.'],
+      ['C', 'warning', "State 'C' can never be entered."],
+    ]);
+  });
+
+  it('warns once per top-level region with states but no initial pseudostate', () => {
+    const b = new ModelBuilder('M');
+    b.model.regions.push({ id: 'r2', name: '' });
+    b.state('A');
+    b.state('B', 'r2');
+    assert.deepEqual(
+      validate(b.model).map((i) => i.message),
+      ['The top-level region has no initial pseudostate.', 'The top-level region has no initial pseudostate.'],
+    );
+  });
+});

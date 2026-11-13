@@ -3,7 +3,7 @@ import { ConnectionPointInfo, FsmModel, MachineInfo, SubmachineInfo, defaultMode
 import { ExtractError, extractSubmachine, proposedName } from './extract';
 import { Issue, validate } from './validation';
 import { TraceView } from './trace/replay';
-import { basename, decodeHref, decodeText, dirname, encodeText, relative } from './util';
+import { basename, decodeHref, decodeText, dirname, encodeHref, encodeText, relative } from './util';
 import { fromXmi, toXmi } from './xmi';
 
 interface ActiveEditor {
@@ -42,6 +42,8 @@ interface EditorContext {
   sync: () => void;
   /** The last XMI written for the webview, with the model JSON it came from. */
   echo?: { xmi: string; json: string };
+  /** Edits of the webview being applied to the document. */
+  pending: number;
 }
 
 export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
@@ -90,7 +92,8 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
 
     let timer: ReturnType<typeof setTimeout> | undefined;
     let generation = 0;
-    const ctx: EditorContext = { document, webview: panel.webview, sync: () => scheduleSync() };
+    let disposed = false;
+    const ctx: EditorContext = { document, webview: panel.webview, sync: () => scheduleSync(), pending: 0 };
     const sync = async () => {
       const current = ++generation;
       const xmi = document.getText();
@@ -115,11 +118,19 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
       } catch (e) {
         error = e instanceof Error ? e.message : String(e);
       }
-      if (current !== generation) return; // a newer sync is on its way
+      if (current !== generation || disposed) return; // a newer sync is on its way, or the editor is gone
+      // The document changed meanwhile, or the webview's edit is on its way to it: posting this older text would
+      // take the webview back to it. The change syncs again (the edit once applied).
+      if (ctx.pending) return;
+      if (document.getText() !== xmi) {
+        scheduleSync();
+        return;
+      }
       this.publishDiagnostics(document, issues, error);
       void panel.webview.postMessage({ type: 'update', text, issues, error, submachines, machines });
     };
     const scheduleSync = () => {
+      if (disposed) return;
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => void sync(), 30);
     };
@@ -140,6 +151,7 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
 
     panel.onDidDispose(() => {
       if (timer) clearTimeout(timer);
+      disposed = true;
       this.resyncs.delete(scheduleSync);
       this.webviews.delete(webview);
       this.diagrams.delete(diagram);
@@ -168,13 +180,21 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
           xmi = toXmi(JSON.parse(msg.text));
         } catch (e) {
           void vscode.window.showErrorMessage(`The change could not be saved: ${e instanceof Error ? e.message : e}`);
+          // Back to what the document holds.
+          ctx.sync();
           break;
         }
         ctx.echo = { xmi, json: msg.text };
         if (xmi !== document.getText()) {
           const edit = new vscode.WorkspaceEdit();
           edit.replace(document.uri, new vscode.Range(0, 0, document.lineCount, 0), xmi);
-          await vscode.workspace.applyEdit(edit);
+          ctx.pending++;
+          try {
+            await vscode.workspace.applyEdit(edit);
+          } finally {
+            ctx.pending--;
+            ctx.sync();
+          }
         }
         break;
       }
@@ -248,12 +268,21 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
     });
     if (!name) return;
     const uri = fileOf(name);
-    const { parent, machine } = extractSubmachine(model, ids, name, `${encodeURI(name)}.fsm#sm`);
-    const contents = encodeText(toXmi(machine));
+    const { parent, machine } = extractSubmachine(model, ids, name, `${encodeHref(name)}.fsm#sm`);
+    let machineXmi: string;
+    let parentXmi: string;
+    try {
+      machineXmi = toXmi(machine);
+      parentXmi = toXmi(parent);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e));
+      return;
+    }
+    const contents = encodeText(machineXmi);
     const edit = new vscode.WorkspaceEdit();
     const metadata = { label: 'Extract to Submachine', needsConfirmation: false };
     edit.createFile(uri, { contents }, metadata);
-    edit.replace(document.uri, new vscode.Range(0, 0, document.lineCount, 0), toXmi(parent), metadata);
+    edit.replace(document.uri, new vscode.Range(0, 0, document.lineCount, 0), parentXmi, metadata);
     if (!(await vscode.workspace.applyEdit(edit))) {
       toast(`${name}.fsm could not be created.`);
       return;
@@ -357,7 +386,7 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
       if (uri.toString() === document.uri.toString()) continue;
       const s = await this.summaryOf(uri);
       if (!s) continue;
-      out.push({ href: `${encodeURI(this.relative(document, uri))}#${s.id}`, name: s.name, file: vscode.workspace.asRelativePath(uri), points: s.points });
+      out.push({ href: `${encodeHref(this.relative(document, uri))}#${s.id}`, name: s.name, file: vscode.workspace.asRelativePath(uri), points: s.points });
     }
     return out.sort((a, b) => a.name.localeCompare(b.name));
   }

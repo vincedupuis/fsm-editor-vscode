@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { decodeHref } from '../../src/util';
+import { decodeHref, encodeHref } from '../../src/util';
 import { fromXmi, toXmi } from '../../src/xmi';
 import { ModelBuilder } from './harness';
 
@@ -27,14 +27,32 @@ describe('XMI', () => {
   });
 });
 
+describe('XMI: a state inside its own region', () => {
+  it('fails to write it instead of recursing forever', () => {
+    const b = new ModelBuilder('M');
+    b.state('S', 'r_root', {}, 1);
+    b.state('T', 'S_r0');
+    b.model.vertices.find((v) => v.id === 'S')!.regions![0].id = 'r_root';
+    assert.throws(() => toXmi(b.model), { message: "State 'S' is inside one of its own regions." });
+  });
+});
+
 describe('hrefs', () => {
   it('decode as decodeURI does, keeping malformed escapes', () => {
     assert.equal(decodeHref('My%20Machine.fsm'), 'My Machine.fsm');
     assert.equal(decodeHref('caf%C3%A9.fsm'), 'café.fsm');
-    assert.equal(decodeHref('a%23b%2Fc'), 'a%23b%2Fc');
+    assert.equal(decodeHref('a%23b%2Fc%3F'), 'a#b%2Fc?');
     assert.equal(decodeHref('caf%C3%A9%zz'), 'café%zz');
     assert.equal(decodeHref('a%E0.fsm'), 'a%E0.fsm');
     assert.equal(decodeHref('a%E0%41.fsm'), 'a%E0A.fsm');
     assert.equal(decodeHref('a%C0%80%'), 'a%C0%80%');
+  });
+  it('encode # and ? in file names, and decode them back', () => {
+    for (const path of ['sub/a#b?c.fsm', 'My Machine.fsm', 'café 50%.fsm', 'a&b;c.fsm']) {
+      const href = `${encodeHref(path)}#sm`;
+      assert.equal(href.split('#').length, 2);
+      assert.equal(decodeHref(href.split('#')[0]), path);
+    }
+    assert.equal(encodeHref('a#b?.fsm'), 'a%23b%3F.fsm');
   });
 });

@@ -31,9 +31,10 @@ export function validate(model: FsmModel, submachines: SubmachineInfo = {}): Iss
     return TYPE_LABEL[v.type] ?? v.type;
   };
 
-  // Identity
+  // Identity (a region id used again can also put a state inside its own region)
+  const allRegions = [...model.regions, ...model.vertices.flatMap((v) => v.regions ?? [])];
   const seen = new Set<string>();
-  for (const el of [...model.vertices, ...model.transitions]) {
+  for (const el of [...model.vertices, ...model.transitions, ...allRegions]) {
     if (seen.has(el.id)) add(el.id, 'error', `Duplicate id '${el.id}'.`);
     seen.add(el.id);
   }
@@ -64,7 +65,6 @@ export function validate(model: FsmModel, submachines: SubmachineInfo = {}): Iss
   }
 
   // Regions
-  const allRegions = [...model.regions, ...model.vertices.flatMap((v) => v.regions ?? [])];
   for (const r of allRegions) {
     const kids = ix.childrenOf(r.id);
     const count = (t: string) => kids.filter((k) => k.type === t);
@@ -403,17 +403,20 @@ function checkReachability(
   add: (id: string, severity: Severity, message: string) => void,
   name: (v: Vertex | undefined) => string,
 ) {
-  const rootInitial = ix.initialOf(model.regions[0]?.id ?? '');
+  // Every top-level region is entered when the machine starts.
+  const rootInitials = model.regions.map((r) => ix.initialOf(r.id));
   // The machine can also be entered through its own entry points (from a referencing submachine state).
   const machineEntries = model.vertices.filter(
     (v) => v.type === 'entryPoint' && model.regions.some((r) => r.id === v.parent),
   );
-  if (!rootInitial && !machineEntries.length) {
-    if (model.vertices.some((v) => v.type === 'state')) {
-      add('', 'warning', 'The top-level region has no initial pseudostate.');
-    }
-    return;
+  if (!machineEntries.length) {
+    model.regions.forEach((r, i) => {
+      if (!rootInitials[i] && ix.childrenOf(r.id).some((v) => v.type === 'state')) {
+        add('', 'warning', 'The top-level region has no initial pseudostate.');
+      }
+    });
   }
+  if (!rootInitials.some(Boolean) && !machineEntries.length) return;
   const reached = new Set<string>();
   const queue: Vertex[] = [];
   const visit = (v: Vertex | undefined) => {
@@ -421,7 +424,7 @@ function checkReachability(
     reached.add(v.id);
     queue.push(v);
   };
-  visit(rootInitial);
+  rootInitials.forEach(visit);
   machineEntries.forEach(visit);
   while (queue.length) {
     const v = queue.shift()!;

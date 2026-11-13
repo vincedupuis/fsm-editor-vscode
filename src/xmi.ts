@@ -258,6 +258,8 @@ export function toXmi(model: FsmModel): string {
     { 'xmi:type': 'uml:Pseudostate', 'xmi:id': v.id, name: v.name, kind: v.type },
   ];
 
+  // States on the way down: a region id used again (a file edited by hand) can make a state its own descendant.
+  const writing = new Set<Vertex>();
   const vertexNode = (v: Vertex): Node => {
     if (v.type === 'final') return ['subvertex', { 'xmi:type': 'uml:FinalState', 'xmi:id': v.id, name: v.name }];
     if (PSEUDO_KINDS.has(v.type)) return pointNode('subvertex', v);
@@ -280,7 +282,10 @@ export function toXmi(model: FsmModel): string {
         ]);
       }
     }
+    if (writing.has(v)) throw new XmiError(`State '${v.id}' is inside one of its own regions.`);
+    writing.add(v);
     for (const r of v.regions ?? []) children.push(regionNode(r));
+    writing.delete(v);
     if (v.submachine) children.push(['submachine', { href: v.submachine }]);
     return ['subvertex', { 'xmi:type': 'uml:State', 'xmi:id': v.id, name: v.name }, ...children];
   };

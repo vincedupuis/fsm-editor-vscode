@@ -214,9 +214,17 @@ export function extractSubmachine(model: FsmModel, selected: string[], name: str
   const entryRefFor = new Map<string, string>();
   /** By outer target: the new machine's exit point that outgoing transitions go to. */
   const exitFor = new Map<string, string>();
+  const naming = new Set<Vertex>();
   const targetName = (v: Vertex | undefined): string => {
     if (!v) return '';
-    if (v.type === 'connectionPointRef') return targetName(ix.vertices.get(v.parent)) || 'Point';
+    if (v.type === 'connectionPointRef') {
+      // A reference whose parent id is its own (ids used twice in a file edited by hand) would recurse forever.
+      if (naming.has(v)) return '';
+      naming.add(v);
+      const owner = targetName(ix.vertices.get(v.parent));
+      naming.delete(v);
+      return owner || 'Point';
+    }
     return identifier(v.name) || capitalize(TYPE_NAMES[v.type] ?? v.type);
   };
   for (const t of crossing) {

@@ -145,7 +145,7 @@
     (submachines[href] && submachines[href].name) ||
     (machines.find((m) => m.href === href) || {}).name ||
     decodeHref(String(href).split('#')[0]).replace(/^.*\//, '').replace(/\.fsm$/, '');
-  /** decodeURI keeping malformed escapes as they are instead of throwing (decodeHref of src/util.ts). */
+  /** decodeURI keeping malformed escapes as they are instead of throwing, and decoding `%23` and `%3F` (decodeHref of src/util.ts). */
   function decodeHref(s) {
     const at = (i) => (s[i] === '%' && /^[0-9A-Fa-f]{2}$/.test(s.slice(i + 1, i + 3)) ? parseInt(s.slice(i + 1, i + 3), 16) : -1);
     const utf8 = new TextDecoder('utf-8', { fatal: true });
@@ -168,7 +168,7 @@
           text = null;
         }
         if (text !== null) {
-          out += len === 1 && ';/?:@&=+$,#'.includes(text) ? s.slice(i, j) : text;
+          out += len === 1 && ';/:@&=+$,'.includes(text) ? s.slice(i, j) : text;
           i = j;
           continue;
         }
@@ -447,7 +447,10 @@
   /** Whether region `id` is region `outer` or lies inside it, at any depth. */
   function regionWithin(id, outer) {
     if (id === outer) return true;
-    for (let o = regionOwner.get(id); o; o = regionOwner.get(o.parent)) {
+    // Each state once: a region id used twice (a file edited by hand) can make a state its own ancestor.
+    const seen = new Set();
+    for (let o = regionOwner.get(id); o && !seen.has(o); o = regionOwner.get(o.parent)) {
+      seen.add(o);
       if (o.parent === outer) return true;
     }
     return false;
@@ -1733,7 +1736,8 @@ ${scene(true)}
   function fitInRegion(v, old, exact) {
     if (isCP(v)) return;
     const s = regionOwner.get(v.parent);
-    if (!s) return;
+    // A state in its own regions (a region id used twice in a file edited by hand) would grow forever.
+    if (!s || s === v || isInside(s, v.id)) return;
     const i = s.regions.findIndex((r) => r.id === v.parent);
     const R = regionRects(s)[i];
     const gap = (g) => (old ? Math.min(FIT_MARGIN, g) : FIT_MARGIN);
@@ -2066,7 +2070,8 @@ ${scene(true)}
       if (map.has(v.parent)) v.parent = map.get(v.parent);
       else if (isCP(v)) {
         if (!V.has(v.parent)) continue;
-        if (at) snapToBorder(v, V.get(v.parent), center(v));
+        // On the border of a state that isn't copied: back onto its border, from where the offset put it.
+        snapToBorder(v, V.get(v.parent), center(v));
       } else if (at && v.type !== 'entryPoint' && v.type !== 'exitPoint') {
         v.parent = target ? target.id : rootRegion();
       } else if (at || !regionOwner.has(v.parent)) {
@@ -2212,6 +2217,10 @@ ${scene(true)}
       return;
     }
 
+    // A composite state moves by its title bar: its regions are empty canvas, for a selection band
+    // and for a double-click adding a state.
+    if (hit.kind === 'vertex' && regionRects(V.get(hit.id)).some((r) => inRect(r, p))) hit = { kind: 'empty' };
+
     // Double-clicks are detected here: the render below replaces the element under the pointer,
     // so the browser never fires dblclick on a diagram item.
     const dbl = e.button === 0 && lastDown && e.timeStamp - lastDown.time < 500 && Math.hypot(e.clientX - lastDown.x, e.clientY - lastDown.y) < 5;
@@ -2221,9 +2230,6 @@ ${scene(true)}
       return;
     }
 
-    // A composite state moves by its title bar: its regions are empty canvas, for a selection band.
-    if (hit.kind === 'vertex' && regionRects(V.get(hit.id)).some((r) => inRect(r, p))) hit = { kind: 'empty' };
-
     switch (hit.kind) {
       case 'handle': {
         if (hit.handle.startsWith('sep:')) {
@@ -2231,22 +2237,24 @@ ${scene(true)}
           const s = V.get(hit.handle.slice(4, k));
           const i = Number(hit.handle.slice(k + 1));
           if (s && i < s.regions.length - 1) {
+            const undo = layoutSnapshot();
             keepRegionSizes(s);
-            drag = { kind: 'region', v: s, i, start: p, size0: s.regions[i].size, snap: layoutSnapshot() };
+            drag = { kind: 'region', v: s, i, start: p, size0: s.regions[i].size, snap: layoutSnapshot(), undo };
           }
           break;
         }
         const v = V.get([...selection][0]);
         if (!v) break;
         if (hit.handle.startsWith('resize-')) {
+          const undo = layoutSnapshot();
           if ((v.regions || []).length) keepRegionSizes(v);
-          drag = { kind: 'resize', corner: hit.handle.slice(7), v, start: p, x0: v.x, y0: v.y, w0: v.w, h0: v.h, snap: layoutSnapshot() };
+          drag = { kind: 'resize', corner: hit.handle.slice(7), v, start: p, x0: v.x, y0: v.y, w0: v.w, h0: v.h, snap: layoutSnapshot(), undo };
         }
         else startConnect(v, p);
         break;
       }
       case 'wp':
-        drag = { kind: 'wp', t: T.get(hit.id), index: hit.index };
+        drag = { kind: 'wp', t: T.get(hit.id), index: hit.index, undo: layoutSnapshot() };
         break;
       case 'end':
         drag = { kind: 'reconnect', t: T.get(hit.id), end: hit.end, cur: p, hover: null };
@@ -2254,7 +2262,7 @@ ${scene(true)}
       case 'label': {
         const t = T.get(hit.id);
         selection = new Set([t.id]);
-        drag = { kind: 'label', t, start: p, off0: { ...(t.labelOffset || { x: 0, y: 0 }) }, moved: false };
+        drag = { kind: 'label', t, start: p, off0: { ...(t.labelOffset || { x: 0, y: 0 }) }, had: !!t.labelOffset, moved: false };
         renderProps();
         break;
       }
@@ -2469,6 +2477,24 @@ ${scene(true)}
     }
     scheduleRender();
   });
+
+  /** Ends the drag without committing it: what it changed goes back to how it was when it started. */
+  function cancelDrag() {
+    const d = drag;
+    drag = null;
+    svg.classList.remove('panning');
+    if (d.undo || d.snap) restoreLayout(d.undo || d.snap);
+    if (d.kind === 'label') {
+      if (d.had) d.t.labelOffset = { ...d.off0 };
+      else delete d.t.labelOffset;
+    } else if (d.kind === 'pan') {
+      view.x = d.vx;
+      view.y = d.vy;
+    } else if (d.kind === 'band') {
+      selection = new Set(d.base);
+      renderProps();
+    }
+  }
 
   window.addEventListener('pointerup', (e) => {
     if (!drag) return;
@@ -2693,8 +2719,7 @@ ${scene(true)}
         return;
       case 'Escape':
         if (drag) {
-          if (drag.snap) restoreLayout(drag.snap);
-          drag = null;
+          cancelDrag();
           render();
         } else if (tool) setTool(null);
         else {
