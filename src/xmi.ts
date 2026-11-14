@@ -12,8 +12,8 @@
  *   follow from its region shapes;
  * - coordinates are rounded to 0.1 px, and what is derived from them (centers,
  *   region shapes, the middle of an edge) is computed from the rounded values,
- *   the region sizes as the file holds them: reading a written file and writing
- *   it again gives the same text;
+ *   the region sizes as the file holds them: reading a written file whose ids
+ *   are unique and writing it again gives the same text;
  * - the diagram lists the shapes, edges and styles in the order reading the
  *   model gives its elements (document order), each element written once;
  * - colors and groups are kept in one xmi:Extension at the end of the diagram,
@@ -175,39 +175,12 @@ function regionBounds(v: Vertex, model: FsmModel) {
 // ------------------------------------------------------------------ writing
 
 /**
- * Writes a state machine file. Reading it back and writing it again gives the same text. When ids are used
- * twice (files edited by hand), reading gives a shape, bend points or a color to the last element with that id
- * and default places to the others, so what reading gives is written again, until the text no longer changes.
+ * Writes a state machine file. When its ids are unique (the validator reports those that aren't), reading it back
+ * and writing it again gives the same text. With ids used twice (files edited by hand), reading gives a shape, bend
+ * points or a color to the last element with that id and default places to the others, so such a file can still
+ * change on the next save; it doesn't grow, as each element is written once.
  */
 export function toXmi(model: FsmModel): string {
-  let text = writeModel(model);
-  if (!sharesIds(model)) return text;
-  for (let i = 0; i < 10; i++) {
-    const again = writeModel(fromXmi(text));
-    if (again === text) break;
-    text = again;
-  }
-  return text;
-}
-
-/** Whether vertices, transitions and regions use some id more than once. */
-function sharesIds(model: FsmModel): boolean {
-  const ids = new Set<string>();
-  let n = 0;
-  const add = (id: string) => {
-    ids.add(id);
-    n++;
-  };
-  for (const r of model.regions ?? []) add(r.id);
-  for (const v of model.vertices ?? []) {
-    add(v.id);
-    for (const r of v.regions ?? []) add(r.id);
-  }
-  for (const t of model.transitions ?? []) add(t.id);
-  return ids.size !== n;
-}
-
-function writeModel(model: FsmModel): string {
   const m = normalizeModel(JSON.parse(JSON.stringify(model)) as FsmModel);
   // Bounds as the file holds them, so that what is derived from them (centers, header lines, region shapes)
   // comes out the same when the file is read back and written again. A size of 0 (or one JSON can't hold) is

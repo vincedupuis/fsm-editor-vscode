@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { FsmModel } from '../../src/model';
 import { decodeHref, encodeHref } from '../../src/util';
+import { validate } from '../../src/validation';
 import { fromXmi, toXmi } from '../../src/xmi';
 import { ModelBuilder } from './harness';
 
@@ -42,7 +43,7 @@ describe('XMI', () => {
   });
 });
 
-describe('XMI: one save settles a file', () => {
+describe('XMI: one save settles a file whose ids are unique', () => {
   /** Writing `model`, reading it back and writing it again must give the same text. */
   const settles = (model: FsmModel) => {
     const text = toXmi(model);
@@ -96,7 +97,12 @@ describe('XMI: one save settles a file', () => {
     settles(b.model);
   });
 
-  it('with two states sharing an id, each with an entry point', () => {
+});
+
+describe('XMI: ids used twice', () => {
+  it('are reported, and each element is written once, save after save', () => {
+    // Two states sharing an id, each with an entry point: the file may change on the next save (reading gives the
+    // shape to the last element with an id), but it doesn't grow.
     const b = new ModelBuilder('Shared');
     b.state('S', 'r_root', { id: 's1', x: 0, y: 0 });
     b.vertex('entryPoint', 's1', { id: 'ep', x: -8, y: 20, w: 16, h: 16 });
@@ -104,9 +110,13 @@ describe('XMI: one save settles a file', () => {
     b.vertex('entryPoint', 's1', { id: 'ep', x: 292, y: 20, w: 16, h: 16 });
     b.init('s1');
     b.t('ep', 's1');
-    const text = toXmi(b.model);
-    settles(b.model);
-    assert.equal(text.match(/xmi:id="ep"/g)?.length, 2, 'each entry point written once');
+    let text = toXmi(b.model);
+    assert.deepEqual(validate(fromXmi(text)).filter((i) => i.message.startsWith('Duplicate id')).map((i) => i.id), ['ep', 's1']);
+    for (let i = 0; i < 3; i++) {
+      assert.equal(text.match(/xmi:id="ep"/g)?.length, 2, 'each entry point written once');
+      assert.equal(text.match(/xmi:id="s1"/g)?.length, 2, 'each state written once');
+      text = toXmi(fromXmi(text));
+    }
   });
 });
 
