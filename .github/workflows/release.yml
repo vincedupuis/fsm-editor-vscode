@@ -53,7 +53,9 @@ jobs:
         run: npm run test:unit
 
       - name: Build the VSIX
-        run: npx @vscode/vsce package -o "$RUNNER_TEMP/fsm-editor-${GITHUB_REF_NAME#v}.vsix"
+        # npm run package: vsce package --no-dependencies (the extension has no runtime dependencies, so the files
+        # don't come from npm list).
+        run: npm run package -- -o "$RUNNER_TEMP/fsm-editor-${GITHUB_REF_NAME#v}.vsix"
 
       - name: Attach the VSIX to the release
         env:

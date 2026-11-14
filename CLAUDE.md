@@ -12,7 +12,7 @@ npm run watch              # esbuild watch
 npm run test:unit          # unit and code generation tests (node:test, bundled by test/unit/run.mjs)
 npm run test:web           # browser smoke test in VS Code for the Web (Chromium, headless)
 npm run check:webview      # syntax-check media/editor.js
-npm run package            # builds fsm-editor-<version>.vsix
+npm run package            # builds fsm-editor-<version>.vsix (vsce package --no-dependencies; release.yml runs it too)
 ```
 
 `fsm/` (`fsm.wasm`, `templates/ts.jinja`, `templates/sml.jinja`) is git-ignored: code generation, its tests and the VSIX need it. Run `npm run build:fsm` once, and again after changing `../fsm-cli`; it finds `cargo` on the PATH or in `~/.cargo/bin`. The workflows download it from the fsm-cli release pinned by `FSM_CLI_VERSION` in `release.yml` (`test-windows.yml` reads the pin from there), so that release must exist before this extension is released.

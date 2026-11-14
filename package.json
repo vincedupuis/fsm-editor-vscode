@@ -242,7 +242,7 @@
     "compile": "tsc -p ./ && node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",
     "check:webview": "node --check media/editor.js",
-    "package": "npx @vscode/vsce package",
+    "package": "npx @vscode/vsce package --no-dependencies",
     "test:web": "tsc -p ./ && node esbuild.mjs --test && node test/web/run.mjs",
     "test:unit": "node test/unit/run.mjs",
     "build:fsm": "node scripts/build-fsm.mjs"
