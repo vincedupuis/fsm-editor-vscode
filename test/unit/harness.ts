@@ -1,18 +1,62 @@
 /**
- * Test helpers: build models in code, generate TypeScript for them with
- * templates/ts.hbs, bundle and load the result, and record what the machines
- * call.
+ * Test helpers: build models in code, generate code for them with fsm-cli's
+ * WebAssembly module (fsm/fsm.wasm, as the extension does) and the bundled
+ * templates (fsm/templates/ts.jinja), bundle and load the TypeScript, and
+ * record what the machines call.
  */
 import * as esbuild from 'esbuild';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { generate, GenerateHost } from '../../src/codegen/generate';
-import { parseTemplate } from '../../src/codegen/render';
+import { FsmFile, FsmIssue, FsmResponse, Generator, loadGenerator } from '../../src/fsmCli';
 import { FsmModel, Transition, Vertex, VertexType } from '../../src/model';
 import { toXmi } from '../../src/xmi';
 
 export const root = resolve(__dirname, '../../..');
+
+let generator: Generator | undefined;
+
+/** The module's response for `machines` (file name → model or XMI text), all generated, in a folder /m. */
+export async function run(machines: Record<string, FsmModel | string>, template: string, templateName = 'test.jinja'): Promise<FsmResponse> {
+  if (!generator) {
+    const wasm = join(root, 'fsm/fsm.wasm');
+    if (!existsSync(wasm)) throw new Error('fsm/fsm.wasm is missing: build it with npm run build:fsm (see README.md, Development).');
+    generator = loadGenerator(readFileSync(wasm));
+  }
+  const files: Record<string, string> = {};
+  for (const [name, m] of Object.entries(machines)) files[`/m/${name}`] = typeof m === 'string' ? m : toXmi(m);
+  return generator({ cwd: '/m', files, generate: Object.keys(machines), template, templateName });
+}
+
+/** A failed generation: the module's error, with the problems it reported. */
+export class GenerateFailure extends Error {
+  constructor(readonly response: FsmResponse) {
+    super(response.error ?? `exit code ${response.exitCode}`);
+  }
+
+  get issues(): FsmIssue[] {
+    return this.response.issues;
+  }
+}
+
+/** Generates `machines` with a template's text; throws GenerateFailure when nothing is generated. */
+export async function generate(machines: Record<string, FsmModel | string>, template: string, templateName?: string): Promise<{ files: FsmFile[]; issues: FsmIssue[] }> {
+  const r = await run(machines, template, templateName);
+  if (r.exitCode !== 0) throw new GenerateFailure(r);
+  return r;
+}
+
+/** A bundled template's text (fsm/templates/<name>.jinja). */
+export const bundled = (name: 'ts' | 'sml') => readFileSync(join(root, 'fsm/templates', `${name}.jinja`), 'utf8');
+
+/** Template printing the code model of each machine as JSON, in <machine>.json: the keys of the code model. */
+const DUMP = `{% filter file(machine.name ~ ".json") %}{{ {"machine": machine, "regions": regions, "topRegions": topRegions, "states": states, "events": events, "timers": timers, "signals": signals, "actions": actions, "conditions": conditions, "activities": activities, "transitions": transitions, "submachines": submachines, "entryPoints": entryPoints, "exitPoints": exitPoints, "start": start, "invariants": invariants, "features": features, "tables": tables} | tojson }}{% endfilter %}`;
+
+/** The code model of a machine, as templates see it. */
+export async function codeModel(model: FsmModel): Promise<any> {
+  const { files } = await generate({ [`${model.name}.fsm`]: model }, DUMP);
+  return JSON.parse(files[0].content);
+}
 
 /** Builds an FsmModel in code; every method returns the new element's id. */
 export class ModelBuilder {
@@ -50,19 +94,7 @@ export class ModelBuilder {
 
 /** Generates TypeScript for `machines` (file name → model or XMI text) and loads the machine classes. */
 export async function load(machines: Record<string, FsmModel | string>): Promise<Record<string, any>> {
-  const files = new Map<string, string>();
-  for (const [name, m] of Object.entries(machines)) files.set(`/m/${name}`, typeof m === 'string' ? m : toXmi(m));
-  const host: GenerateHost = {
-    readFile: async (p) => {
-      const text = files.get(p);
-      if (text === undefined) throw new Error('not found');
-      return text;
-    },
-    resolve: (from, href) => `${from.slice(0, from.lastIndexOf('/'))}/${decodeURI(href)}`,
-    display: (p) => p.slice(3),
-  };
-  const template = parseTemplate(readFileSync(join(root, 'templates/ts.hbs'), 'utf8'));
-  const result = await generate(Object.keys(machines).map((name) => `/m/${name}`), template, host);
+  const result = await generate(machines, bundled('ts'), 'ts.jinja');
   const dir = mkdtempSync(join(tmpdir(), 'fsm-codegen-'));
   try {
     for (const f of result.files) writeFileSync(join(dir, f.path), f.content);

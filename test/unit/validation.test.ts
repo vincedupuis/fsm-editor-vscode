@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { GenerateError } from '../../src/codegen/generate';
 import { validate } from '../../src/validation';
-import { ModelBuilder, load } from './harness';
+import { GenerateFailure, ModelBuilder, load } from './harness';
 
 /** The issues about cycles of pseudostates, as [id, severity, message]. */
 const cycles = (b: ModelBuilder) =>
@@ -172,7 +171,7 @@ describe('validation: cycles of pseudostates', () => {
     b.t(j1, j2);
     b.t(j2, j1);
     await assert.rejects(load({ 'M.fsm': b.model }), (e: unknown) => {
-      assert.ok(e instanceof GenerateError);
+      assert.ok(e instanceof GenerateFailure);
       assert.deepEqual(
         e.issues.filter((i) => i.severity === 'error').map((i) => i.message),
         ["Junctions form a cycle without a state: 'j1' -> 'j2' -> 'j1'."],

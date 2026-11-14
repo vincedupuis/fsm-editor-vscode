@@ -2,7 +2,6 @@ node_modules/
 out/
 *.vsix
 .vscode-test-web/
-dist/
 
-# fsm-generator, downloaded by the release workflow
-generator/
+# fsm-cli's WebAssembly module and templates: npm run build:fsm, or downloaded by the workflows
+fsm/

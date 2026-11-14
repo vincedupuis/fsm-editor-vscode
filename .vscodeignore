@@ -11,6 +11,4 @@ test/**
 esbuild.mjs
 out/test/**
 .vscode-test-web/**
-dist/**
 scripts/**
-out/cli.js

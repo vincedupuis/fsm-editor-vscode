@@ -87,16 +87,26 @@ export async function run(): Promise<void> {
   assert(saved.transitions.find((t) => t.id === 't7')?.guard === 'isReady()', 'the saved file has the fixed guard');
   console.log('✓ saves the file as XMI');
 
-  // 6. Code generation runs in the browser (Handlebars, workspace.fs); the submachine is read but not generated.
+  // 6. Code generation runs in the browser (fsm-cli's WebAssembly module, workspace.fs); the submachine is read
+  // but not generated.
   const out = file('generated');
   const written: vscode.Uri[] = await vscode.commands.executeCommand('fsmEditor.generateCode', file('Order.fsm'), {
-    template: vscode.Uri.joinPath(ext.extensionUri, 'templates/ts.hbs'),
+    template: vscode.Uri.joinPath(ext.extensionUri, 'fsm/templates/ts.jinja'),
     out,
   });
   const names = written.map((u) => u.path.slice(u.path.lastIndexOf('/') + 1)).sort();
   assert(names.includes('Order.ts') && !names.includes('Payment.ts'), `generates Order only: ${names.join(', ')}`);
   assert((await read('generated/Order.ts')).includes('export class Order'), 'the generated class is written');
-  console.log('✓ generates code from a template');
+  console.log('✓ generates code from a bundled template');
+
+  // A template of the workspace, which sees the submachine.
+  await vscode.workspace.fs.writeFile(
+    file('states.jinja'),
+    encodeText('{% filter file(machine.name ~ ".txt") %}{{ machine.name }}: {{ submachines | map(attribute="name") | join(", ") }}{% endfilter %}'),
+  );
+  const custom: vscode.Uri[] = await vscode.commands.executeCommand('fsmEditor.generateCode', file('Order.fsm'), { template: file('states.jinja'), out });
+  assert(custom.length === 1 && (await read('generated/Order.txt')) === 'Order: Payment', `custom template output: ${await read('generated/Order.txt')}`);
+  console.log('✓ generates code from a workspace template');
 
   // 7. File › New File… › State Machine opens an untitled machine in the diagram.
   await vscode.commands.executeCommand('fsmEditor.newUntitled');

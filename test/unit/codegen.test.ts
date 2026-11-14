@@ -2,13 +2,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import * as expr from '../../media/expressions';
-import { printCondition } from '../../src/codegen/helpers';
-import { LANGUAGES } from '../../src/codegen/languages';
-import { TemplateIssue, parseFrontMatter, parseTemplate, render } from '../../src/codegen/render';
-import { CodeGenError, CodeVia, toCodeModel } from '../../src/codegen/codeModel';
 import { fromXmi } from '../../src/xmi';
-import { FakeClock, ModelBuilder, load, recorder, root } from './harness';
+import { FakeClock, GenerateFailure, ModelBuilder, codeModel, generate, load, recorder, root, run } from './harness';
 
 const example = (name: string) => readFileSync(join(root, 'examples', name), 'utf8');
 
@@ -81,15 +76,15 @@ describe('examples', () => {
     assert.deepEqual(again.activeStates, ['Cart']);
   });
 
-  it('code model of MediaPlayer', () => {
-    const cm = toCodeModel(fromXmi(example('MediaPlayer.fsm')));
+  it('code model of MediaPlayer', async () => {
+    const cm = await codeModel(fromXmi(example('MediaPlayer.fsm')));
     assert.equal(cm.machine.name, 'MediaPlayer');
-    assert.deepEqual(cm.timers.map((t) => [t.name, t.ms]), [['Paused_after_5m', 300000]]);
+    assert.deepEqual(cm.timers.map((t: any) => [t.name, t.ms]), [['Paused_after_5m', 300000]]);
     assert.deepEqual(cm.activities, ['blinkLed']);
     assert.ok(cm.features.history && cm.features.choices && cm.features.timers);
-    const eject = cm.transitions.find((t) => t.label === 'Stopped -> choice (eject)')!;
+    const eject = cm.transitions.find((t: any) => t.label === 'Stopped -> choice (eject)')!;
     assert.deepEqual(
-      eject.steps.map((s) => s.kind),
+      eject.steps.map((s: any) => s.kind),
       ['exit', 'transition', 'choice'],
     );
   });
@@ -199,9 +194,9 @@ describe('semantics', () => {
     assert.deepEqual(m.activeStates, ['Y']);
   });
 
-  // The validator rejects these models first (validation.test.ts); toCodeModel still refuses them on its own.
+  // The validator rejects these models (validation.test.ts), before the code model, which refuses them too.
   for (const kind of ['junction', 'choice'] as const) {
-    it(`a cycle of ${kind}s is a code generation error at the ${kind} reached again`, () => {
+    it(`a cycle of ${kind}s is a code generation error at the ${kind} reached again`, async () => {
       const b = new ModelBuilder('Cycle');
       const s = b.state('S');
       const x = b.state('X');
@@ -213,18 +208,18 @@ describe('semantics', () => {
       b.t(p1, x, { guard: 'else' });
       b.t(p2, p1, { guard: 'b()' });
       b.t(p2, x, { guard: 'else' });
-      assert.throws(
-        () => toCodeModel(b.model),
-        (e: unknown) => {
-          assert.ok(e instanceof CodeGenError);
-          assert.deepEqual([e.id, e.message], [p1, `${kind === 'junction' ? 'Junctions' : 'Choices'} form a cycle.`]);
-          return true;
-        },
-      );
+      await assert.rejects(load({ 'Cycle.fsm': b.model }), (e: unknown) => {
+        assert.ok(e instanceof GenerateFailure);
+        assert.deepEqual(
+          e.issues.filter((i) => i.severity === 'error').map((i) => [i.id, i.message]),
+          [[p1, `${kind === 'junction' ? 'Junctions' : 'Choices'} form a cycle without a state: 'p1' -> 'p2' -> 'p1'.`]],
+        );
+        return true;
+      });
     });
   }
 
-  it('a local transition to a point on its own state\'s border is a code generation error, not a crash', () => {
+  it('a local transition to a point on its own state\'s border is a code generation error, not a crash', async () => {
     const b = new ModelBuilder('LocalToBorder');
     const c = b.state('C', 'r_root', {}, 1);
     const c1 = b.state('C1', 'C_r0');
@@ -233,14 +228,14 @@ describe('semantics', () => {
     b.init(c1, 'C_r0');
     b.t(p, c1);
     const t = b.t(c, p, { kind: 'local', triggers: ['e'] });
-    assert.throws(
-      () => toCodeModel(b.model),
-      (e: unknown) => {
-        assert.ok(e instanceof CodeGenError);
-        assert.deepEqual([e.id, e.message], [t, 'Unknown region.']);
-        return true;
-      },
-    );
+    await assert.rejects(load({ 'LocalToBorder.fsm': b.model }), (e: unknown) => {
+      assert.ok(e instanceof GenerateFailure);
+      assert.deepEqual(
+        e.issues.filter((i) => i.severity === 'error').map((i) => [i.id, i.message]),
+        [[t, 'Unknown region.']],
+      );
+      return true;
+    });
   });
 
   it('local transitions do not leave their composite state; external ones do', async () => {
@@ -439,8 +434,8 @@ describe('semantics', () => {
     rec.take();
     m.dispatch('go');
     assert.deepEqual(rec.take(), ['S.enterC', 'S.enterA']);
-    const steps = toCodeModel(sub.model).entryPoints[0].steps;
-    assert.ok(!steps.some((s) => s.kind === 'exitRegion'));
+    const steps = (await codeModel(sub.model)).entryPoints[0].steps;
+    assert.ok(!steps.some((s: any) => s.kind === 'exitRegion'));
   });
 });
 
@@ -503,7 +498,7 @@ describe('tracing', () => {
 });
 
 describe('code model: via', () => {
-  const names = (via: CodeVia[]) => via.map((v) => `${v.kind}:${v.name}`);
+  const names = (via: { kind: string; name: string }[]) => via.map((v) => `${v.kind}:${v.name}`);
 
   /** P with regions A1 -a-> A2 and B1, S entered first, and the pseudostate `kind` 'p' with S -e-> p, [deep()] fork f into A2 and B1, [else] A2. */
   function waysInside(kind: 'junction' | 'choice') {
@@ -524,10 +519,10 @@ describe('code model: via', () => {
     b.t(p, 'A2', { guard: 'else' });
     b.t(f, 'A2');
     b.t(f, 'B1');
-    return toCodeModel(b.model);
+    return codeModel(b.model);
   }
 
-  it('a default entry through a fork adds nothing to the via of other transitions', () => {
+  it('a default entry through a fork adds nothing to the via of other transitions', async () => {
     const b = new ModelBuilder('ForkInit');
     b.state('P', 'r_root', {}, 2);
     b.state('A1', 'P_r0');
@@ -542,9 +537,9 @@ describe('code model: via', () => {
     b.t(split, 'B1');
     b.t('P', 'X', { triggers: ['go'] });
     b.t('X', 'A2', { triggers: ['dive'] });
-    const cm = toCodeModel(b.model);
+    const cm = await codeModel(b.model);
     assert.deepEqual(
-      cm.transitions.map((t) => [t.label, names(t.via)]),
+      cm.transitions.map((t: any) => [t.label, names(t.via)]),
       [
         ['P -> X (go)', []],
         ['X -> A2 (dive)', []],
@@ -552,10 +547,10 @@ describe('code model: via', () => {
     );
   });
 
-  it('each way through a junction has its own via', () => {
-    const cm = waysInside('junction');
+  it('each way through a junction has its own via', async () => {
+    const cm = await waysInside('junction');
     assert.deepEqual(
-      cm.transitions.filter((t) => t.label === 'S -> p (e)').map((t) => [t.name, names(t.via)]),
+      cm.transitions.filter((t: any) => t.label === 'S -> p (e)').map((t: any) => [t.name, names(t.via)]),
       [
         ['S_e_p_1', ['junction:p', 'fork:f']],
         ['S_e_p_2', ['junction:p']],
@@ -563,14 +558,14 @@ describe('code model: via', () => {
     );
   });
 
-  it('a choice has the via of all its branches, and each branch its own', () => {
-    const cm = waysInside('choice');
-    const t = cm.transitions.find((x) => x.label === 'S -> p (e)')!;
+  it('a choice has the via of all its branches, and each branch its own', async () => {
+    const cm = await waysInside('choice');
+    const t = cm.transitions.find((x: any) => x.label === 'S -> p (e)')!;
     assert.deepEqual(names(t.via), ['choice:p', 'fork:f']);
-    const choice = t.steps.find((s) => s.kind === 'choice');
+    const choice = t.steps.find((s: any) => s.kind === 'choice');
     assert.ok(choice?.kind === 'choice');
     assert.deepEqual(
-      choice.branches.map((br) => [br.isElse, names(br.via)]),
+      choice.branches.map((br: any) => [br.isElse, names(br.via)]),
       [
         [false, ['fork:f']],
         [true, []],
@@ -580,57 +575,58 @@ describe('code model: via', () => {
 });
 
 describe('templates', () => {
-  it('front matter', () => {
-    assert.deepEqual(parseFrontMatter('lang: cpp # comment\nguard:\n  prefix: "a_."\nkeywords: [signals, "slots"]\nlist:\n  - 1\n  - two\n'), {
-      lang: 'cpp',
-      guard: { prefix: 'a_.' },
-      keywords: ['signals', 'slots'],
-      list: [1, 'two'],
-    });
-  });
-
-  it('guards follow the language and keep precedence', () => {
-    const parsed = expr.parseCondition('a() && !(b() || del())');
-    assert.ok(parsed.ok);
-    const c = parsed.value;
-    assert.equal(printCondition(c, LANGUAGES.cpp, { prefix: 'a_.' }), 'a_.a() && !(a_.b() || a_.del())');
-    assert.equal(printCondition(c, LANGUAGES.python), 'self.a() and not (self.b() or self.del_())');
-    assert.equal(printCondition(null, LANGUAGES.python), 'True');
-  });
-
-  it('one template writes many files', () => {
-    const t = parseTemplate('---\nlang: c\n---\n{{#file (concat machine.name ".h")}}\n// {{upper machine.name}}\n{{/file}}\n{{#file "impl.c"}}\n{{#each states}}{{name}};{{/each}}\n{{/file}}\n');
-    const b = new ModelBuilder('Traffic Light');
-    b.init(b.state('Red'));
-    const files = render(t, toCodeModel(b.model));
-    assert.deepEqual(files, [
-      { path: 'Traffic_Light.h', content: '// TRAFFIC_LIGHT\n' },
-      { path: 'impl.c', content: 'Red;\n' },
-    ]);
-  });
-
-  it('switch picks the first case listing the value, or the default, and drops the text between cases', () => {
-    const t = parseTemplate(
-      '{{#file "out.txt"}}{{#each states}}{{#switch name}}\n  {{#case "A" "B"}}ab;{{/case}}\n  {{#case "B"}}b;{{/case}}\n  {{#default}}{{name}};{{/default}}\n{{/switch}}{{/each}}{{/file}}',
-    );
+  /** What a template writes for one machine with states A, B and C. */
+  const written = async (template: string) => {
     const b = new ModelBuilder('M');
     b.init(b.state('A'));
     b.state('B');
     b.state('C');
-    assert.deepEqual(render(t, toCodeModel(b.model)), [{ path: 'out.txt', content: 'ab;ab;C;' }]);
+    return (await generate({ 'M.fsm': b.model }, template)).files.map((f) => [f.path, f.content]);
+  };
+
+  it('front matter', async () => {
+    const template = '---\nlang: cpp # comment\nguard:\n  prefix: "a_."\nkeywords: [signals, "slots"]\nlist:\n  - 1\n  - two\n---\n{% filter file("out.txt") %}{{ config | tojson }}{% endfilter %}';
+    const [[, json]] = await written(template);
+    assert.deepEqual(JSON.parse(json), { lang: 'cpp', guard: { prefix: 'a_.' }, keywords: ['signals', 'slots'], list: [1, 'two'] });
   });
 
-  it('warn and error report issues; errors stop the generation', () => {
-    const b = new ModelBuilder('M');
-    const issues: TemplateIssue[] = [];
-    render(parseTemplate('{{warn "careful: " machine.name id="x"}}{{#file "a"}}a{{/file}}'), toCodeModel(b.model), issues);
-    assert.deepEqual(issues, [{ severity: 'warning', message: 'careful: M', id: 'x' }]);
-    assert.throws(() => render(parseTemplate('{{error "no"}}{{#file "a"}}a{{/file}}'), toCodeModel(b.model)), /no/);
+  it('guards follow the language and keep precedence', async () => {
+    const b = new ModelBuilder('G');
+    b.init(b.state('A'));
+    b.t('A', b.state('B'), { triggers: ['e'], guard: 'a() && !(b() || del())' });
+    const guards = async (frontMatter: string, filter: string) => {
+      const template = `---\n${frontMatter}\n---\n{% filter file("g.txt") %}{% for s in states %}{% for h in s.handlers %}{% for c in h.candidates %}{{ c.guard | ${filter} }}{% endfor %}{% endfor %}{% endfor %}{% endfilter %}`;
+      return (await generate({ 'G.fsm': b.model }, template)).files[0].content;
+    };
+    assert.equal(await guards('lang: cpp', 'guard(prefix="a_.")'), 'a_.a() && !(a_.b() || a_.del())');
+    assert.equal(await guards('lang: python', 'guard'), 'self.a() and not (self.b() or self.del_())');
+    const none = (await generate({ 'M.fsm': new ModelBuilder('M').model }, '---\nlang: python\n---\n{% filter file("g.txt") %}{{ none | guard }}{% endfilter %}')).files;
+    assert.equal(none[0].content, 'True');
   });
 
-  it('rejects file names outside the output folder', () => {
+  it('one template writes many files', async () => {
+    const template = '---\nlang: c\n---\n{% filter file(machine.name ~ ".h") %}\n// {{ machine.name | upper_snake }}\n{% endfilter %}\n{% filter file("impl.c") %}\n{% for s in states %}{{ s.name }};{% endfor %}\n{% endfilter %}\n';
+    const b = new ModelBuilder('Traffic Light');
+    b.init(b.state('Red'));
+    assert.deepEqual((await generate({ 'Traffic Light.fsm': b.model }, template)).files.map((f) => [f.path, f.content]), [
+      ['Traffic_Light.h', '// TRAFFIC_LIGHT\n'],
+      ['impl.c', 'Red;'],
+    ]);
+  });
+
+  it('warn and error report issues; errors stop the generation', async () => {
     const b = new ModelBuilder('M');
-    assert.throws(() => render(parseTemplate('{{#file "../x"}}{{/file}}'), toCodeModel(b.model)), /inside the output folder/);
-    assert.throws(() => render(parseTemplate('nothing'), toCodeModel(b.model)), /declares no files/);
+    b.init(b.state('A'));
+    const warned = await generate({ 'M.fsm': b.model }, '{% do warn("careful: ", machine.name, id="A") %}{% filter file("a") %}a{% endfilter %}');
+    assert.deepEqual(warned.issues.map(({ id, severity, message }) => ({ id, severity, message })), [{ id: 'A', severity: 'warning', message: 'careful: M' }]);
+    const failed = await run({ 'M.fsm': b.model }, '{% do error("no") %}{% filter file("a") %}a{% endfilter %}');
+    assert.equal(failed.exitCode, 1);
+    assert.deepEqual(failed.files, []);
+    assert.deepEqual(failed.issues.map((i) => [i.severity, i.message]), [['error', 'no']]);
+  });
+
+  it('rejects file names outside the output folder', async () => {
+    await assert.rejects(written('{% filter file("../x") %}{% endfilter %}'), /inside the output folder/);
+    await assert.rejects(written('nothing'), /declares no files/);
   });
 });

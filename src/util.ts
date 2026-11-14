@@ -45,7 +45,7 @@ const utf8 = new TextDecoder('utf-8', { fatal: true });
 /**
  * `decodeURI` without its URIError: decodes `%XX` escapes (UTF-8), except those of reserved characters
  * (`;/:@&=+$,`; unlike `decodeURI`, `%23` and `%3F` give `#` and `?`, as `encodeHref` writes them), and keeps
- * malformed ones as they are (as fsm-generator does).
+ * malformed ones as they are (as fsm-cli does).
  */
 export function decodeHref(s: string): string {
   const at = (i: number) => (s[i] === '%' && /^[0-9A-Fa-f]{2}$/.test(s.slice(i + 1, i + 3)) ? parseInt(s.slice(i + 1, i + 3), 16) : -1);

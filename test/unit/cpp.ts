@@ -1,5 +1,5 @@
 /**
- * Test helpers for the Boost.SML template (templates/sml.hbs): generate C++ for
+ * Test helpers for the Boost.SML template (fsm/templates/sml.jinja): generate C++ for
  * machines, compile it with a driver that records what the machines call, and
  * run scripts against it.
  *
@@ -23,11 +23,8 @@ import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { generate, GenerateHost } from '../../src/codegen/generate';
-import { parseTemplate } from '../../src/codegen/render';
 import { FsmModel } from '../../src/model';
-import { toXmi } from '../../src/xmi';
-import { root } from './harness';
+import { bundled, generate, root } from './harness';
 
 export const SML_VERSION = '1.2.0';
 
@@ -81,19 +78,7 @@ export interface Case {
 
 /** Generates the SML code of `files`, as files of `dir`, and returns the warnings. */
 export async function generateSml(machines: Record<string, FsmModel | string>, dir?: string): Promise<{ files: Map<string, string>; warnings: string[] }> {
-  const sources = new Map<string, string>();
-  for (const [name, m] of Object.entries(machines)) sources.set(`/m/${name}`, typeof m === 'string' ? m : toXmi(m));
-  const host: GenerateHost = {
-    readFile: async (p) => {
-      const text = sources.get(p);
-      if (text === undefined) throw new Error('not found');
-      return text;
-    },
-    resolve: (from, href) => `${from.slice(0, from.lastIndexOf('/'))}/${decodeURI(href)}`,
-    display: (p) => p.slice(3),
-  };
-  const template = parseTemplate(readFileSync(join(root, 'templates/sml.hbs'), 'utf8'));
-  const result = await generate([...sources.keys()], template, host);
+  const result = await generate(machines, bundled('sml'), 'sml.jinja');
   const files = new Map(result.files.map((f) => [f.path, f.content]));
   if (dir) for (const [path, content] of files) writeFileSync(join(dir, path), content);
   return { files, warnings: result.issues.filter((i) => i.severity === 'warning').map((i) => i.message) };
