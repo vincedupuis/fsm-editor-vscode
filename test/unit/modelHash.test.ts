@@ -41,6 +41,15 @@ const withHashLine = (xmi: string, hash: string) =>
   xmi.replace(/<\/xmi:XMI>\n$/, `  <xmi:Extension extender="FSM Editor">\n    <modelHash value="${hash}"/>\n  </xmi:Extension>\n</xmi:XMI>\n`);
 
 describe('model hash', () => {
+  it('is not stored in the file; a file that has it loads as before and is saved without it', () => {
+    const xmi = toXmi(machine());
+    assert.doesNotMatch(xmi, /modelHash/);
+    assert.match(xmi, /<\/umldi:UMLStateMachineDiagram>\n<\/xmi:XMI>\n$/);
+    const old = withHashLine(xmi, '0123456789abcdef');
+    assert.deepEqual(fromXmi(old), fromXmi(xmi));
+    assert.equal(toXmi(fromXmi(old)), xmi);
+  });
+
   it('ignores the layout: positions, sizes, routes, labels, colors, groups and region layout', async () => {
     const base = machine();
     const hash = await hashOf(toXmi(base));
