@@ -10,6 +10,12 @@
  *   label offset;
  * - the region layout of an orthogonal state, and each region's size along it,
  *   follow from its region shapes;
+ * - coordinates are rounded to 0.1 px, and what is derived from them (centers,
+ *   region shapes, the middle of an edge) is computed from the rounded values,
+ *   the region sizes as the file holds them: reading a written file and writing
+ *   it again gives the same text;
+ * - the diagram lists the shapes, edges and styles in the order reading the
+ *   model gives its elements (document order), each element written once;
  * - colors and groups are kept in one xmi:Extension at the end of the diagram,
  *   with a <style element="id" color="#rrggbb" background="#rrggbb" entry="#rrggbb" …/>
  *   per colored vertex or transition (UML DI has no color), then a
@@ -41,6 +47,13 @@ const PSEUDO_KINDS = new Set<VertexType>([
 ]);
 
 const n1 = (n: number) => Math.round(n * 10) / 10;
+/** The size of a vertex without one (no shape, or a width or height of 0). */
+const DEFAULT_SIZE: Partial<Record<VertexType, [number, number]>> = {
+  state: [140, 60], final: [26, 26], initial: [20, 20], shallowHistory: [26, 26], deepHistory: [26, 26],
+  choice: [28, 28], junction: [14, 14], fork: [90, 8], join: [90, 8], entryPoint: [16, 16], exitPoint: [16, 16],
+  terminate: [20, 20], connectionPointRef: [16, 16], comment: [160, 64],
+};
+const defaultSize = (type: VertexType): [number, number] => DEFAULT_SIZE[type] ?? [40, 40];
 const EXTENDER = 'FSM Editor';
 const LABEL_W = 100;
 const LABEL_H = 16;
@@ -135,12 +148,22 @@ export function regionSizes(regs: Region[], total: number): number[] {
   return regs.map(() => total / regs.length);
 }
 
+/**
+ * The region sizes a file holds: `regionSizes` with the sizes rounded to 0.1 px as they are written, so that
+ * the sizes read back from the region shapes give the same regions (equal parts of 10 px in three would
+ * otherwise be read back as 3.3, 3.3 and the rest, and move on the next save).
+ */
+function fileRegionSizes(regs: Region[], total: number): number[] {
+  const rounded = (sizes: number[]) => regionSizes(sizes.map((s) => ({ id: '', name: '', size: n1(s) })), total);
+  return rounded(rounded(regionSizes(regs, total)));
+}
+
 function regionBounds(v: Vertex, model: FsmModel) {
   const regs = v.regions ?? [];
   const top = v.y + Math.min(headerHeight(v, model), v.h - 20);
   const bh = v.y + v.h - top;
   const horizontal = v.regionLayout === 'horizontal';
-  const sizes = regionSizes(regs, horizontal ? v.w : bh);
+  const sizes = fileRegionSizes(regs, horizontal ? v.w : bh);
   let at = horizontal ? v.x : top;
   return regs.map((r, i) => {
     const b = horizontal ? { id: r.id, x: at, y: top, w: sizes[i], h: bh } : { id: r.id, x: v.x, y: at, w: v.w, h: sizes[i] };
@@ -151,8 +174,51 @@ function regionBounds(v: Vertex, model: FsmModel) {
 
 // ------------------------------------------------------------------ writing
 
+/**
+ * Writes a state machine file. Reading it back and writing it again gives the same text. When ids are used
+ * twice (files edited by hand), reading gives a shape, bend points or a color to the last element with that id
+ * and default places to the others, so what reading gives is written again, until the text no longer changes.
+ */
 export function toXmi(model: FsmModel): string {
+  let text = writeModel(model);
+  if (!sharesIds(model)) return text;
+  for (let i = 0; i < 10; i++) {
+    const again = writeModel(fromXmi(text));
+    if (again === text) break;
+    text = again;
+  }
+  return text;
+}
+
+/** Whether vertices, transitions and regions use some id more than once. */
+function sharesIds(model: FsmModel): boolean {
+  const ids = new Set<string>();
+  let n = 0;
+  const add = (id: string) => {
+    ids.add(id);
+    n++;
+  };
+  for (const r of model.regions ?? []) add(r.id);
+  for (const v of model.vertices ?? []) {
+    add(v.id);
+    for (const r of v.regions ?? []) add(r.id);
+  }
+  for (const t of model.transitions ?? []) add(t.id);
+  return ids.size !== n;
+}
+
+function writeModel(model: FsmModel): string {
   const m = normalizeModel(JSON.parse(JSON.stringify(model)) as FsmModel);
+  // Bounds as the file holds them, so that what is derived from them (centers, header lines, region shapes)
+  // comes out the same when the file is read back and written again. A size of 0 (or one JSON can't hold) is
+  // read back as the default size: it is written as that.
+  for (const v of m.vertices) {
+    v.x = n1(v.x);
+    v.y = n1(v.y);
+    v.w = n1(v.w);
+    v.h = n1(v.h);
+    if (!v.w || !v.h) [v.w, v.h] = defaultSize(v.type);
+  }
   const V = new Map(m.vertices.map((v) => [v.id, v]));
   const regionOwner = new Map<string, Vertex | null>();
   for (const r of m.regions) regionOwner.set(r.id, null);
@@ -262,9 +328,21 @@ export function toXmi(model: FsmModel): string {
     { 'xmi:type': 'uml:Pseudostate', 'xmi:id': v.id, name: v.name, kind: v.type },
   ];
 
+  // Each vertex and transition is written once, in the first place that holds it (two states with one id,
+  // or a region id used again, would otherwise write it twice, and the file would grow on each save).
+  // `docVertices` and `docTransitions` are what the document holds, in the order reading it gives them.
+  const written = new Set<Vertex | Transition>();
+  const docVertices: Vertex[] = [];
+  const docTransitions: Transition[] = [];
+  const take = <T extends Vertex | Transition>(e: T, into: T[]) => {
+    written.add(e);
+    into.push(e);
+  };
+
   // States on the way down: a region id used again (a file edited by hand) can make a state its own descendant.
   const writing = new Set<Vertex>();
   const vertexNode = (v: Vertex): Node => {
+    take(v, docVertices);
     if (v.type === 'final') return ['subvertex', { 'xmi:type': 'uml:FinalState', 'xmi:id': v.id, name: v.name }];
     if (PSEUDO_KINDS.has(v.type)) return pointNode('subvertex', v);
     const children: Node[] = [
@@ -274,10 +352,19 @@ export function toXmi(model: FsmModel): string {
       ...constraint('stateInvariant', `${v.id}_inv`, v.invariant),
       ...triggers('deferrableTrigger', v.id, v.deferrable),
     ];
+    // Read back: the connection points, then the connection point references.
+    const points: Vertex[] = [];
+    const references: Vertex[] = [];
     for (const cp of m.vertices) {
-      if (cp.parent !== v.id) continue;
-      if (cp.type === 'entryPoint' || cp.type === 'exitPoint') children.push(pointNode('connectionPoint', cp));
+      if (cp.parent !== v.id || written.has(cp)) continue;
+      if (cp.type === 'entryPoint' || cp.type === 'exitPoint') {
+        written.add(cp);
+        points.push(cp);
+        children.push(pointNode('connectionPoint', cp));
+      }
       if (cp.type === 'connectionPointRef') {
+        written.add(cp);
+        references.push(cp);
         const file = (v.submachine ?? '').split('#')[0];
         children.push([
           'connection',
@@ -286,7 +373,7 @@ export function toXmi(model: FsmModel): string {
         ]);
       }
     }
-    if (writing.has(v)) throw new XmiError(`State '${v.id}' is inside one of its own regions.`);
+    docVertices.push(...points, ...references);
     writing.add(v);
     for (const r of v.regions ?? []) children.push(regionNode(r));
     writing.delete(v);
@@ -296,23 +383,37 @@ export function toXmi(model: FsmModel): string {
 
   function regionNode(r: Region): Node {
     const kids = m.vertices.filter((v) => v.parent === r.id && !isMachinePoint(v));
+    const comments = kids.filter((v) => v.type === 'comment' && !written.has(v));
+    for (const c of comments) take(c, docVertices);
+    const vertices: Node[] = [];
+    for (const v of kids) {
+      if (v.type === 'comment') continue;
+      if (writing.has(v)) throw new XmiError(`State '${v.id}' is inside one of its own regions.`);
+      if (!written.has(v)) vertices.push(vertexNode(v));
+    }
+    const transitions = (transitionsByRegion.get(r.id) ?? []).filter((t) => !written.has(t));
+    for (const t of transitions) take(t, docTransitions);
     return [
       'region',
       { 'xmi:type': 'uml:Region', 'xmi:id': r.id, name: r.name },
-      ...kids.filter((v) => v.type === 'comment').map(commentNode),
-      ...kids.filter((v) => v.type !== 'comment').map(vertexNode),
-      ...(transitionsByRegion.get(r.id) ?? []).map(transitionNode),
+      ...comments.map(commentNode),
+      ...vertices,
+      ...transitions.map(transitionNode),
     ];
   }
 
+  // The machine's own connection points come first in the file, but are read after its regions.
+  const regionNodes = m.regions.map(regionNode);
+  const machinePoints = m.vertices.filter((v) => isMachinePoint(v) && !written.has(v));
+  for (const v of machinePoints) take(v, docVertices);
   const machine: Node = [
     protocol ? 'packagedElement' : 'packagedElement',
     { 'xmi:type': protocol ? 'uml:ProtocolStateMachine' : 'uml:StateMachine', 'xmi:id': smId, name: m.name },
     ...(m.documentation
       ? [['ownedComment', { 'xmi:type': 'uml:Comment', 'xmi:id': `${smId}_doc`, annotatedElement: smId }, ['body', {}, m.documentation]] as Node]
       : []),
-    ...m.vertices.filter(isMachinePoint).map((v) => pointNode('connectionPoint', v)),
-    ...m.regions.map(regionNode),
+    ...machinePoints.map((v) => pointNode('connectionPoint', v)),
+    ...regionNodes,
   ];
 
   const packaged: Node[] = [];
@@ -327,7 +428,7 @@ export function toXmi(model: FsmModel): string {
   packaged.push(...eventElements);
 
   // Stereotypes: an embedded profile with one stereotype per name, extending UML::State.
-  const stereotyped = m.vertices.filter((v) => v.type === 'state' && v.stereotype);
+  const stereotyped = docVertices.filter((v) => v.type === 'state' && v.stereotype);
   const stereoNames = [...new Set(stereotyped.map((v) => v.stereotype!))];
   let profileApplication: Node[] = [];
   const applications: Node[] = [];
@@ -354,30 +455,35 @@ export function toXmi(model: FsmModel): string {
     }
   }
 
-  // Diagram
+  // Diagram: what the document holds, in the order reading it gives (a model in another order, or holding
+  // elements the document doesn't, would otherwise be written differently once read back).
+  const held: FsmModel = { ...m, vertices: docVertices, transitions: docTransitions };
+  const D = new Map(docVertices.map((v) => [v.id, v]));
+  const docIds = new Set<string>([...docVertices, ...docTransitions].map((e) => e.id));
   const bounds = (b: { x: number; y: number; w: number; h: number }): Node => [
     'bounds', { 'xmi:type': 'dc:Bounds', x: n1(b.x), y: n1(b.y), width: n1(b.w), height: n1(b.h) },
   ];
   const shapes: Node[] = [];
-  for (const v of m.vertices) {
+  for (const v of docVertices) {
     shapes.push(['ownedElement', { 'xmi:type': 'umldi:UMLShape', 'xmi:id': `di_${v.id}`, modelElement: v.id }, bounds(v)]);
     if (v.type === 'state') {
-      for (const rb of regionBounds(v, m)) {
+      for (const rb of regionBounds(v, held)) {
         shapes.push(['ownedElement', { 'xmi:type': 'umldi:UMLShape', 'xmi:id': `di_${rb.id}`, modelElement: rb.id }, bounds(rb)]);
       }
     }
   }
   const edges: Node[] = [];
-  for (const t of m.transitions) {
-    const s = V.get(t.source);
-    const g = V.get(t.target);
+  for (const t of docTransitions) {
+    const s = D.get(t.source);
+    const g = D.get(t.target);
     if (!s || !g) continue;
     if (t.kind === 'internal' && s === g && s.type === 'state') continue; // drawn in the state's compartment
-    const pts = [center(s), ...(t.points ?? []), center(g)];
+    // The waypoints as written: the label's middle is measured on them, as reading does.
+    const pts = [center(s), ...(t.points ?? []), center(g)].map((p) => ({ x: n1(p.x), y: n1(p.y) }));
     const edge: Node = [
       'ownedElement',
       { 'xmi:type': 'umldi:UMLEdge', 'xmi:id': `di_${t.id}`, modelElement: t.id, source: `di_${s.id}`, target: `di_${g.id}` },
-      ...pts.map((p): Node => ['waypoint', { 'xmi:type': 'dc:Point', x: n1(p.x), y: n1(p.y) }]),
+      ...pts.map((p): Node => ['waypoint', { 'xmi:type': 'dc:Point', x: p.x, y: p.y }]),
     ];
     if (t.labelOffset) {
       const mid = polylineMid(pts);
@@ -387,15 +493,15 @@ export function toXmi(model: FsmModel): string {
     }
     edges.push(edge);
   }
-  for (const c of m.vertices) {
+  for (const c of docVertices) {
     if (c.type !== 'comment') continue;
     (c.anchors ?? []).forEach((a, i) => {
-      if (!V.has(a) && !m.transitions.some((t) => t.id === a)) return;
+      if (!docIds.has(a)) return;
       edges.push(['ownedElement', { 'xmi:type': 'umldi:UMLEdge', 'xmi:id': `di_${c.id}_anchor${i + 1}`, modelElement: c.id, source: `di_${c.id}`, target: `di_${a}` }]);
     });
   }
   const styles: Node[] = [];
-  for (const e of [...m.vertices, ...m.transitions]) {
+  for (const e of [...docVertices, ...docTransitions]) {
     const attrs: Record<string, string> = {};
     if (isColor(e.color)) attrs.color = e.color;
     for (const k of ITEM_COLOR_KEYS) {
@@ -405,7 +511,7 @@ export function toXmi(model: FsmModel): string {
     if (Object.keys(attrs).length) styles.push(['style', { element: e.id, ...attrs }]);
   }
   const groups = new Map<string, string[]>();
-  for (const v of m.vertices) {
+  for (const v of docVertices) {
     if (v.group) groups.set(v.group, [...(groups.get(v.group) ?? []), v.id]);
   }
   for (const [id, members] of groups) styles.push(['group', { id, members: members.join(' ') }]);
@@ -677,9 +783,11 @@ export function fromXmi(text: string): FsmModel {
         const lb = label && kid(label, 'bounds');
         if (lb && pts.length >= 2) {
           const mid = polylineMid(pts);
+          // Not rounded: the middle is off the 0.1 px grid, and an offset rounded to 0.1 px could move the
+          // label by 0.1 px on each save. Written again from the same waypoints, it gives the same label box.
           t.labelOffset = {
-            x: n1(+lb.attrs.x + +lb.attrs.width / 2 - mid.x),
-            y: n1(+lb.attrs.y + +lb.attrs.height / 2 - mid.y),
+            x: +lb.attrs.x + +lb.attrs.width / 2 - mid.x,
+            y: +lb.attrs.y + +lb.attrs.height / 2 - mid.y,
           };
         }
       }
@@ -700,14 +808,9 @@ export function fromXmi(text: string): FsmModel {
   }
 
   // Elements without a shape get a default place and size.
-  const DEFAULT: Partial<Record<VertexType, [number, number]>> = {
-    state: [140, 60], final: [26, 26], initial: [20, 20], shallowHistory: [26, 26], deepHistory: [26, 26],
-    choice: [28, 28], junction: [14, 14], fork: [90, 8], join: [90, 8], entryPoint: [16, 16], exitPoint: [16, 16],
-    terminate: [20, 20], connectionPointRef: [16, 16], comment: [160, 64],
-  };
   let slot = 0;
   for (const v of model.vertices) {
-    if (!v.w || !v.h) [v.w, v.h] = DEFAULT[v.type] ?? [40, 40];
+    if (!v.w || !v.h) [v.w, v.h] = defaultSize(v.type);
     if (Number.isNaN(v.x) || Number.isNaN(v.y)) {
       v.x = 40 + (slot % 5) * 180;
       v.y = 40 + Math.floor(slot / 5) * 120;
