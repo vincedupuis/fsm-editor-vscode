@@ -2,7 +2,7 @@
 
 [![Visual Studio Marketplace version](https://badgen.net/vs-marketplace/v/VinceGoSoftware.fsm-editor)](https://marketplace.visualstudio.com/items?itemName=VinceGoSoftware.fsm-editor)
 
-A visual editor and code generator for UML 2.5.1 state machines. Draw a machine in any `*.fsm` file, with a toolbox, a properties panel, live validation and SVG and PNG export, then generate its source code from templates, in VS Code or with the standalone `fsm` command-line generator. Files are standard XMI 2.5.1: the UML model plus its diagram layout in UML DI, in the same file.
+A visual editor and code generator for UML 2.5.1 state machines. Draw a machine in any `*.fsm` file, with a toolbox, a properties panel, live validation and SVG and PNG export, then generate its source code from templates, in VS Code or with the `fsm` command-line tool. Files are standard XMI 2.5.1: the UML model plus its diagram layout in UML DI, in the same file.
 
 It also works in VS Code for the Web: open a repository on [github.dev](https://github.dev) (press `.` on any GitHub repository) or a folder on [vscode.dev](https://vscode.dev), install FSM Editor from the Extensions view, and open a `.fsm` file.
 
@@ -10,16 +10,16 @@ It also works in VS Code for the Web: open a repository on [github.dev](https://
 
 ## Code generation
 
-*Generate Code…* (the **Code** toolbar button, or the Explorer context menu of a `.fsm` file) turns a machine into source code with a [Handlebars](https://handlebarsjs.com/) template, or with a [Jinja](https://jinja.palletsprojects.com/) template run by [fsm-generator](https://github.com/vincedupuis/fsm-generator), which the extension bundles (desktop VS Code only). One template can write several files per machine. Two templates are bundled, in both languages:
+*Generate Code…* (the **Code** toolbar button, or the Explorer context menu of a `.fsm` file) turns a machine into source code with a [Jinja](https://jinja.palletsprojects.com/) template, in desktop VS Code and in VS Code for the Web alike. One template can write several files per machine. Two templates are bundled:
 
 - **`ts`**: a dependency-free TypeScript class with run-to-completion semantics, plus an actions interface for you to implement.
 - **`sml`**: C++17 with [Boost.SML](https://github.com/boost-ext/sml): a `.h`/`.cpp` pair per machine holding its Boost.SML transition tables, an events interface (what you send the machine) and an actions interface (what it needs from you: behaviors, conditions, timers). Boost.SML has no transitions across composite states, entry/exit points, forks, joins or UML history: the generated code works around them with a warning for each, and refuses what it cannot express.
 
-The same generator is a command-line tool, available as a standalone executable (no Node.js needed) for Windows, macOS and Linux:
+The code generator is [fsm-cli](https://github.com/vincedupuis/fsm-cli), which the extension runs as WebAssembly. It is also the `fsm` command-line tool, a single executable for Windows, macOS and Linux, for builds and CI:
 
 ```sh
-fsm "models/**/*.fsm" --template ts --out src/generated
-fsm "models/**/*.fsm" --template sml --out src/generated
+fsm write "models/**/*.fsm" --template ts --out src/generated
+fsm write "models/**/*.fsm" --template sml --out src/generated
 ```
 
 See **[docs/CODEGEN.md](docs/CODEGEN.md)** for the command line, the bundled templates, writing templates for other languages, and the code model they receive.
@@ -102,11 +102,13 @@ Commands (Command Palette → "FSM"): *New State Machine*, *New Untitled State M
 
 ```sh
 npm install
-npm run compile      # type-check, then bundle for desktop, web and the CLI; or: npm run watch
-npm run test:unit    # code generation tests (Node; compiles the C++ of the sml template when a C++ compiler is found)
+npm run build:fsm    # the code generator: builds ../fsm-cli as WebAssembly into fsm/, with its templates
+npm run compile      # type-check, then bundle for desktop and web; or: npm run watch
+npm run test:unit    # unit and code generation tests (Node; compiles the C++ of the sml template when a C++ compiler is found)
 npm run test:web     # smoke test in VS Code for the Web (Chromium)
-npm run build:bin    # standalone fsm executables in dist/ (uses Bun)
 ```
+
+Code generation needs `fsm/fsm.wasm` and `fsm/templates/*.jinja`, which are not in the repository. `npm run build:fsm` builds them from a checkout of [fsm-cli](https://github.com/vincedupuis/fsm-cli) next to this one (`../fsm-cli`), and needs [Rust](https://rustup.rs) with the WebAssembly target: `rustup target add wasm32-unknown-unknown`. It uses `cargo` from the PATH, or else from `~/.cargo/bin`. Run it again after changing fsm-cli. The release workflow downloads them from the fsm-cli release named by `FSM_CLI_VERSION` in `.github/workflows/release.yml` instead.
 
 Press F5 in VS Code to launch an Extension Development Host with the `examples` folder open, then open `examples/MediaPlayer.fsm`, or `examples/Order.fsm` for a submachine with connection point references (it uses `examples/Payment.fsm`).
 
@@ -122,10 +124,10 @@ Package with `npm run package`, which produces a `.vsix` file.
 - `media/editor.js`, `media/editor.css`: the diagram editor webview (no dependencies)
 - `media/expressions.js`: grammar of behaviors, conditions and triggers, shared by the webview and the validator
 - `src/util.ts`: path and text helpers that work in both the desktop and web extension hosts
-- `src/codegen/`: code generation (`codeModel.ts` builds the code model, `render.ts`, `helpers.ts` and `languages.ts` run templates, `generate.ts` is the whole pipeline); `src/codegenCommand.ts` is the VS Code command and `src/cli.ts` the `fsm` tool
-- `templates/`: bundled code templates
-- `scripts/build-bin.mjs`: builds the standalone executables
-- `test/unit/`: code generation tests run by `npm run test:unit`
+- `src/codegenCommand.ts`: the *Generate Code…* command; `src/fsmCli.ts` runs fsm-cli's WebAssembly module
+- `fsm/`: the module (`fsm.wasm`) and the bundled templates (`templates/*.jinja`), from `npm run build:fsm` (not in the repository)
+- `scripts/build-fsm.mjs`: builds them from `../fsm-cli`
+- `test/unit/`: unit and code generation tests run by `npm run test:unit`
 - `test/web/`: browser smoke test run by `npm run test:web`
 - `docs/UML-CONFORMANCE.md`: supported UML features, deviations, validation rules and export mappings
 - `docs/CODEGEN.md`: code generation, templates and the code model

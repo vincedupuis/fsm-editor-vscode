@@ -1,6 +1,6 @@
 # Code Generation
 
-FSM Editor turns `.fsm` state machines into source code with [Handlebars](https://handlebarsjs.com/) templates. The same generator runs from VS Code (desktop and web) and from the command line.
+FSM Editor turns `.fsm` state machines into source code with [Jinja](https://jinja.palletsprojects.com/) templates. The code generator is [fsm-cli](https://github.com/vincedupuis/fsm-cli), in Rust, with templates rendered by [MiniJinja](https://github.com/mitsuhiko/minijinja). VS Code runs it built as WebAssembly, on the desktop and on the web alike, and the `fsm write` command runs it from the command line. FSM Editor for Visual Studio and for JetBrains IDEs run the same `fsm`.
 
 - [How it works](#how-it-works)
 - [From VS Code](#from-vs-code)
@@ -14,26 +14,24 @@ FSM Editor turns `.fsm` state machines into source code with [Handlebars](https:
 ## How it works
 
 ```
-.fsm (XMI) ──fromXmi──▶ FsmModel ──toCodeModel──▶ code model ──render──▶ files
+.fsm (XMI) ──read──▶ model ──validate──▶ code model ──render──▶ files
 ```
 
-1. **`fromXmi`** reads the files. Machines used by submachine states are read too, to validate them and to learn their events and connection points, but only the files you give are generated.
-2. The **validator** checks every machine. Generation stops on errors, and warnings are reported.
-3. **`toCodeModel`** works out the UML semantics once for every language. It produces the state tables, the exits and entries of every transition in order, the choices, the static junctions, the joins, the history and the timers. Guards become condition trees, not text in some language.
-4. **`render`** runs the template on the code model. One template writes **any number of files** through `{{#file}}` blocks.
+1. The generator **reads** the files. Machines used by submachine states are read too, to validate them and to learn their events and connection points, but only the files you give are generated.
+2. The **validator** checks every machine with the editor's rules and messages. Generation stops on errors, and warnings are reported.
+3. The **code model** works out the UML semantics once for every language. It holds the state tables, the exits and entries of every transition in order, the choices, the static junctions, the joins, the history and the timers. Guards become condition trees, not text in some language.
+4. The template is **rendered** on the code model. One template writes **any number of files** through `file` blocks.
 
-Templates are data: they can't contain JavaScript, and every helper is built in. Generating code from a repository never runs code from it, and a template behaves the same in the CLI, in desktop VS Code and on vscode.dev.
+Templates are data: they can't run code, and every filter is built in. Generating code from a repository never runs code from it, and a template behaves the same with `fsm write`, in desktop VS Code and on vscode.dev.
 
 ## From VS Code
 
 Run **FSM: Generate Code…** from the diagram toolbar (**Code**), the Command Palette, or the context menu of a `.fsm` file in the Explorer. Then:
 
-1. Pick a template: a bundled one (`ts`, `sml`), any `*.hbs` or `*.jinja` file in the workspace, or **Browse…**.
+1. Pick a template: a bundled one (`ts`, `sml`), any `*.jinja` file in the workspace, or **Browse…**.
 2. Pick the output folder.
 
-The last template and output folder are remembered. Unsaved changes in open `.fsm` files are used.
-
-**Jinja templates.** A `.jinja` template is run by [fsm-generator](https://github.com/vincedupuis/fsm-generator), the same code generator in Rust with Jinja templates ([MiniJinja](https://github.com/mitsuhiko/minijinja)): same code model, same messages, and its bundled `ts.jinja` and `sml.jinja` generate the same files as `ts.hbs` and `sml.hbs`. The extension bundles it, and lists its templates as *bundled Jinja template*. It is an executable, so Jinja templates are only offered in desktop VS Code, not on vscode.dev or github.dev. It reads the files on disk: open `.fsm` files with unsaved changes are saved first. The `fsmEditor.codegen.generatorPath` setting points at another `fsm-generator`; when it is empty, the bundled one is used, or else one on the PATH. The **FSM Code Generation** output channel lists the files written, the template's warnings and any problems.
+The last template and output folder are remembered. Unsaved changes in open `.fsm` files are used, including those of the machines used by submachine states. It works the same in VS Code for the Web. The **FSM Code Generation** output channel lists the files written and the problems, as `file:line: severity: message`. Handlebars templates (`.hbs`), which earlier versions used, are refused: see [Coming from the Handlebars templates](https://github.com/vincedupuis/fsm-cli#coming-from-the-handlebars-templates) to convert one.
 
 The command also takes arguments, to skip the prompts from a keybinding. It uses the open or selected `.fsm` file. Paths are absolute, or relative to the first workspace folder:
 
@@ -42,45 +40,22 @@ The command also takes arguments, to skip the prompts from a keybinding. It uses
 {
   "key": "ctrl+alt+g",
   "command": "fsmEditor.generateCode",
-  "args": { "template": "templates/cpp.hbs", "out": "src/generated" }
+  "args": { "template": "templates/cpp.jinja", "out": "src/generated" }
 }
 ```
 
 ## From the command line
 
 ```sh
-fsm <files...> --template <template> [--out <folder>] [options]
+fsm write "models/**/*.fsm" --template ts --out src/generated
+fsm write "models/**/*.fsm" --template sml --out src/generated --check
 ```
 
-| Option | |
-| --- | --- |
-| `-t, --template <file>` | Template file. A bare name such as `ts` means `templates/ts.hbs` next to the program. |
-| `-o, --out <folder>` | Output folder (default: current folder). |
-| `--check` | Write nothing: report the files of the output folder that are missing or out of date (see below). |
-
-Exit codes: `0` success, `1` errors in the machines or the template (with `--check`, also files missing or out of date), `2` bad usage. Problems, including the errors found while building the code model (such as pseudostates forming a cycle) and the warnings and errors a template reports, are printed to stderr as `file:line: severity: message`, which VS Code problem matchers and CI logs understand.
-
-`--check` writes nothing: it renders the template in memory and checks the output folder instead, for instance as a CI step that fails when someone changed a model without regenerating its code. Every file the template generates for a machine and writes the machine's `machine.modelHash` in is reported as up to date (stdout) when the file in the folder holds that hash, and as an error (stderr, `file:line: error: …`) when it is missing or holds another hash. Files without the hash, such as the `FsmTimers.h` that the `sml` template shares between machines, aren't checked, and only the hash is compared: a file generated by another version of the template counts as up to date. A machine's files carry its own model hash only, while a change to a submachine can also change the files of the machines that use it (their events include the submachine's): check the submachines' files too, e.g. with `"models/*.fsm"`, and regenerate them all.
-
-The command works the same in bash, zsh, PowerShell and cmd:
-
-```sh
-fsm "models/**/*.fsm" -t ts -o src/generated        # bash, zsh
-fsm "models/**/*.fsm" -t ts -o src\generated        # PowerShell, cmd
-```
-
-Quote glob patterns. bash expands them itself, but PowerShell and cmd don't, so `fsm` always expands them. `**` matches any number of folders. Paths may use `/` or `\`.
-
-### Getting `fsm`
-
-- **Standalone executable (no Node.js):** download the archive for your system (`fsm-<version>-<os>-<arch>`). It holds the `fsm` (or `fsm.exe`) program and a `templates/` folder. Templates are files next to the program, not built into it, so you can edit them or add your own there. `-t <name>` finds them by name.
-- **With Node.js 18+:** from a clone of this repository, run `npm install && npm run compile`, then `node out/cli.js …`, or `npm link` to get an `fsm` command.
-
-Building the executables (maintainers): `npm run build:bin` compiles `out/cli.js` with [Bun](https://bun.sh) for Linux (x64, arm64), macOS (x64, arm64) and Windows (x64) into `dist/`, and copies `templates/` next to each executable. `npm run build:bin -- --target current` builds for the current machine only. It uses `bun` when installed, otherwise `npx bun@1`.
+`fsm` is a single executable for Linux, macOS and Windows, with the bundled templates in a `templates/` folder next to it: download it from the [fsm-cli releases](https://github.com/vincedupuis/fsm-cli/releases). It generates the same files as VS Code, and prints problems to stderr as `file:line: severity: message`, which VS Code problem matchers and CI logs understand. `--check` writes nothing and reports the generated files that are missing or out of date, from the model hash they hold, for a CI step that fails when someone changed a model without regenerating its code. The options, exit codes and `--check` are described in [fsm-cli's README](https://github.com/vincedupuis/fsm-cli#fsm-write).
 
 ## The TypeScript template
 
-`templates/ts.hbs` writes two files per machine, for example for `Order`:
+The `ts` template (`ts.jinja`) writes two files per machine, for example for `Order`:
 
 | File | Contents |
 | --- | --- |
@@ -103,7 +78,7 @@ order.activeStates;      // ['Payment']
 - **Actions:** every function called by an entry, exit or effect behavior is a `void` method of the actions interface. Every function called by a guard, invariant or pre/postcondition is a `boolean` method.
 - **Do activities** `do / blinkLed()` become `startBlinkLed()` and `stopBlinkLed()`. Call `machine.activityDone('blinkLed')` when an activity ends by itself. A state with do activities completes when all of them have ended. An activity listed twice in one `do` is started, stopped and awaited once.
 - **Time events** `after(5m)` use `setTimeout`. Pass `{ clock }` to control time in tests.
-- **Submachines:** each machine gets its own class. `OrderActions.submachines.Payment` gives the actions of the `Payment` submachine state. The parent routes events to the running submachine and follows its exit points. `Order.ts` imports `Payment.ts`, so generate `Payment.fsm` too, for example with `fsm "models/*.fsm" …`.
+- **Submachines:** each machine gets its own class. `OrderActions.submachines.Payment` gives the actions of the `Payment` submachine state. The parent routes events to the running submachine and follows its exit points. `Order.ts` imports `Payment.ts`, so generate `Payment.fsm` too, for example with `fsm write "models/*.fsm" …`.
 - **Constraints:** invariants, preconditions and postconditions call `onConstraintViolation(kind, element)`.
 - `terminate` calls `onTerminate()` and stops the machine.
 - **Tracing:** pass `onTrace` in the options to know what the machine does, for example to write a log for the [Trace Player](#tracing).
@@ -114,7 +89,7 @@ The generated code has no dependencies, is strict-mode clean, and runs in browse
 
 ## The Boost.SML template
 
-`templates/sml.hbs` writes C++17 for [Boost.SML](https://github.com/boost-ext/sml) (tested with 1.2.0), four files per machine, for example for `Order`, and `FsmTimers.h`, shared by all machines:
+The `sml` template (`sml.jinja`) writes C++17 for [Boost.SML](https://github.com/boost-ext/sml) (tested with 1.2.0), four files per machine, for example for `Order`, and `FsmTimers.h`, shared by all machines:
 
 | File | Contents |
 | --- | --- |
@@ -190,84 +165,22 @@ A template prints the `transition` steps (see [Steps](#steps)) and the table act
 
 ## Writing a template
 
-A template is a Handlebars file, optionally starting with front matter between `---` lines:
+A template is a Jinja file, with optional front matter that picks a language preset for the `guard` and `id` filters and holds options. It gets the [code model](#code-model-reference) of the machine, one variable per field, and writes files with `file` blocks:
 
-```hbs
+```jinja
 ---
-lang: cpp                   # preset for the guard and id helpers: c, cpp, ts, java, python
-guard:
-  prefix: "actions_."       # overrides the preset
-keywords: [signals, slots]  # more reserved words for the id helper
-options:                    # free values, available as {{options.namespace}}
-  namespace: fsm
+lang: cpp
 ---
-{{#file (concat machine.name "Actions.h")}}
-#pragma once
-namespace {{options.namespace}} {
-struct {{machine.name}}Actions {
-{{#each actions}}
-    virtual void {{id this}}() = 0;
-{{/each}}
-{{#each conditions}}
-    virtual bool {{id this}}() = 0;
-{{/each}}
+{% filter file(machine.name ~ "Actions.h") %}
+struct {{ machine.name }}Actions {
+{% for a in actions %}
+    virtual void {{ a | id }}() = 0;
+{% endfor %}
 };
-}
-{{/file}}
-
-{{#file (concat machine.name ".cpp")}}
-...
-{{/file}}
+{% endfilter %}
 ```
 
-The front matter is a small YAML subset: nested `key: value` maps, `- item` lists, inline `[a, b]` lists, quoted strings, numbers, booleans and `#` comments.
-
-Only the content of `{{#file}}` blocks is written, and existing files are always overwritten. Machines may write the same file (a shared header) when they give it the same content. A template reports what it can't generate as it should with `{{warn}}` and `{{error}}`: warnings are printed and the files written; errors are all printed, and nothing is written. File names are relative to the output folder and may contain folders (`include/{{machine.name}}.h`), but not `..`. The template is rendered once per generated machine, so file names should contain `machine.name`.
-
-Output is not HTML-escaped: `{{guard ...}}` prints `a() && b()`, not `a() &amp;&amp; b()`. Use `~` to trim whitespace (`{{~#each}}`). A block tag alone on its line leaves no blank line. A partial alone on its line (`    {{> steps}}`) indents everything it prints, which is handy for recursive partials.
-
-### Helpers
-
-| Helper | Example | Result |
-| --- | --- | --- |
-| `file` | `{{#file "a/B.h"}}…{{/file}}` | Writes a file. |
-| `guard` | `{{guard guard}}`, `{{guard c prefix="self."}}` | Condition tree in the template's language; `true` when absent. |
-| `id` | `{{id "delete"}}` | Escapes reserved words: `delete_`. |
-| `pascal`, `camel`, `snake`, `upper` | `{{upper "blinkLed"}}` | `BLINK_LED` |
-| `concat` | `{{concat machine.name ".h"}}` | Joins its arguments. |
-| `join` | `{{join states ", " "name"}}` | Joins a list, or a property of each item. |
-| `quote` | `{{quote label}}` | A double-quoted string literal. |
-| `includes` | `{{#if (includes conditions this)}}` | Whether a list holds a value. |
-| `switch`, `case`, `default` | `{{#switch kind}}{{#case "a" "b"}}…{{/case}}{{#default}}…{{/default}}{{/switch}}` | The first `case` listing the value, or `default`. Text between the cases is dropped, so each case can have its own line. |
-| `warn` | `{{warn "No forks: " name id=id}}` | Reports a warning about the element with xmi:id `id` (optional), at its line in the `.fsm` file. Arguments are joined. |
-| `error` | `{{error "Cannot generate " name id=id}}` | Reports an error: the generation fails once the template has been rendered. |
-| `eq`, `ne`, `and`, `or`, `not` | `{{#if (eq kind "call")}}` | Comparisons for `#if`. |
-
-Handlebars' own helpers (`if`, `unless`, `each`, `with`, `lookup`, `log`) and inline partials (`{{#*inline "name"}}`) work as usual. `lang` (the language config) and `config` (the whole front matter) are available next to the code model.
-
-### Printing steps
-
-Transitions, entries, exits and region defaults are lists of **steps**. A template prints them with a recursive partial:
-
-```hbs
-{{#*inline "steps"}}
-{{#each steps}}
-{{#if (eq kind "call")}}
-actions.{{id action}}();
-{{else if (eq kind "enter")}}
-enter({{stateIndex}}); // {{state}}
-{{else if (eq kind "choice")}}
-{{#each branches}}
-{{#if @first}}if ({{guard guard}}) {{else if guard}}else if ({{guard guard}}) {{else}}else {{/if}}{
-    {{> steps}}
-}
-{{/each}}
-{{/if}}
-{{/each}}
-{{/inline}}
-```
-
-`templates/ts.hbs` is a complete example to copy: it handles every step kind and has the small runtime the steps rely on.
+[fsm-cli's README](https://github.com/vincedupuis/fsm-cli#writing-a-template) documents the template language: the front matter, the variables, the filters and functions (`file`, `guard`, `id`, the case filters, `quote`, `warn()`, `error()`), whitespace control, and how to print steps with macros. The bundled `ts.jinja` and `sml.jinja`, in fsm-cli's [templates](https://github.com/vincedupuis/fsm-cli/tree/main/templates) folder, are complete examples to copy.
 
 ## Code model reference
 
@@ -275,7 +188,7 @@ Top level:
 
 | Field | |
 | --- | --- |
-| `machine` | `name` (identifier), `displayName`, `id`, `kind` (`behavioral`/`protocol`), `protocol`, `context`, `documentation`, `sourceFile`, `modelHash` (the hash of the model in the `.fsm` file, recomputed from it: see the file format in [UML-CONFORMANCE.md](UML-CONFORMANCE.md#file-format)) |
+| `machine` | `name` (identifier), `displayName`, `id`, `kind` (`behavioral`/`protocol`), `protocol`, `context`, `documentation`, `sourceFile`, `modelHash` (the hash of the model in the `.fsm` file, without its layout: see the file format in [UML-CONFORMANCE.md](UML-CONFORMANCE.md#file-format)) |
 | `states` | All states and final states, depth first ([below](#states)). |
 | `regions`, `topRegions` | `index`, `name`, `displayName`, `top`, `owner`/`ownerIndex` (-1 at the top), `states`, `defaultSteps` (the initial transition; empty when the region has no initial pseudostate) |
 | `events` | Named events: `name`, `index`, `signalIndex`, `own` (false when only a submachine handles it) |
@@ -330,11 +243,11 @@ A **condition** is `{ op: "call", name }`, `{ op: "not", arg }`, or `{ op: "and"
 | `check` | `constraint` (`postcondition`), `element`, `condition` | Report a violation when the condition is false. |
 | `transition` | `id`, `label` | A transition is taken (one of the transitions of a compound transition, before its effect): report it for [tracing](#tracing), or print nothing. |
 
-`exit`, `exitRegion`, `enterRegion` and `restoreHistory` depend on the configuration at run time. They need a small runtime: an active state per region, a history per region, and the tables in the code model. See `templates/ts.hbs`.
+`exit`, `exitRegion`, `enterRegion` and `restoreHistory` depend on the configuration at run time. They need a small runtime: an active state per region, a history per region, and the tables in the code model. See `ts.jinja`.
 
 ### Transition tables
 
-`tables` (`src/codegen/tables.ts`) is the same machine for frameworks whose transitions stay inside one table, such as Boost.SML: a table per composite state with the transitions between its substates, and one for the machine. Such frameworks can't leave a composite state from a substate or enter a nested state directly, so the tables do it with two mechanisms that keep UML's order of exits, effects and entries:
+`tables` is the same machine for frameworks whose transitions stay inside one table, such as Boost.SML: a table per composite state with the transitions between its substates, and one for the machine. Such frameworks can't leave a composite state from a substate or enter a nested state directly, so the tables do it with two mechanisms that keep UML's order of exits, effects and entries:
 
 - **Continuations** (leaving from inside): the substate takes the event without changing state and posts a continuation, a table event that the table of the composite state being left takes right away, once per state left when effects come between the exits.
 - **Routes** (entering inside): every region starts in an `init` pseudostate whose anonymous rows enter the region by default (route 0), restore its last active state (route 1, deep resume, or the route of a history pseudostate), or follow the route a transition set before entering the composite state.
@@ -347,7 +260,7 @@ A **condition** is `{ op: "call", name }`, `{ op: "not", arg }`, or `{ op: "and"
 | `postconditions` | `index`, `element`, `condition`: checked after their transition. |
 | `routes` | Number of routes; 0 and 1 are reserved. |
 | `entryPoints` | The machine's entry points: `name`, and the `route` actions to start through it. |
-| `notes`, `problems` | What the tables work around, and what they can't express: `kind`, `id`, `element`, `state`, `detail`. A template turns them into `{{warn}}` and `{{error}}`. |
+| `notes`, `problems` | What the tables work around, and what they can't express: `kind`, `id`, `element`, `state`, `detail`. A template turns them into `warn()` and `error()`. |
 
 A **row** has a `source` and a `target` (null for an internal transition), each `{ kind: "state" \| "pseudo", name, index, composite, role }`, `initial` (the region's initial state), `trigger` (`{ kind, name, index }` with kind `event`, `table`, `entry` or `exit`, or null for an anonymous row taken as soon as the source is entered), `guard` (terms that must all hold, in order), `actions` and a `comment`. Rows are in priority order for a source and trigger: offers to a submachine, then the transitions, then deferral.
 
@@ -357,7 +270,7 @@ Actions: `stateEntry` and `stateExit` (with the `state`, whose `entry`/`exit` st
 
 ## Semantics of the generated code
 
-`toCodeModel` and the TypeScript template implement UML run-to-completion semantics:
+The code model and the TypeScript template implement UML run-to-completion semantics:
 
 - **Events** are queued and processed one at a time. Each run-to-completion step first selects the enabled transitions, then fires them.
 - **Priority:** the innermost states get the event first. A state's own transitions apply only when none of its substates used the event. Orthogonal regions each fire their own transition in the same step. When two selected transitions conflict (the first one fired has left the source of the other), only the first fires.
