@@ -12,3 +12,6 @@ esbuild.mjs
 out/test/**
 .vscode-test-web/**
 scripts/**
+.github/**
+CLAUDE.md
+.gitignore
