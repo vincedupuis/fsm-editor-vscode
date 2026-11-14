@@ -1,5 +1,5 @@
 # Runs the unit tests on Windows on every push and pull request, so that the
-# C++ of the Boost.SML template (templates/sml.hbs) is compiled with MSVC, the
+# C++ of the Boost.SML template (fsm-cli's sml.jinja) is compiled with MSVC, the
 # compiler of FSM Editor for Visual Studio's users. The release workflow tests
 # on Linux with GCC.
 name: Test on Windows
@@ -34,6 +34,19 @@ jobs:
           }
 
       - run: npm ci
+
+      # fsm-cli's WebAssembly module and templates, from the release pinned in release.yml.
+      - name: Fetch fsm-cli
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(sed -n 's/^ *FSM_CLI_VERSION: *//p' .github/workflows/release.yml | tr -d '\r')
+          gh release download "v$version" -R vincedupuis/fsm-cli -p "fsm-$version.wasm" -p "fsm-templates-$version.tar.gz" -D fsm
+          mv "fsm/fsm-$version.wasm" fsm/fsm.wasm
+          tar xzf "fsm/fsm-templates-$version.tar.gz" -C fsm
+          rm "fsm/fsm-templates-$version.tar.gz"
+          ls -R fsm
 
       - name: Test
         run: npm run test:unit

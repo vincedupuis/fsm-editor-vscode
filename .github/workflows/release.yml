@@ -1,9 +1,8 @@
-# On a version tag (v0.3.1), builds the VSIX and the standalone `fsm` code
-# generators, attaches them to the GitHub Release of that tag, and publishes the
-# VSIX to the Visual Studio Marketplace when the VSCE_PAT secret is set (an Azure
-# DevOps token with the Marketplace > Manage scope). FSM Editor for Visual Studio
-# and for JetBrains IDEs download their `fsm` from these releases. The VSIX
-# bundles fsm-generator, which runs the Jinja templates on desktop.
+# On a version tag (v0.3.1), builds the VSIX, attaches it to the GitHub Release
+# of that tag, and publishes it to the Visual Studio Marketplace when the
+# VSCE_PAT secret is set (an Azure DevOps token with the Marketplace > Manage
+# scope). The VSIX bundles fsm-cli's WebAssembly module and templates, which
+# generate the code on desktop and on the web.
 name: Release
 
 on:
@@ -11,8 +10,9 @@ on:
     tags: ['v*']
 
 env:
-  # Release of fsm-generator (github.com/vincedupuis/fsm-generator) the VSIX bundles.
-  FSM_GENERATOR_VERSION: 0.6.2
+  # Release of fsm-cli (github.com/vincedupuis/fsm-cli) whose fsm-<version>.wasm and
+  # fsm-templates-<version>.tar.gz the VSIX bundles. test-windows.yml reads it from here.
+  FSM_CLI_VERSION: 0.6.3
 
 jobs:
   release:
@@ -37,27 +37,17 @@ jobs:
           node-version: 22
           cache: npm
 
-      - uses: oven-sh/setup-bun@v2
-
       - run: npm ci
 
-      - name: Fetch fsm-generator
+      - name: Fetch fsm-cli
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download "v$FSM_GENERATOR_VERSION" -R vincedupuis/fsm-generator -p "fsm-generator-$FSM_GENERATOR_VERSION-*" -D "$RUNNER_TEMP/generator"
-          for archive in "$RUNNER_TEMP"/generator/*; do
-            case "$archive" in
-              *.zip) unzip -q "$archive" -d "$RUNNER_TEMP/generator" ;;
-              *.tar.gz) tar xzf "$archive" -C "$RUNNER_TEMP/generator" ;;
-            esac
-          done
-          for dir in "$RUNNER_TEMP"/generator/fsm-generator-$FSM_GENERATOR_VERSION-*/; do
-            platform=$(basename "$dir" | sed "s/^fsm-generator-$FSM_GENERATOR_VERSION-//")
-            mkdir -p generator
-            cp -R "$dir" "generator/$platform"
-          done
-          ls generator
+          gh release download "v$FSM_CLI_VERSION" -R vincedupuis/fsm-cli -p "fsm-$FSM_CLI_VERSION.wasm" -p "fsm-templates-$FSM_CLI_VERSION.tar.gz" -D fsm
+          mv "fsm/fsm-$FSM_CLI_VERSION.wasm" fsm/fsm.wasm
+          tar xzf "fsm/fsm-templates-$FSM_CLI_VERSION.tar.gz" -C fsm
+          rm "fsm/fsm-templates-$FSM_CLI_VERSION.tar.gz"
+          ls -R fsm
 
       - name: Test
         run: npm run test:unit
@@ -65,28 +55,15 @@ jobs:
       - name: Build the VSIX
         run: npx @vscode/vsce package -o "$RUNNER_TEMP/fsm-editor-${GITHUB_REF_NAME#v}.vsix"
 
-      - name: Build the fsm code generators
-        run: |
-          npm run build:bin
-          version=${GITHUB_REF_NAME#v}
-          cd dist
-          for dir in fsm-$version-*; do
-            case "$dir" in
-              *-windows-*) zip -qr "$RUNNER_TEMP/$dir.zip" "$dir" ;;
-              *) tar czf "$RUNNER_TEMP/$dir.tar.gz" "$dir" ;;
-            esac
-          done
-
-      - name: Attach the VSIX and the generators to the release
+      - name: Attach the VSIX to the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           version=${GITHUB_REF_NAME#v}
-          assets=("$RUNNER_TEMP"/*.vsix "$RUNNER_TEMP"/fsm-$version-*.tar.gz "$RUNNER_TEMP"/fsm-$version-*.zip)
           if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+            gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP"/*.vsix --clobber
           else
-            gh release create "$GITHUB_REF_NAME" "${assets[@]}" --title "FSM Editor $version" --generate-notes
+            gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP"/*.vsix --title "FSM Editor $version" --generate-notes
           fi
 
       - name: Publish to the Visual Studio Marketplace
