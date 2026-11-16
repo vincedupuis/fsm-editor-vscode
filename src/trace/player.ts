@@ -18,8 +18,8 @@
 import * as vscode from 'vscode';
 import { FsmEditorProvider } from '../fsmEditorProvider';
 import { FsmModel, ModelIndex } from '../model';
-import { basename, decodeHref, decodeText } from '../util';
-import { fromXmi } from '../xmi';
+import { loadModel, submachineFiles } from '../load';
+import { basename, decodeText } from '../util';
 import { TraceFormat, TraceRecord, detectFormat, traceFormats } from './format';
 import { Instance, TimelineEntry, TraceView, isResolved, replay } from './replay';
 import { canFollow, readFrom } from './tail';
@@ -405,12 +405,13 @@ export class TracePlayer implements vscode.WebviewViewProvider {
     }
   }
 
+  /** A machine as the diagram shows it (unsaved changes included), with the ids reading its file gives. */
   private async readMachine(uri: vscode.Uri): Promise<Machine | null> {
-    const open = vscode.workspace.textDocuments.find((d) => d.uri.toString() === uri.toString());
     try {
-      const text = open ? open.getText() : decodeText(await vscode.workspace.fs.readFile(uri));
-      const model = fromXmi(text);
-      return { uri: uri.toString(), key: open ? `v${open.version}` : text, model, ix: new ModelIndex(model) };
+      const text = await this.editors.modelText(uri);
+      if (text === undefined) return null;
+      const model = loadModel(text);
+      return { uri: uri.toString(), key: text, model, ix: new ModelIndex(model) };
     } catch {
       return null;
     }
@@ -460,14 +461,14 @@ export class TracePlayer implements vscode.WebviewViewProvider {
         problem(`${machine.model.name} has no submachine state '${seg}' (${path}).`);
         return null;
       }
-      const [file, id = 'sm'] = state.submachine!.split('#');
-      const uri = vscode.Uri.joinPath(vscode.Uri.parse(machine.uri), '..', decodeHref(file));
+      const file = submachineFiles({ ...machine.model, vertices: [state] })[0];
+      const uri = vscode.Uri.joinPath(vscode.Uri.parse(machine.uri), '..', file);
       let sub = this.machines.get(uri.toString());
       if (!sub) {
         sub = (await this.readMachine(uri)) ?? undefined;
         if (sub) this.machines.set(uri.toString(), sub);
       }
-      if (!sub || (sub.model.id ?? 'sm') !== id) {
+      if (!sub) {
         problem(`The submachine of ${machine.model.name}.${state.name || seg} (${file}) cannot be read (${path}).`);
         return null;
       }

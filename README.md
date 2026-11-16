@@ -2,7 +2,7 @@
 
 [![Visual Studio Marketplace version](https://badgen.net/vs-marketplace/v/VinceGoSoftware.fsm-editor)](https://marketplace.visualstudio.com/items?itemName=VinceGoSoftware.fsm-editor)
 
-A visual editor and code generator for UML 2.5.1 state machines. Draw a machine in any `*.fsm` file, with a toolbox, a properties panel, live validation and SVG and PNG export, then generate its source code from templates, in VS Code or with the `fsm` command-line tool. Files are standard XMI 2.5.1: the UML model plus its diagram layout in UML DI, in the same file.
+A visual editor and code generator for UML 2.5.1 state machines. Draw a machine in any `*.fsm` file, with a toolbox, a properties panel, live validation and SVG and PNG export, then generate its source code from templates, in VS Code or with the `fsm` command-line tool. A machine is two JSON files: `Name.fsm`, the model, readable and editable by hand (elements are identified by their names), and `Name.fsm.layout` beside it, the drawing. Changes to a machine can be reviewed and merged as diagrams, side by side.
 
 It also works in VS Code for the Web: open a repository on [github.dev](https://github.dev) (press `.` on any GitHub repository) or a folder on [vscode.dev](https://vscode.dev), install FSM Editor from the Extensions view, and open a `.fsm` file.
 
@@ -34,8 +34,8 @@ The generated code reports what it does through an `onTrace` hook (see [CODEGEN.
 
 ```
 2026-11-11T10:02:03.120Z INFO fsm Order event checkout checkout
-2026-11-11T10:02:03.121Z INFO fsm Order transition ot2 Cart -> Payment (checkout)
-2026-11-11T10:02:03.121Z INFO fsm Order.Payment enter p_auth Authorizing
+2026-11-11T10:02:03.121Z INFO fsm Order transition Cart#1 Cart -> Payment (checkout)
+2026-11-11T10:02:03.121Z INFO fsm Order.Payment enter Authorizing Authorizing
 ```
 
 That is `fsm <machine> <kind> <id> <name>`, with `kind` one of `event`, `enter`, `exit`, `transition`, and an optional ISO 8601 time (or time of day) earlier on the line. `examples/demo.log` replays the three examples. Other logs are read with formats of the `fsmEditor.trace.formats` setting: regular expressions whose named groups give the record, for example:
@@ -54,7 +54,7 @@ That is `fsm <machine> <kind> <id> <name>`, with `kind` one of `event`, `enter`,
 ]
 ```
 
-Groups: `time`, `machine` (the machine's name, then the submachine states leading to a submachine: `Order.Payment`), `id` (xmi:id), `name` (a name or a path of names such as `On::Playing`), `source` and `target` (a transition by its ends, through any pseudostates between them), and `kind` when the rule doesn't give one. When the lines of a log name no machine (and its format gives none), the Trace Player asks which machine they are about; click the machine next to the log in the panel to change it. A log with transitions but no `enter` lines still shows the active states, from the transitions' targets.
+Groups: `time`, `machine` (the machine's name, then the submachine states leading to a submachine: `Order.Payment`), `id` (the element's id, derived from the names: `Off`, `Paused#2`, `On.fault`; see the file format), `name` (a name or a path of names such as `On::Playing`), `source` and `target` (a transition by its ends, through any pseudostates between them), and `kind` when the rule doesn't give one. When the lines of a log name no machine (and its format gives none), the Trace Player asks which machine they are about; click the machine next to the log in the panel to change it. A log with transitions but no `enter` lines still shows the active states, from the transitions' targets.
 
 ## UML support
 
@@ -73,7 +73,7 @@ Text that breaks the rules is refused as you type, and the validator flags probl
 See **[docs/UML-CONFORMANCE.md](docs/UML-CONFORMANCE.md)** for:
 - the supported features and the text syntax;
 - how to use submachines and connection point references;
-- how the model and layout are stored in XMI and UML DI;
+- how the model and layout are stored, and how files of earlier versions (XMI) are converted;
 - where and why the tool deviates from UML 2.5.1;
 - every validation rule;
 - what the SVG and PNG exports contain.
@@ -89,14 +89,45 @@ See **[docs/UML-CONFORMANCE.md](docs/UML-CONFORMANCE.md)** for:
 - **Groups**: select elements in the same region, right-click one of them and choose *Group*, or press G. Selecting a member of a group shows a dotted rectangle around the group, and dragging it moves the whole group, into a composite state's region as well. *Ungroup*, or G again, dissolves the groups of the selected elements. A click selects a single member, for its properties, Delete or Copy. Groups are flat: grouping elements of different groups merges them into one.
 - **Extract to Submachine**: select elements of one region, or one composite state, right-click one of them and choose *Extract to Submachine…*. They move to a new state machine file next to this one, and a submachine state referencing it takes their place, with connection points for the transitions that crossed the boundary. See the [conformance doc](docs/UML-CONFORMANCE.md#submachines-and-connection-point-references).
 - **Align**: select elements, right-click one of them and choose *Align Horizontally* (on its horizontal center line) or *Align Vertically* (on its vertical one). Points on a state's border don't align. The elements keep their regions: a composite state grows when its region no longer holds them. An element that is the only selected member of its group brings the whole group along; select several members of a group, or the anchor's group, to align them within it.
-- **Colors**: in the properties panel, *Color* colors the selected element, and the swatch beside an entry, exit, do, deferrable events, invariant, trigger, guard or effect field colors just that text. A composite state has a *Title color* (its outline, text and header) and a *Background color* (its regions) instead. *Default* removes the color.
+- **Colors**: in the properties panel, *Color* colors the selected element, and the swatch beside an entry, exit, do, deferrable events, invariant, trigger, guard or action field colors just that text. A composite state has a *Title color* (its outline, text and header) and a *Background color* (its regions) instead. *Default* removes the color.
 - **View**: right-drag, middle-drag or Space+drag pans, the mouse wheel zooms, two fingers on a trackpad pan and pinching zooms, F fits the diagram.
 - **Properties window**: right-click an element, or empty canvas for the state machine, and choose *Properties…* to edit its properties in a window next to the pointer, without the properties panel. It closes with Esc or a click outside it. *Delete* in the same menu deletes the selection.
 - **Panels**: ✕ closes the toolbox or the properties panel, and the two toggles at the right of the toolbar show and hide them, in every diagram.
-- **Editing**: Delete removes the selection. Ctrl/Cmd+C/X/V copies, cuts and pastes, including between diagrams. Ctrl/Cmd+D duplicates. *Cut*, *Copy* and *Paste* are also in the context menu, which pastes where you right-clicked. Undo and redo are VS Code's own.
+- **Editing**: Delete removes the selection. Ctrl/Cmd+C/X/V copies, cuts and pastes, including between diagrams. Ctrl/Cmd+D duplicates. *Cut*, *Copy* and *Paste* are also in the context menu, which pastes where you right-clicked. Undo and redo are VS Code's own, over the model and its layout: a move is undone like any other change, and saving writes both files.
 - **Shortcuts**: S state, X final, I initial, H history, C choice, J junction, N comment, T transition, R region, G group/ungroup, V/Esc select. Shift+click a tool to keep it active.
 
-Commands (Command Palette → "FSM"): *New State Machine*, *New Untitled State Machine*, *Generate Code…*, *Open Trace…*, *Export as SVG*, *Export as PNG*, *Open as XMI Text*, *Open in FSM Editor*. *New Untitled State Machine* is also *State Machine* in **File › New File…**.
+Commands (Command Palette → "FSM"): *New State Machine*, *New Untitled State Machine*, *Generate Code…*, *Open Trace…*, *Export as SVG*, *Export as PNG*, *Open as Text*, *Open in FSM Editor*, *Compare as Diagrams*. *New Untitled State Machine* is also *State Machine* in **File › New File…**.
+
+## Files
+
+A machine `Order` is `Order.fsm`, the model, and `Order.fsm.layout` beside it, the drawing. Both are JSON, and the diagram edits them together: moving an element changes only the layout file, and undo, save and revert cover both. Renaming or moving `Order.fsm` in VS Code (the Explorer, or a refactoring) takes `Order.fsm.layout` with it. The model file is meant to be read, reviewed and edited by hand:
+
+```json
+{
+  "format": 1,
+  "name": "Order",
+  "type": "behavioral",
+  "initial": { "target": "Cart" },
+  "elements": [
+    {
+      "name": "Cart",
+      "type": "state",
+      "transitions": [
+        { "type": "external", "trigger": "checkout", "target": "Payment" }
+      ]
+    },
+    …
+```
+
+Elements are identified by their names, which are unique in the machine and have no spaces. Elements you don't name (choices, final states, comments…) get a generated name ending with `*`, which the diagram doesn't show. *Open as Text* opens the model file in the text editor, checked and completed against the format's JSON Schema; the diagram follows the text (when the diagram has unsaved changes, which the file doesn't hold yet, it offers to save them first). A file that isn't valid JSON, or has the wrong shape, shows its problems with their lines instead of the diagram. A model and a layout file that disagree (a hand edit, a merge, a lost layout file) are reconciled: elements without a place are placed automatically, and nothing in the model is ever dropped. The format is described in [fsm-cli's README](https://github.com/vincedupuis/fsm-cli#the-fsm-file-format) and in [docs/UML-CONFORMANCE.md](docs/UML-CONFORMANCE.md#file-format).
+
+Files of earlier versions (XMI 2.5.1 with UML DI) still open, unchanged (opening one doesn't mark it as changed, so auto save leaves it alone): saving one writes the new format, converting the files linked to it by submachine states at the same time, and says what was renamed or left out.
+
+## Diagram diff and merge
+
+**Diff.** VS Code shows the changes of a `.fsm` file (Source Control, the timeline, *Compare With…*) as a text diff of the JSON. **FSM: Compare as Diagrams** (the diagram button in the diff's title bar, or the context menu of a changed `.fsm` file in Source Control) opens the two versions as diagrams side by side, the older one on the left, read-only, the newer one on the right, editable when it is your working copy. Added elements are marked on the right, removed ones on the left, changed ones on both; select a changed element to see what changed in it (guard, action, target…). ◀ ▶ step through the changes, and the two diagrams scroll and zoom together. Changes of the drawing alone (positions, routes, colors) aren't marked unless you tick *Show layout changes*. Elements are matched by name, transitions by source, trigger and target: a renamed state shows as one removed and one added. An older version without its layout file is drawn where the newer one places the same elements. An old-format file compares with its converted version.
+
+**Merge.** A `.fsm` file with merge conflicts (after a merge, rebase or cherry-pick) opens as three diagrams: the result (the file, starting as the current side, and marked as changed only once you choose), and the **Incoming** and **Current** sides beside it, read-only. The conflicts, the differences between the two sides, are listed and marked: take each from incoming or keep it current, or all at once, then **Complete Merge**, which saves both files without markers and marks them resolved in Git. When Git gives the common version, the changes each side made, which Git merged by itself, are marked lightly. When a side of the conflicts isn't a valid machine file, the diagram shows why, with a button to VS Code's text merge editor. A conflict in the layout file alone opens the diagram with the current positions; saving writes a clean layout file.
 
 ## Development
 
@@ -108,7 +139,7 @@ npm run test:unit    # unit and code generation tests (Node; compiles the C++ of
 npm run test:web     # smoke test in VS Code for the Web (Chromium)
 ```
 
-Code generation needs `fsm/fsm.wasm` and `fsm/templates/*.jinja`, which are not in the repository. `npm run build:fsm` builds them from a checkout of [fsm-cli](https://github.com/vincedupuis/fsm-cli) next to this one (`../fsm-cli`), and needs [Rust](https://rustup.rs) with the WebAssembly target: `rustup target add wasm32-unknown-unknown`. It uses `cargo` from the PATH, or else from `~/.cargo/bin`. Run it again after changing fsm-cli. The release workflow downloads them from the fsm-cli release named by `FSM_CLI_VERSION` in `.github/workflows/release.yml` instead.
+Code generation needs `fsm/fsm.wasm` and `fsm/templates/*.jinja`, and the text view of `.fsm` files `fsm/schemas`, which are not in the repository. `npm run build:fsm` builds them from a checkout of [fsm-cli](https://github.com/vincedupuis/fsm-cli) next to this one (`../fsm-cli`), and needs [Rust](https://rustup.rs) with the WebAssembly target: `rustup target add wasm32-unknown-unknown`. It uses `cargo` from the PATH, or else from `~/.cargo/bin`. Run it again after changing fsm-cli. The release workflow downloads them from the fsm-cli release named by `FSM_CLI_VERSION` in `.github/workflows/release.yml` instead.
 
 Press F5 in VS Code to launch an Extension Development Host with the `examples` folder open, then open `examples/MediaPlayer.fsm`, or `examples/Order.fsm` for a submachine with connection point references (it uses `examples/Payment.fsm`).
 
@@ -117,15 +148,17 @@ Package with `npm run package`, which produces a `.vsix` file.
 ### Layout
 
 - `src/extension.ts`: commands and registration (bundled by `esbuild.mjs` into `out/extension.js` for desktop and `out/web/extension.js` for the web)
-- `src/fsmEditorProvider.ts`: custom text editor; syncs the document and the webview and publishes diagnostics
+- `src/fsmEditorProvider.ts`: the custom editor and its two-file document (edits, undo, save, revert, backups); publishes diagnostics
 - `src/model.ts`: the in-memory model the diagram editor works on
-- `src/xmi.ts`, `src/xml.ts`: reading and writing `.fsm` files (XMI with UML DI)
+- `src/json.ts`, `src/format.ts`: reading and writing the `.fsm` and `.fsm.layout` files
+- `src/xmi.ts`, `src/xml.ts`, `src/convert.ts`: reading files of earlier versions (XMI) and converting them
+- `src/compare.ts`, `src/merge.ts`: comparing two versions of a machine, splitting conflict markers and taking a side (no VS Code API); `src/sessions.ts`: the diff and merge panes
 - `src/validation.ts`: UML well-formedness rules
 - `media/editor.js`, `media/editor.css`: the diagram editor webview (no dependencies)
 - `media/expressions.js`: grammar of behaviors, conditions and triggers, shared by the webview and the validator
 - `src/util.ts`: path and text helpers that work in both the desktop and web extension hosts
 - `src/codegenCommand.ts`: the *Generate Code…* command; `src/fsmCli.ts` runs fsm-cli's WebAssembly module
-- `fsm/`: the module (`fsm.wasm`) and the bundled templates (`templates/*.jinja`), from `npm run build:fsm` (not in the repository)
+- `fsm/`: the module (`fsm.wasm`), the bundled templates (`templates/*.jinja`), the file format's JSON Schemas (`schemas/`) and test cases (`cases/`), from `npm run build:fsm` (not in the repository)
 - `scripts/build-fsm.mjs`: builds them from `../fsm-cli`
 - `test/unit/`: unit and code generation tests run by `npm run test:unit`
 - `test/web/`: browser smoke test run by `npm run test:web`

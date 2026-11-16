@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { fromXmi } from '../../src/xmi';
-import { FakeClock, GenerateFailure, ModelBuilder, codeModel, generate, load, recorder, root, run } from './harness';
+import { loadModel } from '../../src/load';
+import { FakeClock, GenerateFailure, ModelBuilder, codeModel, generate, idOf, load, recorder, root, run } from './harness';
 
 const example = (name: string) => readFileSync(join(root, 'examples', name), 'utf8');
 
@@ -77,7 +77,7 @@ describe('examples', () => {
   });
 
   it('code model of MediaPlayer', async () => {
-    const cm = await codeModel(fromXmi(example('MediaPlayer.fsm')));
+    const cm = await codeModel(loadModel(example('MediaPlayer.fsm')));
     assert.equal(cm.machine.name, 'MediaPlayer');
     assert.deepEqual(cm.timers.map((t: any) => [t.name, t.ms]), [['Paused_after_5m', 300000]]);
     assert.deepEqual(cm.activities, ['blinkLed']);
@@ -104,8 +104,8 @@ describe('semantics', () => {
     const join = b.vertex('join');
     b.init(idle);
     b.t(idle, fork, { triggers: ['go'] });
-    b.t(fork, a1, { effect: 'toA()' });
-    b.t(fork, b1, { effect: 'toB()' });
+    b.t(fork, a1, { action: 'toA()' });
+    b.t(fork, b1, { action: 'toB()' });
     b.t(a1, a2, { triggers: ['a'] });
     b.t(b1, b2, { triggers: ['b'] });
     b.t(a2, join);
@@ -138,8 +138,8 @@ describe('semantics', () => {
     b.init(x, 'P_r0');
     b.init(y, 'P_r1');
     b.t(p, out, { triggers: ['e'] });
-    b.t(x, x2, { triggers: ['e'], effect: 'fx()' });
-    b.t(y, y2, { triggers: ['e'], effect: 'fy()' });
+    b.t(x, x2, { triggers: ['e'], action: 'fx()' });
+    b.t(y, y2, { triggers: ['e'], action: 'fy()' });
     b.t(x2, out, { triggers: ['f'] });
     const { Priority } = await load({ 'Priority.fsm': b.model });
     const rec = recorder();
@@ -180,7 +180,7 @@ describe('semantics', () => {
     b.init(s);
     b.t(s, j, { triggers: ['e'], guard: 'g()' });
     b.t(j, x, { guard: 'c()' });
-    b.t(j, y, { guard: 'else', effect: 'toY()' });
+    b.t(j, y, { guard: 'else', action: 'toY()' });
     const { Junctions } = await load({ 'Junctions.fsm': b.model });
     const rec = recorder();
     const m = new Junctions(rec.actions);
@@ -212,7 +212,7 @@ describe('semantics', () => {
         assert.ok(e instanceof GenerateFailure);
         assert.deepEqual(
           e.issues.filter((i) => i.severity === 'error').map((i) => [i.id, i.message]),
-          [[p1, `${kind === 'junction' ? 'Junctions' : 'Choices'} form a cycle without a state: 'p1' -> 'p2' -> 'p1'.`]],
+          [[idOf(b.model, p1), `${kind === 'junction' ? 'Junctions' : 'Choices'} form a cycle without a state: 'p1' -> 'p2' -> 'p1'.`]],
         );
         return true;
       });
@@ -232,7 +232,7 @@ describe('semantics', () => {
       assert.ok(e instanceof GenerateFailure);
       assert.deepEqual(
         e.issues.filter((i) => i.severity === 'error').map((i) => [i.id, i.message]),
-        [[t, 'Unknown region.']],
+        [[idOf(b.model, t), 'Unknown region.']],
       );
       return true;
     });
@@ -296,9 +296,9 @@ describe('semantics', () => {
     b.init(a);
     b.init(other, 'C_r0');
     b.t(a, ep, { triggers: ['go'] });
-    b.t(ep, inner, { effect: 'viaIn()' });
+    b.t(ep, inner, { action: 'viaIn()' });
     b.t(inner, xp, { triggers: ['quit'] });
-    b.t(xp, after, { effect: 'viaOut()' });
+    b.t(xp, after, { action: 'viaOut()' });
     const { Points } = await load({ 'Points.fsm': b.model });
     const rec = recorder();
     const m = new Points(rec.actions);
@@ -315,8 +315,8 @@ describe('semantics', () => {
     const b = new ModelBuilder('Self');
     const s = b.state('S', 'r_root', { entry: 'in()', exit: 'out()' });
     b.init(s);
-    b.t(s, s, { triggers: ['self'], effect: 'fx()' });
-    b.t(s, s, { triggers: ['internal'], kind: 'internal', effect: 'fx()' });
+    b.t(s, s, { triggers: ['self'], action: 'fx()' });
+    b.t(s, s, { triggers: ['internal'], kind: 'internal', action: 'fx()' });
     const { Self } = await load({ 'Self.fsm': b.model });
     const rec = recorder();
     const m = new Self(rec.actions);
@@ -334,7 +334,7 @@ describe('semantics', () => {
     const t = b.vertex('terminate');
     b.init(s);
     b.t(s, t, { triggers: ['kill'] });
-    b.t(s, s, { triggers: ['ping'], kind: 'internal', effect: 'pong()' });
+    b.t(s, s, { triggers: ['ping'], kind: 'internal', action: 'pong()' });
     const { Term } = await load({ 'Term.fsm': b.model });
     const rec = recorder();
     const m = new Term(rec.actions);
@@ -424,8 +424,8 @@ describe('semantics', () => {
     const top = new ModelBuilder('Top');
     top.state('Idle');
     top.init('Idle');
-    top.state('S', 'r_root', { submachine: 'Sub.fsm#sm' });
-    top.vertex('connectionPointRef', 'S', { id: 'ref', ref: 'ep', pointKind: 'entry' });
+    top.state('S', 'r_root', { submachine: 'Sub.fsm' });
+    top.vertex('connectionPointRef', 'S', { id: 'ref', ref: 'in', pointKind: 'entry' });
     top.t('Idle', 'ref', { triggers: ['go'] });
     const { Top } = await load({ 'Top.fsm': top.model, 'Sub.fsm': sub.model });
     const rec = recorder();
@@ -463,15 +463,16 @@ describe('tracing', () => {
     const rec = recorder();
     const m = new Traced(rec.actions, tracer(log));
     m.start();
-    assert.deepEqual(log.splice(0), ['Traced transition tInit', 'Traced enter S']);
+    // Ids are derived from the names: the initial transition of the machine Traced.
+    assert.deepEqual(log.splice(0), ['Traced transition Traced.initial#1', 'Traced enter S']);
     m.dispatch('e'); // g() false: the junction's else branch
-    assert.deepEqual(log.splice(0), ['Traced event e', 'Traced exit S', 'Traced transition tSJ', 'Traced transition tJY', 'Traced enter Y']);
+    assert.deepEqual(log.splice(0), ['Traced event e', 'Traced exit S', 'Traced transition S#1', 'Traced transition junction1*#2', 'Traced enter Y']);
     m.dispatch('back');
     log.length = 0;
     rec.conditions.g = true;
     rec.conditions.h = true;
     m.dispatch('e'); // through the junction to the choice, then its h() branch
-    assert.deepEqual(log.splice(0), ['Traced event e', 'Traced exit S', 'Traced transition tSJ', 'Traced transition tJC', 'Traced transition tCX', 'Traced enter X']);
+    assert.deepEqual(log.splice(0), ['Traced event e', 'Traced exit S', 'Traced transition S#1', 'Traced transition junction1*#1', 'Traced transition choice1*#1', 'Traced enter X']);
   });
 
   it('names a submachine by the submachine states leading to it', async () => {
@@ -482,9 +483,9 @@ describe('tracing', () => {
     order.dispatch('checkout');
     const lines = log.splice(0);
     assert.ok(lines.includes('Order event checkout'));
-    assert.ok(lines.includes('Order enter o_pay'));
+    assert.ok(lines.includes('Order enter Payment'));
     assert.ok(lines.some((l) => l.startsWith('Order.Payment enter ')));
-    assert.ok(lines.indexOf('Order enter o_pay') < lines.findIndex((l) => l.startsWith('Order.Payment enter ')));
+    assert.ok(lines.indexOf('Order enter Payment') < lines.findIndex((l) => l.startsWith('Order.Payment enter ')));
     assert.ok(!lines.some((l) => l.startsWith('Payment ')));
   });
 
@@ -606,10 +607,10 @@ describe('templates', () => {
 
   it('one template writes many files', async () => {
     const template = '---\nlang: c\n---\n{% filter file(machine.name ~ ".h") %}\n// {{ machine.name | upper_snake }}\n{% endfilter %}\n{% filter file("impl.c") %}\n{% for s in states %}{{ s.name }};{% endfor %}\n{% endfilter %}\n';
-    const b = new ModelBuilder('Traffic Light');
+    const b = new ModelBuilder('TrafficLight');
     b.init(b.state('Red'));
-    assert.deepEqual((await generate({ 'Traffic Light.fsm': b.model }, template)).files.map((f) => [f.path, f.content]), [
-      ['Traffic_Light.h', '// TRAFFIC_LIGHT\n'],
+    assert.deepEqual((await generate({ 'TrafficLight.fsm': b.model }, template)).files.map((f) => [f.path, f.content]), [
+      ['TrafficLight.h', '// TRAFFIC_LIGHT\n'],
       ['impl.c', 'Red;'],
     ]);
   });

@@ -1,12 +1,14 @@
 // Builds the code generator, fsm-cli (../fsm-cli, Rust), as WebAssembly and copies it into the extension with its
-// templates: fsm/fsm.wasm and fsm/templates/*.jinja. The release workflow downloads them from fsm-cli's GitHub
+// templates, the JSON Schemas of the file format and its test cases: fsm/fsm.wasm, fsm/templates/*.jinja,
+// fsm/schemas/*.schema.json (the text view checks .fsm files against them) and fsm/cases (the unit tests check the
+// editor's reader and validator against them; not packaged). The workflows download them from fsm-cli's GitHub
 // release instead (FSM_CLI_VERSION in .github/workflows/release.yml).
 //
 // Usage: npm run build:fsm
 // Needs Rust with the wasm32-unknown-unknown target (rustup target add wasm32-unknown-unknown). Uses `cargo` from
 // the PATH, or else from ~/.cargo/bin.
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -35,4 +37,9 @@ copyFileSync(join(cli, 'target/wasm32-unknown-unknown/wasm/fsm_cli.wasm'), join(
 for (const f of readdirSync(join(cli, 'templates')).filter((f) => f.endsWith('.jinja'))) {
   copyFileSync(join(cli, 'templates', f), join(out, 'templates', f));
 }
+mkdirSync(join(out, 'schemas'));
+for (const f of readdirSync(join(cli, 'schemas')).filter((f) => f.endsWith('.json'))) {
+  copyFileSync(join(cli, 'schemas', f), join(out, 'schemas', f));
+}
+cpSync(join(cli, 'tests/cases'), join(out, 'cases'), { recursive: true });
 console.log(`Done: ${out}`);

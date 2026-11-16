@@ -115,6 +115,18 @@
   // ---------------------------------------------------------------- state
   /** @type {any} */ let model = null;
   let lastText = null;
+  /** A diagram that can't be changed (an older version of a file, in a diff). */
+  let readonly = false;
+  /**
+   * The diagram diff or merge this diagram is a pane of, or null: its role (old, new; incoming, current, result), the
+   * marks of its elements by id (added, removed, changed; conflict, merged, resolved), what changed in each, and the
+   * list to step through. Sent by the extension.
+   */
+  let diff = null;
+  /** The view was set by the other pane: not sent back. */
+  let viewFromPartner = false;
+  /** The file has merge conflicts that the diagram merge can't open: offer VS Code's text merge editor. */
+  let mergeFallback = false;
   /** Problems found by the extension's validation. */
   let issues = [];
   /** Those plus the editor's own layout warnings (overlapping elements), refreshed by each render. */
@@ -144,40 +156,7 @@
   const machineLabel = (href) =>
     (submachines[href] && submachines[href].name) ||
     (machines.find((m) => m.href === href) || {}).name ||
-    decodeHref(String(href).split('#')[0]).replace(/^.*\//, '').replace(/\.fsm$/, '');
-  /** decodeURI keeping malformed escapes as they are instead of throwing, and decoding `%23` and `%3F` (decodeHref of src/util.ts). */
-  function decodeHref(s) {
-    const at = (i) => (s[i] === '%' && /^[0-9A-Fa-f]{2}$/.test(s.slice(i + 1, i + 3)) ? parseInt(s.slice(i + 1, i + 3), 16) : -1);
-    const utf8 = new TextDecoder('utf-8', { fatal: true });
-    let out = '';
-    let i = 0;
-    while (i < s.length) {
-      const b = at(i);
-      if (b >= 0) {
-        const len = b < 0x80 ? 1 : b >= 0xc0 && b <= 0xdf ? 2 : b >= 0xe0 && b <= 0xef ? 3 : b >= 0xf0 && b <= 0xf7 ? 4 : 0;
-        const run = [b];
-        let j = i + 3;
-        while (run.length < len && at(j) >= 0) {
-          run.push(at(j));
-          j += 3;
-        }
-        let text = null;
-        try {
-          if (run.length === len) text = utf8.decode(new Uint8Array(run));
-        } catch {
-          text = null;
-        }
-        if (text !== null) {
-          out += len === 1 && ';/:@&=+$,'.includes(text) ? s.slice(i, j) : text;
-          i = j;
-          continue;
-        }
-      }
-      out += s[i];
-      i++;
-    }
-    return out;
-  }
+    String(href).replace(/^.*\//, '').replace(/\.fsm$/, '');
   /** Name of the point `id` in the machine referenced by `state`. */
   const pointName = (state, id) => ((state && submachinePoints(state).find((q) => q.id === id)) || {}).name || '';
 
@@ -251,9 +230,52 @@
     return id;
   }
   function uniqueName(base) {
-    const names = new Set(model.vertices.map((v) => v.name));
+    const names = usedNames();
     if (!names.has(base)) return base;
     for (let i = 2; ; i++) if (!names.has(base + i)) return base + i;
+  }
+
+  // ---------------------------------------------------------------- names
+  // Names are the elements' identity in the file: unique in the machine (the machine's, the elements', the regions'
+  // of an owner with several), unique on their state for points. A name ending with * is generated (the extension
+  // gives one to what has none) and isn't shown.
+  const isGenerated = (n) => typeof n === 'string' && n.endsWith('*');
+  /** A name as the diagram shows it: nothing for a generated one. */
+  const shown = (n) => (isGenerated(n) ? '' : n || '');
+  const NAMED = new Set(['state', 'choice', 'junction', 'fork', 'join', 'final', 'terminate', 'comment']);
+  /** The names in use in the machine, but those of `except` (an element or region). */
+  function usedNames(except) {
+    const names = new Set([model.name]);
+    const regions = (list) => {
+      if (list.length > 1) for (const r of list) if (r !== except && r.name) names.add(r.name);
+    };
+    regions(model.regions);
+    for (const v of model.vertices) {
+      if (v !== except && NAMED.has(v.type) && v.name) names.add(v.name);
+      regions(v.regions || []);
+    }
+    return names;
+  }
+  /**
+   * The check of a name field for `e` (an element, a region, a point, or the model itself): no spaces, '.' or '*',
+   * unique.
+   * An empty name gives the element a generated one (the machine needs a name).
+   */
+  function nameCheck(e) {
+    return (val) => {
+      const n = String(val).trim();
+      if (/[.*\s]/.test(n)) return { ok: false, error: "A name can't contain spaces, '.' or '*'." };
+      if (!n) return e === model ? { ok: false, error: 'The state machine needs a name.' } : { ok: true, value: '' };
+      if (n === shown(e.name)) return { ok: true, value: n };
+      if (e.type === 'entryPoint' || e.type === 'exitPoint') {
+        const owner = V.get(e.parent);
+        const mates = model.vertices.filter((p) => p !== e && (p.type === 'entryPoint' || p.type === 'exitPoint') && (owner ? p.parent === owner.id : !V.has(p.parent)));
+        if (mates.some((p) => p.name === n) || n === 'history' || n === 'deepHistory') return { ok: false, error: `'${n}' can't name this point: ${n === 'history' || n === 'deepHistory' ? 'it names history pseudostates' : 'another point of its state has it'}.` };
+        return { ok: true, value: n };
+      }
+      if (usedNames(e === model ? null : e).has(n) && !(e === model && n === model.name)) return { ok: false, error: `'${n}' is already used in this state machine: names are unique.` };
+      return { ok: true, value: n };
+    };
   }
 
   // ---------------------------------------------------------------- labels
@@ -268,28 +290,28 @@
     }
     let s = trig;
     if (t.guard) s += ` [${t.guard}]`;
-    if (t.effect) s += ` / ${t.effect}`;
+    if (t.action) s += ` / ${t.action}`;
     return s.trim();
   }
 
-  /** The label as stacked lines: events, then [guard], then / effect (protocol machines: [pre], event, / [post]), each with the item it shows. */
+  /** The label as stacked lines: events, then [guard], then / action (protocol machines: [pre], event, / [post]), each with the item it shows. */
   function transitionLabelItems(t) {
     const trig = (t.triggers || []).join(', ');
     const items = model.kind === 'protocol'
       ? [['precondition', t.precondition ? `[${t.precondition}]` : ''], ['triggers', trig], ['postcondition', t.postcondition ? `/ [${t.postcondition}]` : '']]
-      : [['triggers', trig], ['guard', t.guard ? `[${t.guard}]` : ''], ['effect', t.effect ? `/ ${t.effect}` : '']];
+      : [['triggers', trig], ['guard', t.guard ? `[${t.guard}]` : ''], ['action', t.action ? `/ ${t.action}` : '']];
     return items.filter(([, text]) => text).map(([key, text]) => ({ key, text }));
   }
   const transitionLabelLines = (t) => transitionLabelItems(t).map((l) => l.text);
 
   const LABEL_LINE_HEIGHT = 13;
 
-  /** Parses "t1, t2 [guard] / effect" (or "[pre] t / [post]" for protocol machines). */
+  /** Parses "t1, t2 [guard] / action" (or "[pre] t / [post]" for protocol machines). */
   /** May transitions leaving `source` use the [else] guard? */
   const allowsElse = (source) => !!source && (source.type === 'choice' || source.type === 'junction');
 
   /**
-   * Parses "t1, after(2s) [guard] / effect" (or "[pre] t / [post]" for protocol
+   * Parses "t1, after(2s) [guard] / action" (or "[pre] t / [post]" for protocol
    * machines) into `t`. Returns an error message and leaves `t` untouched when
    * any part breaks the grammar.
    */
@@ -315,11 +337,11 @@
     if (!trig.ok) return `Trigger: ${trig.error}`;
     const guard = X.checkGuard(g ? g[1] : '', allowsElse(V.get(t.source)));
     if (!guard.ok) return `Guard: ${guard.error}`;
-    const effect = X.checkActions(slash >= 0 ? text.slice(slash + 1) : '');
-    if (!effect.ok) return `Effect: ${effect.error}`;
+    const action = X.checkActions(slash >= 0 ? text.slice(slash + 1) : '');
+    if (!action.ok) return `Action: ${action.error}`;
     t.triggers = trig.value;
     t.guard = guard.value;
-    t.effect = effect.value;
+    t.action = action.value;
     return null;
   }
   function indexOutsideBrackets(s, ch) {
@@ -611,9 +633,16 @@
     t.points = loopCorners(clampLoop(f, s));
   }
 
+  /** A transition whose target doesn't exist (a reference that names nothing): drawn as a short arrow ending in a marker. */
+  const isDangling = (t) => V.has(t.source) && !V.has(t.target) && t.kind !== 'internal';
   function route(t) {
     const s = V.get(t.source);
     const g = V.get(t.target);
+    if (s && !g && t.kind !== 'internal') {
+      const pts = (t.points || []).map((p) => ({ x: p.x, y: p.y }));
+      const end = pts.length ? pts.pop() : { x: s.x + s.w + 46, y: s.y + s.h / 2 };
+      return [clip(s, pts[0] || end), ...pts, end];
+    }
     if (!s || !g) return null;
     if (isLoop(t)) return loopRoute(t, s);
     const pts = (t.points || []).map((p) => ({ x: p.x, y: p.y }));
@@ -767,14 +796,17 @@
       if (ic) cls.push(ic);
       if (drag && drag.dropState === v.id) cls.push('drop-target');
       cls.push(...traceClasses(v.id));
+      if (diff && diff.marks[v.id]) cls.push(`diff-${diff.marks[v.id]}`);
     }
     let s = `<g class="${cls.join(' ')}" data-id="${esc(v.id)}">`;
     const { x, y, w, h } = v;
     const cx = x + w / 2;
     const cy = y + h / 2;
     const r = Math.min(w, h) / 2;
-    // The element's color; selection and problem highlights keep their own outline.
-    const c = colorOf(v.color);
+    // The element's color (an initial or history pseudostate's is its transition's); selection and problem
+    // highlights keep their own outline.
+    const pseudo = v.type === 'initial' || v.type === 'shallowHistory' || v.type === 'deepHistory';
+    const c = colorOf(pseudo ? model.transitions.find((t) => t.source === v.id)?.color : v.color);
     const oc = c && cls.length === 2 ? c : null;
     const shapeSt = styleAttr(c && `fill:${tint(c, exporting)}`, oc && `stroke:${oc}`);
     const fillSt = styleAttr(oc && `fill:${oc}`);
@@ -800,7 +832,7 @@
           }
         }
         s += `<rect class="shape" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"${st}/>`;
-        const title = v.name + (v.submachine ? ` : ${machineLabel(v.submachine)}` : '');
+        const title = shown(v.name) + (v.submachine ? ` : ${machineLabel(v.submachine)}` : '');
         const centered = !regions.length && !lines.length;
         let ty = y + 16;
         if (v.stereotype) {
@@ -829,7 +861,7 @@
                 ? `<line class="sep dashed" x1="${n1(rr.x)}" y1="${n1(rr.y)}" x2="${n1(rr.x)}" y2="${n1(rr.y + rr.h)}"${sepSt}/>`
                 : `<line class="sep dashed" x1="${n1(rr.x)}" y1="${n1(rr.y)}" x2="${n1(rr.x + rr.w)}" y2="${n1(rr.y)}"${sepSt}/>`;
             }
-            if (rr.name) s += textLine(rr.x + 6, rr.y + 12, 'region-name', rr.name, 'start', c);
+            if (shown(rr.name) && regions.length > 1) s += textLine(rr.x + 6, rr.y + 12, 'region-name', rr.name, 'start', c);
             if (!exporting && drag && drag.dropRegion === rr.id) {
               s += `<rect class="drop-region" x="${n1(rr.x)}" y="${n1(rr.y)}" width="${n1(rr.w)}" height="${n1(rr.h)}"/>`;
             }
@@ -896,7 +928,7 @@
         break;
       }
     }
-    const caption = v.type === 'connectionPointRef' ? pointName(V.get(v.parent), v.ref) || '?' : v.name;
+    const caption = shown(v.type === 'connectionPointRef' ? pointName(V.get(v.parent), v.ref) || v.ref || '?' : v.name);
     if (caption && v.type !== 'state' && v.type !== 'comment') {
       const below = v.type === 'fork' || v.type === 'join' ? y + h + 13 : y + h + 12;
       s += textLine(cx, below, 'activity', caption, 'middle', c);
@@ -930,6 +962,7 @@
       const ic = issueClass(t.id);
       if (ic) cls.push(ic);
       cls.push(...traceClasses(t.id));
+      if (diff && diff.marks[t.id]) cls.push(`diff-${diff.marks[t.id]}`);
     }
     let s = `<g class="${cls.join(' ')}" data-id="${esc(t.id)}">`;
     // Selection and problem highlights keep their own line color.
@@ -937,7 +970,11 @@
     const lineSt = styleAttr(oc && `stroke:${oc}`);
     if (!exporting) s += `<path class="hit" d="${d}"/>`;
     s += `<path class="line" d="${d}"${lineSt}/>`;
-    s += `<path class="arrow" d="${arrowHead(pts[pts.length - 2], pts[pts.length - 1])}"${lineSt}/>`;
+    if (isDangling(t)) {
+      // The target names nothing: a marker instead of an arrow head.
+      const e = pts[pts.length - 1];
+      s += `<circle class="dangling" cx="${n1(e.x)}" cy="${n1(e.y)}" r="6"/><path class="dangling" d="M${n1(e.x - 3)},${n1(e.y - 3)} L${n1(e.x + 3)},${n1(e.y + 3)} M${n1(e.x + 3)},${n1(e.y - 3)} L${n1(e.x - 3)},${n1(e.y + 3)}"/>`;
+    } else s += `<path class="arrow" d="${arrowHead(pts[pts.length - 2], pts[pts.length - 1])}"${lineSt}/>`;
     const lines = transitionLabelItems(t);
     if (lines.length) {
       const lp = labelPos(t, pts);
@@ -1105,6 +1142,16 @@
   function commit(opts = {}) {
     // The document can't be read: writing the model shown before would replace the text being fixed.
     if (!parseErrorEl.hidden) return;
+    if (readonly) {
+      // A read-only diagram (an older version of the file): back to what it shows.
+      if (lastText) model = normalize(JSON.parse(lastText));
+      reindex();
+      resetHeaders();
+      render();
+      if (opts.props) renderProps();
+      toast('This diagram is read-only.');
+      return;
+    }
     reindex();
     cleanGroups();
     keepHeaders();
@@ -1117,6 +1164,8 @@
 
   function saveView() {
     vscode.setState({ ...(vscode.getState() || {}), view });
+    // The panes of a diff or merge scroll and zoom together.
+    if (diff && !viewFromPartner) vscode.postMessage({ type: 'view', view });
   }
 
   function normalizeColors(e) {
@@ -1145,7 +1194,7 @@
     for (const t of m.transitions) {
       t.triggers = t.triggers ?? [];
       t.guard = t.guard ?? '';
-      t.effect = t.effect ?? '';
+      t.action = t.action ?? '';
       t.kind = t.kind ?? 'external';
       normalizeColors(t);
     }
@@ -1161,10 +1210,13 @@
       issues = msg.issues || [];
       submachines = msg.submachines || {};
       machines = msg.machines || [];
+      readonly = !!msg.readonly;
+      document.body.classList.toggle('readonly', readonly);
       if (msg.error) {
         // Reloaded once readable again, even as the same text: what was changed meanwhile wasn't written.
         lastText = null;
-        showParseError(msg.error);
+        mergeFallback = !!msg.mergeFallback;
+        showParseError(msg.error, msg.problems);
         return;
       }
       parseErrorEl.hidden = true;
@@ -1226,6 +1278,27 @@
       render();
     } else if (msg.type === 'toast') {
       toast(String(msg.message));
+    } else if (msg.type === 'diff') {
+      diff = msg.diff;
+      renderDiffBar();
+      render();
+      renderProps();
+    } else if (msg.type === 'diffView') {
+      view = msg.view;
+      viewFromPartner = true;
+      try {
+        saveView();
+      } finally {
+        viewFromPartner = false;
+      }
+      render();
+    } else if (msg.type === 'reveal') {
+      if (msg.id && (V.has(msg.id) || T.has(msg.id))) {
+        selection = new Set([msg.id]);
+        reveal(msg.id);
+        renderProps();
+      } else selection = new Set();
+      render();
     } else if (msg.type === 'requestSvg') {
       vscode.postMessage({ type: 'svg', requestId: msg.requestId, svg: exportSvg() });
     } else if (msg.type === 'requestPng') {
@@ -1236,18 +1309,27 @@
     }
   });
 
-  function showParseError(error) {
+  /** The screen of a file that can't be read: its problems (`problems`: line and message), and Open as Text. */
+  function showParseError(error, problems) {
     parseErrorEl.hidden = false;
     parseErrorEl.innerHTML = '';
     const h = document.createElement('div');
-    h.textContent = 'This file cannot be displayed because it is not a readable UML state machine (XMI):';
+    h.textContent = problems && problems.length ? 'This file cannot be displayed: it is not a valid state machine file.' : 'This file cannot be displayed:';
     const c = document.createElement('code');
-    c.textContent = error;
+    c.textContent = problems && problems.length ? problems.map((p) => `Line ${p.line}: ${p.message}`).join('\n') : error;
     const b = document.createElement('button');
     b.className = 'pbtn primary';
     b.textContent = 'Open as Text';
     b.onclick = () => vscode.postMessage({ type: 'command', command: 'fsmEditor.openAsText' });
     parseErrorEl.append(h, c, b);
+    if (mergeFallback) {
+      // A file with merge conflicts whose sides can't be read as machines: VS Code's text merge editor.
+      const m = document.createElement('button');
+      m.className = 'pbtn';
+      m.textContent = 'Open in the Text Merge Editor';
+      m.onclick = () => vscode.postMessage({ type: 'mergeText' });
+      parseErrorEl.append(m);
+    }
   }
 
   // ---------------------------------------------------------------- export
@@ -1268,6 +1350,7 @@ text{font-family:-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;fill:#1f1f1
 .hit{fill:transparent}
 .anchor{fill:none;stroke:#333;stroke-width:1;stroke-dasharray:4 3;opacity:.7}
 .line,.arrow{fill:none;stroke:#333;stroke-width:1.3;stroke-linejoin:round}
+.dangling{fill:#fff;stroke:#c00;stroke-width:1.4}
 .tlabel{paint-order:stroke;stroke:#fff;stroke-width:4px;stroke-linejoin:round}`;
 
   function contentBounds() {
@@ -1278,7 +1361,7 @@ text{font-family:-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;fill:#1f1f1
     };
     for (const v of model.vertices) {
       addP(v.x, v.y);
-      addP(v.x + v.w, v.y + v.h + (v.invariant || (v.name && v.type !== 'state') ? 16 : 0));
+      addP(v.x + v.w, v.y + v.h + (v.invariant || (shown(v.name) && v.type !== 'state') ? 16 : 0));
     }
     for (const t of model.transitions) {
       const pts = route(t);
@@ -1448,6 +1531,11 @@ ${scene(true)}
       v.y = snap(p.y - v.h / 2);
       const r = regionAt(p, new Set());
       v.parent = r ? r.id : rootRegion();
+      // A region has one initial, one shallow and one deep history pseudostate at most (the file holds one).
+      if ((v.type === 'initial' || v.type === 'shallowHistory' || v.type === 'deepHistory') && model.vertices.some((x) => x.parent === v.parent && x.type === v.type)) {
+        toast(`This region already has ${v.type === 'initial' ? 'an initial pseudostate' : `a ${TYPE_LABEL[v.type].toLowerCase()}`}.`);
+        return;
+      }
     }
     model.vertices.push(v);
     reindex();
@@ -1840,7 +1928,7 @@ ${scene(true)}
   function overlapIssues() {
     const out = [];
     const vs = model.vertices.filter((v) => v.type !== 'comment');
-    const describe = (v) => (v.name ? `'${v.name}'` : `an unnamed ${TYPE_LABEL[v.type]}`);
+    const describe = (v) => (shown(v.name) ? `'${v.name}'` : `a ${TYPE_LABEL[v.type].toLowerCase()}`);
     for (let i = 0; i < vs.length; i++) {
       const a = vs[i];
       for (let j = i + 1; j < vs.length; j++) {
@@ -1919,7 +2007,8 @@ ${scene(true)}
     model.transitions = model.transitions.filter((t) => !transitionIds.has(t.id) && !ids.has(t.source) && !ids.has(t.target));
     const alive = new Set([...model.vertices.map((v) => v.id), ...model.transitions.map((t) => t.id)]);
     for (const v of model.vertices) {
-      if (v.anchors) v.anchors = v.anchors.filter((a) => alive.has(a));
+      // An anchor that named nothing in the file (U+E001/U+E002 and its reference) is kept as it is.
+      if (v.anchors) v.anchors = v.anchors.filter((a) => alive.has(a) || /^[\ue001\ue002]/.test(a));
     }
     selection = new Set([...selection].filter((id) => alive.has(id)));
   }
@@ -1962,7 +2051,7 @@ ${scene(true)}
       toast(problem);
       return;
     }
-    const t = { id: uid('t'), source: source.id, target: target.id, kind: 'external', triggers: [], guard: '', effect: '' };
+    const t = { id: uid('t'), source: source.id, target: target.id, kind: 'external', triggers: [], guard: '', action: '' };
     model.transitions.push(t);
     selection = new Set([t.id]);
     commit({ props: true });
@@ -1981,6 +2070,10 @@ ${scene(true)}
       return `A ${TYPE_LABEL[source.type].toLowerCase()} cannot have outgoing transitions.`;
     }
     if (target.type === 'initial') return 'An initial pseudostate cannot be the target of a transition.';
+    if (source.type === 'initial' || source.type === 'shallowHistory' || source.type === 'deepHistory') {
+      const others = model.transitions.filter((t) => t.source === source.id && !(drag && drag.kind === 'reconnect' && drag.t === t));
+      if (others.length) return `A${source.type === 'initial' ? 'n initial pseudostate' : ' history pseudostate'} has one transition only.`;
+    }
     return null;
   }
 
@@ -2066,7 +2159,10 @@ ${scene(true)}
       }
       v.x += off.x;
       v.y += off.y;
-      v.regions = (v.regions || []).map((r) => ({ ...r, id: map.get(r.id) }));
+      // Names are unique: a copy takes the next free one (Idle2); a generated one is given again by the extension.
+      const fresh = (n) => (!n || isGenerated(n) ? '' : uniqueName(n));
+      if (NAMED.has(v.type)) v.name = fresh(v.name);
+      v.regions = (v.regions || []).map((r) => ({ ...r, id: map.get(r.id), name: fresh(r.name) }));
       if (map.has(v.parent)) v.parent = map.get(v.parent);
       else if (isCP(v)) {
         if (!V.has(v.parent)) continue;
@@ -2085,6 +2181,9 @@ ${scene(true)}
       if (!map.has(src.source) || !map.has(src.target)) continue;
       const t = JSON.parse(JSON.stringify(src));
       t.id = map.get(src.id);
+      // Copied by an earlier version: its action was called effect.
+      if (t.action === undefined && typeof t.effect === 'string') t.action = t.effect;
+      delete t.effect;
       t.source = map.get(src.source);
       t.target = map.get(src.target);
       if (t.points) t.points = t.points.map((p) => ({ x: p.x + off.x, y: p.y + off.y }));
@@ -2790,10 +2889,10 @@ ${scene(true)}
         const atTop = (v.regions || []).length || activityLines(v).length;
         const y = atTop ? v.y + (v.stereotype ? 14 : 2) : v.y + v.h / 2 - 12 + (v.stereotype ? 6 : 0);
         box = { x: v.x + 4, y, w: v.w - 8, h: 24 };
-        value = v.name;
+        value = shown(v.name);
       } else {
         box = { x: v.x + v.w / 2 - 60, y: v.y + v.h + 2, w: 120, h: 22 };
-        value = v.name;
+        value = shown(v.name);
       }
     } else {
       const pts = route(t);
@@ -2857,8 +2956,13 @@ ${scene(true)}
         if (v.text === el.value) return true;
         v.text = el.value;
       } else {
-        if (v.name === el.value.trim()) return true;
-        v.name = el.value.trim();
+        if (shown(v.name) === el.value.trim()) return true;
+        const ok = nameCheck(v)(el.value);
+        if (!ok.ok) {
+          toast(`Name not changed. ${ok.error}`);
+          return true;
+        }
+        v.name = ok.value;
       }
     } else {
       return true;
@@ -3294,6 +3398,11 @@ ${scene(true)}
 
   function buildProps() {
     const ids = [...selection];
+    // In a diff or merge: what changed in the selected element.
+    const lines = diff && ids.length === 1 ? diff.details[ids[0]] : null;
+    if (lines && lines.length) {
+      propsEl.append(h('h4', {}, diff.role === 'result' || diff.role === 'incoming' || diff.role === 'current' ? 'Differs between the two sides' : 'Changes'), ...lines.map((l) => h('div', { className: 'diff-line' }, l)));
+    }
     if (ids.length > 1) {
       propsEl.append(
         h('h3', {}, `${ids.length} elements selected`),
@@ -3314,12 +3423,11 @@ ${scene(true)}
     };
     propsEl.append(
       h('h3', {}, 'State Machine'),
-      textField('Name', model.name, set('name')),
+      textField('Name', model.name, set('name'), { check: nameCheck(model) }),
       selectField('Kind', model.kind, [['behavioral', 'Behavioral state machine'], ['protocol', 'Protocol state machine']], (v) => {
         model.kind = v;
         commit({ props: true });
       }),
-      textField('Context (owning classifier)', model.context, set('context'), { placeholder: 'e.g. MediaPlayer' }),
       textField('Documentation', model.documentation, set('documentation'), { multiline: true, rows: 4 }),
     );
     const mi = issuesFor('');
@@ -3381,7 +3489,7 @@ ${scene(true)}
       if (!anchors.length) propsEl.append(h('div', { className: 'muted' }, 'Drag the ⊕ handle onto an element to attach this comment.'));
       for (const a of anchors) {
         propsEl.append(h('div', { className: 'row' },
-          h('span', { style: 'flex:1' }, a.source ? `Transition ${transitionLabel(a) || a.id}` : a.name || TYPE_LABEL[a.type]),
+          h('span', { style: 'flex:1' }, a.source ? `Transition ${transitionLabel(a) || ''}` : shown(a.name) || TYPE_LABEL[a.type]),
           h('button', { className: 'pbtn icon', title: 'Detach', onclick: () => {
             v.anchors = v.anchors.filter((x) => x !== a.id);
             commit({ props: true });
@@ -3389,16 +3497,17 @@ ${scene(true)}
         ));
       }
     } else {
-      propsEl.append(textField('Name', v.name, (val) => {
-        v.name = val.trim();
+      propsEl.append(textField('Name', shown(v.name), (val) => {
+        v.name = val;
         commit();
-      }));
+      }, { check: nameCheck(v), placeholder: isGenerated(v.name) ? 'none shown (a generated name)' : '' }));
     }
-    const what = v.type === 'comment' ? 'the comment' : v.name || 'the element';
+    const what = v.type === 'comment' ? 'the comment' : shown(v.name) || 'the element';
     // A composite state has a color for its header and one for its regions.
     if (v.type === 'state' && (v.regions || []).length) {
       propsEl.append(colorField(v, what, null, 'Title color'), colorField(v, what, 'background', 'Background color'));
-    } else {
+    } else if (v.type !== 'initial' && v.type !== 'shallowHistory' && v.type !== 'deepHistory') {
+      // Initial and history pseudostates take their transition's color.
       propsEl.append(colorField(v, what));
     }
 
@@ -3438,10 +3547,17 @@ ${scene(true)}
       if (!v.submachine) {
         propsEl.append(h('h4', {}, (v.regions || []).length > 1 ? 'Orthogonal regions' : 'Regions'));
         (v.regions || []).forEach((r, i) => {
-          const input = h('input', { type: 'text', placeholder: `Region ${i + 1}` });
-          input.value = r.name || '';
+          const input = h('input', { type: 'text', placeholder: v.regions.length > 1 ? `Region ${i + 1}` : 'no name (one region)' });
+          input.value = shown(r.name);
+          input.disabled = v.regions.length < 2;
           input.addEventListener('change', () => {
-            r.name = input.value.trim();
+            const ok = nameCheck(r)(input.value);
+            if (!ok.ok) {
+              toast(ok.error);
+              input.value = shown(r.name);
+              return;
+            }
+            r.name = ok.value;
             commit();
           });
           input.addEventListener('keydown', (e) => {
@@ -3484,7 +3600,7 @@ ${scene(true)}
           } }, '✕')));
       }
       propsEl.append(h('button', { className: 'pbtn', onclick: () => {
-        model.transitions.push({ id: uid('t'), source: v.id, target: v.id, kind: 'internal', triggers: ['event'], guard: '', effect: 'action()' });
+        model.transitions.push({ id: uid('t'), source: v.id, target: v.id, kind: 'internal', triggers: ['event'], guard: '', action: 'action()' });
         commit({ props: true });
       } }, '+ Add internal transition'));
     }
@@ -3499,11 +3615,11 @@ ${scene(true)}
     const info = href ? submachines[href] : null;
     const machine = href ? machineLabel(href) : '';
     propsEl.append(h('div', { className: 'muted field' },
-      st ? `On ${st.name || 'state'}; refers to a point of ${machine || '(no submachine set)'}.` : 'Not attached to a state.'));
+      st ? `On ${shown(st.name) || 'a state'}; refers to a point of ${machine || '(no submachine set)'}.` : 'Not attached to a state.'));
     const pts = st ? submachinePoints(st) : [];
     if (pts.length) {
       const cur = `${refKind(v)}:${v.ref || ''}`;
-      const opts = pts.map((q) => [`${q.kind}:${q.id}`, `${q.name || q.id} (${q.kind} point)`]);
+      const opts = pts.map((q) => [`${q.kind}:${q.id}`, `${shown(q.name) || '(unnamed)'} (${q.kind} point)`]);
       if (!pts.some((q) => `${q.kind}:${q.id}` === cur)) opts.unshift([cur, v.ref ? `${v.ref} (missing)` : '— choose a point —']);
       propsEl.append(selectField('Referenced point', cur, opts, (val) => {
         const i = val.indexOf(':');
@@ -3521,7 +3637,7 @@ ${scene(true)}
             : `${machine} has no entry or exit points at its top level.`;
       if (why) propsEl.append(h('div', { className: 'muted field' }, why));
       propsEl.append(
-        textField('Referenced point id', v.ref, (val) => {
+        textField('Referenced point name', v.ref, (val) => {
           v.ref = val.trim();
           commit();
         }),
@@ -3556,7 +3672,7 @@ ${scene(true)}
     for (const q of info.points) {
       const ref = refs.find((r) => r.ref === q.id);
       propsEl.append(h('div', { className: 'row field' },
-        h('span', { style: 'flex:1' }, `${q.kind === 'entry' ? '○' : '⊗'} ${q.name || q.id}`, h('span', { className: 'muted' }, ` · ${q.kind}`)),
+        h('span', { style: 'flex:1' }, `${q.kind === 'entry' ? '○' : '⊗'} ${shown(q.name) || '(unnamed)'}`, h('span', { className: 'muted' }, ` · ${q.kind}`)),
         ref
           ? h('button', { className: 'pbtn icon', title: 'Select the reference', onclick: () => {
             selection = new Set([ref.id]);
@@ -3574,7 +3690,7 @@ ${scene(true)}
   function transitionProps(t) {
     const s = V.get(t.source);
     const g = V.get(t.target);
-    const nm = (v) => (v ? v.name || TYPE_LABEL[v.type] : '?');
+    const nm = (v) => (v ? shown(v.name) || TYPE_LABEL[v.type] : '?');
     const set = (k) => (val) => {
       t[k] = val;
       commit();
@@ -3610,7 +3726,7 @@ ${scene(true)}
           placeholder: allowsElse(s) ? 'e.g. hasDisc() && !isJammed(), or else' : 'e.g. hasDisc() && !isJammed()',
           color: item('guard', 'the guard'),
         }),
-        textField('Effect', t.effect, set('effect'), { check: CHECK.actions, placeholder: 'e.g. notify(); log()', color: item('effect', 'the effect') }),
+        textField('Action', t.action, set('action'), { check: CHECK.actions, placeholder: 'e.g. notify(); log()', color: item('action', 'the action') }),
       );
     }
     propsEl.append(h('h4', {}, 'Routing'));
@@ -3634,6 +3750,58 @@ ${scene(true)}
     );
     const ti = issuesFor(t.id);
     if (ti) propsEl.append(ti);
+  }
+
+  // ---------------------------------------------------------------- diff and merge
+  const ROLE_LABEL = { old: 'Old', new: 'New', incoming: 'Incoming', current: 'Current', result: 'Result' };
+  /** The bar of a diff or merge pane: its role, the changes to step through and, in the result, the conflicts. */
+  function renderDiffBar() {
+    let bar = document.getElementById('diffbar');
+    if (!diff) {
+      if (bar) bar.remove();
+      return;
+    }
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.id = 'diffbar';
+      wrap.appendChild(bar);
+    }
+    bar.innerHTML = '';
+    const send = (msg) => () => vscode.postMessage(msg);
+    bar.append(h('span', { className: 'diff-role' }, ROLE_LABEL[diff.role] || diff.role), h('span', { className: 'muted' }, diff.title || ''));
+    if (diff.role === 'old' || diff.role === 'new') {
+      bar.append(
+        h('span', {}, diff.count ? `${diff.count} change${diff.count === 1 ? '' : 's'}` : 'No changes'),
+        h('button', { className: 'pbtn icon', title: 'Previous change', disabled: !diff.count, onclick: send({ type: 'diffNav', dir: -1 }) }, '◀'),
+        h('button', { className: 'pbtn icon', title: 'Next change', disabled: !diff.count, onclick: send({ type: 'diffNav', dir: 1 }) }, '▶'),
+      );
+      const box = h('input', { type: 'checkbox' });
+      box.checked = !!diff.showLayout;
+      box.addEventListener('change', send({ type: 'diffLayout', show: box.checked }));
+      bar.append(h('label', { className: 'diff-toggle' }, box, ' Show layout changes'));
+      return;
+    }
+    bar.append(
+      h('span', {}, diff.count ? `${diff.count} conflict${diff.count === 1 ? '' : 's'}` : 'No conflicts'),
+      h('button', { className: 'pbtn icon', title: 'Previous conflict', disabled: !diff.count, onclick: send({ type: 'diffNav', dir: -1 }) }, '◀'),
+      h('button', { className: 'pbtn icon', title: 'Next conflict', disabled: !diff.count, onclick: send({ type: 'diffNav', dir: 1 }) }, '▶'),
+    );
+    if (diff.role !== 'result') return;
+    bar.append(
+      h('button', { className: 'pbtn', onclick: send({ type: 'mergeAll', side: 'incoming' }) }, 'Take All Incoming'),
+      h('button', { className: 'pbtn', onclick: send({ type: 'mergeAll', side: 'current' }) }, 'Keep All Current'),
+      h('button', { className: 'pbtn primary', onclick: send({ type: 'mergeComplete' }) }, 'Complete Merge'),
+    );
+    const list = h('div', { className: 'merge-list' });
+    for (const c of diff.conflicts || []) {
+      const row = h('div', { className: `merge-row${c.choice ? ' chosen' : ''}` },
+        h('span', { className: 'merge-label', title: (c.details || []).join('\n'), onclick: send({ type: 'diffGo', key: c.key }) }, `${c.label} · ${c.how}`),
+        h('button', { className: `pbtn small${c.choice === 'incoming' ? ' on' : ''}`, onclick: send({ type: 'mergeChoose', key: c.key, side: 'incoming' }) }, 'Take Incoming'),
+        h('button', { className: `pbtn small${c.choice === 'current' ? ' on' : ''}`, onclick: send({ type: 'mergeChoose', key: c.key, side: 'current' }) }, 'Keep Current'),
+      );
+      list.append(row);
+    }
+    bar.append(list);
   }
 
   // ---------------------------------------------------------------- chrome

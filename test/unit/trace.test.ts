@@ -5,8 +5,8 @@ import { describe, it } from 'node:test';
 import { ModelIndex } from '../../src/model';
 import { builtInFormat, compileFormat, detectFormat, parseTime, TraceFormat, TraceFormatError, traceFormats } from '../../src/trace/format';
 import { findState, findTransitions, Instance, replay, TimelineEntry } from '../../src/trace/replay';
-import { fromXmi } from '../../src/xmi';
-import { ModelBuilder, load, recorder, root } from './harness';
+import { loadModel } from '../../src/load';
+import { ModelBuilder, fileOf, idOf, load, recorder, root } from './harness';
 
 const example = (name: string) => readFileSync(join(root, 'examples', name), 'utf8');
 
@@ -122,7 +122,9 @@ describe('trace replay', () => {
     rec.conditions.g = true;
     rec.conditions.h = true;
     m.dispatch('e'); // through the junction and the choice to X
-    const inst = instance('Traced', model);
+    // As the Trace Player reads it from its file: the ids the generated code reports.
+    const inst = instance('Traced', loadModel(fileOf(model)));
+    const id = (x: string) => idOf(model, x);
     const entries = timeline(lines, builtInFormat, { Traced: inst });
     const kinds = kindsOf(entries);
     const at = (i: number) => replay(entries, i, kinds).get('Traced')?.highlight;
@@ -130,31 +132,31 @@ describe('trace replay', () => {
     assert.deepEqual(at(-1), undefined);
     const started = at(1)!;
     assert.deepEqual(started.active, ['S']);
-    assert.deepEqual(started.taken, ['tInit']);
+    assert.deepEqual(started.taken, [id('tInit')]);
     assert.deepEqual(started.current, ['S']);
 
     const firstE = entries.findIndex((e) => e.record.kind === 'event');
     const toY = at(firstE + 4)!; // event, exit S, tSJ, tJY, enter Y
     assert.deepEqual(toY.active, ['Y']);
-    assert.deepEqual(toY.taken, ['tSJ', 'tJY']);
+    assert.deepEqual(toY.taken, [id('tSJ'), id('tJY')]);
     assert.deepEqual(toY.via, ['j']);
     assert.equal(toY.event, 'e');
 
     const end = at(entries.length - 1)!;
     assert.deepEqual(end.active, ['X']);
-    assert.deepEqual(end.taken, ['tSJ', 'tJC', 'tCX']);
+    assert.deepEqual(end.taken, [id('tSJ'), id('tJC'), id('tCX')]);
     assert.deepEqual(end.via.sort(), ['c', 'j']);
     assert.deepEqual(end.current, ['X']);
 
     // Going back in time: the middle of the second step.
     const mid = at(entries.length - 3)!; // after tJC
     assert.deepEqual(mid.active, []);
-    assert.deepEqual(mid.taken, ['tSJ', 'tJC']);
+    assert.deepEqual(mid.taken, [id('tSJ'), id('tJC')]);
   });
 
   it('shows a submachine as an active state in its parent, and its states in its own instance', async () => {
-    const order = fromXmi(example('Order.fsm'));
-    const payment = fromXmi(example('Payment.fsm'));
+    const order = loadModel(example('Order.fsm'));
+    const payment = loadModel(example('Payment.fsm'));
     const { Order } = await load({ 'Order.fsm': example('Order.fsm'), 'Payment.fsm': example('Payment.fsm') });
     const lines: string[] = [];
     const o = new Order(recorder().actions, { onTrace: (machine: string, kind: string, id: string, name: string) => lines.push(`fsm ${machine} ${kind} ${id} ${name}`) });
@@ -163,12 +165,12 @@ describe('trace replay', () => {
     const instances = { Order: instance('Order', order), 'Order.Payment': instance('Order.Payment', payment, 'file:///Payment.fsm') };
     const entries = timeline(lines, builtInFormat, instances);
     const out = replay(entries, entries.length - 1, kindsOf(entries));
-    assert.deepEqual(out.get('Order')!.highlight.active, ['o_pay']);
-    assert.deepEqual(out.get('Order.Payment')!.highlight.active, ['p_auth']);
+    assert.deepEqual(out.get('Order')!.highlight.active, ['Payment']);
+    assert.deepEqual(out.get('Order.Payment')!.highlight.active, ['Authorizing']);
     assert.equal(out.get('Order.Payment')!.inst.uri, 'file:///Payment.fsm');
     // Order's event is the submachine's step too.
     assert.equal(out.get('Order.Payment')!.highlight.event, 'checkout');
-    assert.deepEqual(out.get('Order.Payment')!.highlight.taken, ['pt1']);
+    assert.deepEqual(out.get('Order.Payment')!.highlight.taken, ['Payment.initial#1']);
   });
 
   it('finds states and transitions by name, and follows transitions when the log has no entries', () => {
@@ -180,12 +182,14 @@ describe('trace replay', () => {
     assert.deepEqual(findTransitions(ix, { id: '', name: '', source: 'S', target: 'Y' }).map((t) => t.id), ['tSJ', 'tJY']);
 
     const f = compileFormat({ name: 'Moves', rules: [{ kind: 'transition', match: '(?<source>\\w+) -> (?<target>\\w+)' }] });
-    const inst = instance('Traced', model);
+    // As the Trace Player reads it from its file: the ids the generated code reports.
+    const inst = instance('Traced', loadModel(fileOf(model)));
+    const id = (x: string) => idOf(model, x);
     const entries = timeline(['S -> X', 'X -> S', 'S -> Y'], f, {}, inst);
     const kinds = kindsOf(entries);
     const h = replay(entries, 2, kinds).get('Traced')!.highlight;
     assert.deepEqual(h.active, ['Y']);
-    assert.deepEqual(h.taken, ['tSJ', 'tJY']);
+    assert.deepEqual(h.taken, [id('tSJ'), id('tJY')]);
     assert.deepEqual(replay(entries, 0, kinds).get('Traced')!.highlight.active, ['X']);
   });
 

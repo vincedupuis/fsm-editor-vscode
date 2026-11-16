@@ -9,12 +9,13 @@
  *   as above, since the new machine has one region. Its own entry/exit points become the new machine's,
  *   and connection point references with the same ids take their place on its border.
  *
- * A transition crossing the boundary is split at a connection point, keeping its trigger, guard and effect
+ * A transition crossing the boundary is split at a connection point, keeping its trigger, guard and action
  * on its source's side: an incoming one goes to an entry point reference on the submachine state, then from
  * the new machine's entry point to its target; an outgoing one goes to an exit point of the new machine,
  * then from the exit point reference to its target. There is one entry point per inner target and one exit
  * point per outer target. An incoming transition to the target of the new machine's initial transition
- * (without guard or effect) targets the submachine state itself (default entry) instead.
+ * (without guard or action) targets the submachine state itself (default entry) instead. The references name
+ * their points by name, as the files do.
  */
 import { FsmModel, ModelIndex, Transition, Vertex, isBorderVertex, normalizeModel } from './model';
 
@@ -31,14 +32,24 @@ export interface ExtractResult {
 }
 
 const POINT = 16;
-const MACHINE_ID = 'sm';
 
 /** The name proposed for the new machine: the extracted state's name when there is one, else `Submachine`. */
 export function proposedName(model: FsmModel, selected: string[]): string {
   const roots = extractedRoots(model, selected);
   const states = roots.filter((v) => v.type === 'state');
-  const name = states.length === 1 ? states[0].name.trim() : '';
-  return name || 'Submachine';
+  const name = states.length === 1 && !states[0].name.endsWith('*') ? states[0].name.trim() : '';
+  if (!name) return 'Submachine';
+  // Names are unique in a machine: a state that moves into the new machine whole leaves it its name.
+  return namesInside(model, selected).has(name) ? `${name}Machine` : name;
+}
+
+/** The names of the elements the new machine would hold. */
+export function namesInside(model: FsmModel, selected: string[]): Set<string> {
+  try {
+    return new Set(extractSubmachine(model, selected, 'Submachine', 'Submachine.fsm').machine.vertices.map((v) => v.name).filter(Boolean));
+  } catch {
+    return new Set();
+  }
 }
 
 /**
@@ -205,10 +216,10 @@ export function extractSubmachine(model: FsmModel, selected: string[], name: str
     (kind === 'entry' ? entries : exits).push(point);
   }
 
-  // Default entry: the target of the new machine's initial transition, when it has no guard or effect.
+  // Default entry: the target of the new machine's initial transition, when it has no guard or action.
   const initial = machineVertices.find((v) => v.type === 'initial' && v.parent === region.id);
   const initialOut = initial ? machineTransitions.filter((t) => t.source === initial.id) : [];
-  const defaultTarget = initialOut.length === 1 && !initialOut[0].guard.trim() && !initialOut[0].effect.trim() ? initialOut[0].target : null;
+  const defaultTarget = initialOut.length === 1 && !initialOut[0].guard.trim() && !initialOut[0].action.trim() ? initialOut[0].target : null;
 
   /** By inner target: the reference on the submachine state that incoming transitions go to. */
   const entryRefFor = new Map<string, string>();
@@ -225,7 +236,8 @@ export function extractSubmachine(model: FsmModel, selected: string[], name: str
       naming.delete(v);
       return owner || 'Point';
     }
-    return identifier(v.name) || capitalize(TYPE_NAMES[v.type] ?? v.type);
+    // A generated name (choice1*) is no name.
+    return identifier(v.name.endsWith('*') ? '' : v.name) || capitalize(TYPE_NAMES[v.type] ?? v.type);
   };
   for (const t of crossing) {
     delete t.points;
@@ -310,13 +322,17 @@ export function extractSubmachine(model: FsmModel, selected: string[], name: str
     v.anchors = [...new Set(anchors)];
   }
 
+  // The references name their points by name.
+  const pointNameById = new Map([...entries, ...exits].map((p) => [p.id, p.name]));
+  for (const r of [...entryRefs, ...exitRefs, ...parentVertices]) {
+    if (r.type === 'connectionPointRef' && r.parent === state.id && pointNameById.has(r.ref ?? '')) r.ref = pointNameById.get(r.ref!);
+  }
+
   const parent: FsmModel = { ...m, vertices: parentVertices, transitions: parentTransitions };
   const machine: FsmModel = {
     version: 1,
-    id: MACHINE_ID,
     name,
     kind: m.kind,
-    context: '',
     documentation: '',
     regions: [region],
     vertices: machineVertices,
@@ -351,7 +367,7 @@ const point = (id: string, type: 'entryPoint' | 'exitPoint', name: string, paren
 const reference = (id: string, parent: string, ref: string, pointKind: 'entry' | 'exit'): Vertex =>
   ({ id, type: 'connectionPointRef', name: '', parent, x: 0, y: 0, w: POINT, h: POINT, ref, pointKind });
 
-const plain = (id: string, source: string, target: string): Transition => ({ id, source, target, kind: 'external', triggers: [], guard: '', effect: '' });
+const plain = (id: string, source: string, target: string): Transition => ({ id, source, target, kind: 'external', triggers: [], guard: '', action: '' });
 
 function allRegionIds(m: FsmModel): string[] {
   return [...m.regions.map((r) => r.id), ...m.vertices.flatMap((v) => (v.regions ?? []).map((r) => r.id))];

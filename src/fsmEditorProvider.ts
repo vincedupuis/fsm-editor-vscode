@@ -1,14 +1,27 @@
 import * as vscode from 'vscode';
+import { convertGroup } from './convert';
+import { ExtractError, extractSubmachine, namesInside, proposedName } from './extract';
+import { Problem, assignNames, derivedIds, isOldFormat, readMachine, readModel, resolveReferences, writeMachine } from './format';
+import { LoadError, submachineFiles } from './load';
+import { hasConflictMarkers, splitConflicts } from './merge';
+import { DiffSession, MergeFiles, MergeSession, Pane, Texts } from './sessions';
 import { ConnectionPointInfo, FsmModel, MachineInfo, SubmachineInfo, defaultModel, machineConnectionPoints, normalizeModel } from './model';
-import { ExtractError, extractSubmachine, proposedName } from './extract';
-import { Issue, validate } from './validation';
 import { TraceView } from './trace/replay';
-import { basename, decodeHref, decodeText, dirname, encodeHref, encodeText, relative } from './util';
-import { fromXmi, toXmi } from './xmi';
+import { basename, decodeText, dirname, encodeText, joinPath, relative } from './util';
+import { Issue, validate } from './validation';
+import { fromXmi } from './xmi';
+
+/**
+ * The diagram editor of `.fsm` files. A machine is two files, the model (`X.fsm`) and its layout (`X.fsm.layout`),
+ * edited together: the editor is a `CustomEditorProvider` with its own document (FsmDocument), whose edits, undo and
+ * redo, save, revert and backups (hot exit) cover both files. A move changes only the layout file, and is undone and
+ * saved like any other change. The webview works on the JSON model (`FsmModel`); each of its edits is written
+ * (`writeMachine`) into the texts of the two files, which the document holds until it is saved.
+ */
 
 interface ActiveEditor {
   panel: vscode.WebviewPanel;
-  document: vscode.TextDocument;
+  document: FsmDocument;
 }
 
 /** Commands the webview toolbar is allowed to run. */
@@ -30,24 +43,145 @@ interface PanelState {
 const PANELS_KEY = 'fsmEditor.panels';
 
 interface MachineSummary {
-  id: string;
   name: string;
   points: ConnectionPointInfo[];
 }
 
-/** Per-editor state shared with the message handler. */
-interface EditorContext {
-  document: vscode.TextDocument;
-  webview: vscode.Webview;
-  sync: () => void;
-  /** The last XMI written for the webview, with the model JSON it came from. */
-  echo?: { xmi: string; json: string };
-  /** Edits of the webview being applied to the document. */
-  pending: number;
+/** What a document holds at one point of its history. */
+export interface DocState {
+  /** The model file's text: what saving writes (the file's own text when it can't be read). */
+  modelText: string;
+  /** The layout file's text: what saving writes; undefined when there is none to write (no file, unreadable model). */
+  layoutText?: string;
+  /** The model the webview works on, as JSON; undefined when the model file can't be read. */
+  json?: string;
+  /** Why the model file can't be read: no diagram then. */
+  problems?: Problem[];
+  /** Line of each element in `modelText`, by id. */
+  lines: Map<string, number>;
 }
 
-export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
+/** An old file (XMI), converted when it was opened: what saving it will write and say. */
+interface OldFile {
+  /** Its text on disk, for the lines of problems. */
+  text: string;
+  renames: string[];
+  generated: number;
+  losses: string[];
+}
+
+/** The layout file at the open, when it couldn't be read: not overwritten without asking. */
+interface UnreadableLayout {
+  text: string;
+  problem: string;
+}
+
+/** A `.fsm` file and its layout file, as the diagram edits them. */
+export class FsmDocument implements vscode.CustomDocument {
+  state: DocState;
+  /** What is on disk (the state last loaded or saved). */
+  saved: DocState;
+  old?: OldFile;
+  unreadableLayout?: UnreadableLayout;
+  /** Elements placed automatically when the files were read (no layout entry). */
+  placed = 0;
+  /** No layout file was found: in a diff, this older version borrows the newer one's layout (`displayJson`). */
+  layoutMissing = false;
+  /** What the diagram shows when it isn't the state's model (a borrowed layout). */
+  displayJson?: string;
+  /** The model file has merge conflicts: its two sides, opened as the diagram merge (the document is the result). */
+  merge?: { current: Texts; incoming: Texts; base?: Texts };
+  /** The model file has merge conflicts the diagram merge can't open (a side isn't a valid machine file). */
+  mergeFallback = false;
+  /** Only the layout file has merge conflicts: the diagram uses its current side, and saving writes it clean. */
+  layoutConflict = false;
+  readonly readonly: boolean;
+  private readonly disposed = new vscode.EventEmitter<void>();
+  readonly onDidDispose = this.disposed.event;
+  /** Called when the state changes (an edit, undo, redo, revert, a change on disk). */
+  readonly changed = new vscode.EventEmitter<void>();
+
+  constructor(
+    readonly uri: vscode.Uri,
+    state: DocState,
+    readonly: boolean,
+  ) {
+    this.state = state;
+    this.saved = state;
+    this.readonly = readonly;
+  }
+
+  get layoutUri(): vscode.Uri {
+    return layoutUriOf(this.uri);
+  }
+
+  get dirty(): boolean {
+    return this.state !== this.saved;
+  }
+
+  setState(s: DocState) {
+    this.state = s;
+    // A borrowed layout is only what the diagram showed before: an edit made on it holds its places.
+    this.displayJson = undefined;
+    this.changed.fire();
+  }
+
+  dispose(): void {
+    this.disposed.fire();
+    this.disposed.dispose();
+    this.changed.dispose();
+  }
+}
+
+/**
+ * The file at `path` beside `uri`, in the same file system: for a Git version, the same version of that file (Git's
+ * URIs say which file they read in their query too).
+ */
+export function uriWithPath(uri: vscode.Uri, path: string): vscode.Uri {
+  if (uri.scheme === 'git') {
+    try {
+      const q = JSON.parse(uri.query);
+      if (typeof q.path === 'string') return uri.with({ path, query: JSON.stringify({ ...q, path: vscode.Uri.from({ scheme: 'file', path }).fsPath }) });
+    } catch {
+      // not Git's JSON query
+    }
+  }
+  return uri.with({ path });
+}
+
+/** The layout file of a model file (for a Git version, the same version of the layout file). */
+export function layoutUriOf(uri: vscode.Uri): vscode.Uri {
+  return uriWithPath(uri, `${uri.path}.layout`);
+}
+
+/** The state of a document whose files hold these texts (a new-format model; an old one is converted first). */
+export function stateOf(modelText: string, layoutText: string | undefined): DocState & { placed: number; layoutProblem?: string } {
+  const read = readMachine(modelText, layoutText);
+  if ('problems' in read) return { modelText, problems: read.problems, lines: new Map(), placed: 0 };
+  return { modelText, layoutText, json: JSON.stringify(read.model), lines: read.lines, placed: read.placed, layoutProblem: read.problem };
+}
+
+/**
+ * The state after an edit of the webview: its model, written (references that named nothing and name something now
+ * resolved, as reading the file again would). Throws when the format can't hold it. `sent`: the webview's own text of
+ * `model`, kept as the state's JSON when the model is that text's, so that the webview gets back the text it holds
+ * and doesn't reload (its focus, its typing and a drag in progress stay).
+ */
+export function stateOfModel(model: FsmModel, sent?: string): DocState {
+  const before = sent === undefined ? undefined : JSON.stringify(JSON.parse(sent));
+  assignNames(model);
+  const w = writeMachine(model);
+  if (w.lost.length) throw new Error(`the file can't hold ${w.lost.join('; ')}.`);
+  resolveReferences(model, w);
+  const json = JSON.stringify(model);
+  return { modelText: w.model, layoutText: w.layout, json: json === before ? sent : json, lines: w.lines };
+}
+
+export class FsmEditorProvider implements vscode.CustomEditorProvider<FsmDocument> {
   static readonly viewType = 'fsmEditor.stateMachine';
+
+  private readonly changeEmitter = new vscode.EventEmitter<vscode.CustomDocumentEditEvent<FsmDocument>>();
+  readonly onDidChangeCustomDocument = this.changeEmitter.event;
 
   private active: ActiveEditor | undefined;
   private readonly diagnostics = vscode.languages.createDiagnosticCollection('fsm');
@@ -60,32 +194,454 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
   private readonly webviews = new Set<vscode.Webview>();
   /** Parsed summaries of state machine files, keyed by URI, with the version they were read from. */
   private readonly summaries = new Map<string, { key: string; summary: MachineSummary | null }>();
+  /** The summaries of open documents, by state. */
+  private readonly stateSummaries = new WeakMap<DocState, MachineSummary | null>();
+  /** The ids reading a document's state back would give, by own id (see `highlightFor`), by state. */
+  private readonly stateIds = new WeakMap<DocState, { json: string; back: Map<string, string> }>();
   /** Every open diagram with its document, for the Trace Player's highlights. */
-  private readonly diagrams = new Set<{ document: vscode.TextDocument; webview: vscode.Webview }>();
+  private readonly diagrams = new Set<{ document: FsmDocument; webview: vscode.Webview }>();
   /** The Trace Player's highlights of each file, by URI; files without one show none. */
   private traceHighlights = new Map<string, TraceView>();
+  /** The open documents, by URI. */
+  private readonly documents = new Map<string, FsmDocument>();
+  /** The open diagrams, for the diff and merge sessions that link them. */
+  private readonly panes = new Set<Pane>();
+  private readonly mergeFiles = new MergeFiles();
+  /** The diagram merges, by the URI of their result, with the document they merge into. */
+  private readonly merges = new Map<string, { session: MergeSession; doc: FsmDocument }>();
+  private mergeSeq = 0;
 
   constructor(private readonly context: vscode.ExtensionContext) {
-    const watcher = vscode.workspace.createFileSystemWatcher('**/*.fsm');
-    const resyncAll = () => this.resyncs.forEach((r) => r());
+    const watcher = vscode.workspace.createFileSystemWatcher('**/*.{fsm,fsm.layout}');
+    const onDisk = (uri: vscode.Uri) => {
+      const doc = this.documents.get(uri.toString()) ?? this.documents.get(uri.with({ path: uri.path.replace(/\.layout$/, '') }).toString());
+      if (doc) void this.followDisk(doc);
+      // A layout file changes no machine's names or points: the other diagrams have nothing to follow.
+      if (!uri.path.endsWith('.layout')) this.resyncs.forEach((r) => r());
+    };
     context.subscriptions.push(
+      vscode.workspace.registerFileSystemProvider(MergeFiles.scheme, this.mergeFiles, { isReadonly: true, isCaseSensitive: true }),
       this.diagnostics,
       watcher,
-      watcher.onDidChange(resyncAll),
-      watcher.onDidCreate(resyncAll),
-      watcher.onDidDelete(resyncAll),
+      watcher.onDidChange(onDisk),
+      watcher.onDidCreate(onDisk),
+      watcher.onDidDelete(onDisk),
+      // A model file edited as text: the diagram follows the text while it has no changes of its own.
       vscode.workspace.onDidChangeTextDocument((e) => {
-        if (e.document.uri.path.endsWith('.fsm') && e.contentChanges.length) resyncAll();
+        if (!e.document.uri.path.endsWith('.fsm') || !e.contentChanges.length) return;
+        const doc = this.documents.get(e.document.uri.toString());
+        if (doc && !doc.dirty) void this.followText(doc, e.document.getText());
+        this.resyncs.forEach((r) => r());
       }),
-      vscode.workspace.onDidCloseTextDocument((d) => this.diagnostics.delete(d.uri)),
+      // Its text editor closed: the text it had unsaved is gone, back to the file on disk.
+      vscode.workspace.onDidCloseTextDocument((d) => {
+        if (!d.uri.path.endsWith('.fsm')) return;
+        const doc = this.documents.get(d.uri.toString());
+        if (doc) void this.followDisk(doc);
+        this.resyncs.forEach((r) => r());
+      }),
+      // A model file renamed or moved: its layout file goes with it.
+      vscode.workspace.onWillRenameFiles((e) => e.waitUntil(this.layoutRenames(e.files))),
     );
+  }
+
+  /** The layout files to rename with their model files (those that have one, unless the new name has one already). */
+  private async layoutRenames(files: readonly { oldUri: vscode.Uri; newUri: vscode.Uri }[]): Promise<vscode.WorkspaceEdit> {
+    const edit = new vscode.WorkspaceEdit();
+    const exists = async (uri: vscode.Uri) => {
+      try {
+        await vscode.workspace.fs.stat(uri);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    for (const { oldUri, newUri } of files) {
+      if (!oldUri.path.endsWith('.fsm') || !newUri.path.endsWith('.fsm')) continue;
+      const from = layoutUriOf(oldUri);
+      const to = layoutUriOf(newUri);
+      if (files.some((f) => f.oldUri.toString() === from.toString())) continue; // renamed too
+      if ((await exists(from)) && !(await exists(to))) edit.renameFile(from, to);
+    }
+    return edit;
   }
 
   get activeEditor(): ActiveEditor | undefined {
     return this.active;
   }
 
-  async resolveCustomTextEditor(document: vscode.TextDocument, panel: vscode.WebviewPanel): Promise<void> {
+  // ---------------------------------------------------------------- documents
+
+  async openCustomDocument(uri: vscode.Uri, openContext: vscode.CustomDocumentOpenContext): Promise<FsmDocument> {
+    const readonly = uri.scheme !== 'untitled' && vscode.workspace.fs.isWritableFileSystem(uri.scheme) === false;
+    let doc: FsmDocument;
+    if (uri.scheme === 'untitled') {
+      const s = stateOfModel(defaultModel(basename(uri.path, '.fsm') || 'StateMachine'));
+      doc = new FsmDocument(uri, s, false);
+      // Nothing on disk: the first save writes everything.
+      doc.saved = { modelText: '', lines: new Map() };
+    } else {
+      const loaded = await this.load(uri);
+      doc = new FsmDocument(uri, loaded.state, readonly);
+      this.apply(doc, loaded);
+    }
+    if (openContext.backupId) {
+      try {
+        const backup = JSON.parse(decodeText(await vscode.workspace.fs.readFile(vscode.Uri.parse(openContext.backupId))));
+        doc.state = { modelText: backup.modelText, layoutText: backup.layoutText, json: backup.json, problems: backup.problems, lines: new Map(backup.lines) };
+      } catch {
+        // the backup is gone: what is on disk
+      }
+    }
+    this.documents.set(uri.toString(), doc);
+    doc.onDidDispose(() => {
+      if (this.documents.get(uri.toString()) === doc) this.documents.delete(uri.toString());
+      this.diagnostics.delete(uri);
+      // Its merge ends with it: reopened, the file starts a new one.
+      const merge = this.merges.get(uri.toString());
+      if (merge?.doc === doc) this.endMerge(uri, merge.session);
+    });
+    return doc;
+  }
+
+  /** Reads a document's files: converting an old file, with the files linked to it. */
+  private async load(uri: vscode.Uri): Promise<{ state: DocState; old?: OldFile; layout?: UnreadableLayout; placed: number; layoutMissing?: boolean; merge?: FsmDocument['merge']; mergeFallback?: boolean; layoutConflict?: boolean }> {
+    const modelText = (await this.readText(uri)) ?? '';
+    if (hasConflictMarkers(modelText)) return this.loadConflicted(uri, modelText);
+    if (isOldFormat(modelText)) {
+      const group = await this.linkedOldFiles(uri, modelText);
+      const result = convertGroup(group).find((r) => r.path === uri.path)!;
+      if (result.error) return { state: { modelText, problems: [{ line: 1, message: result.error }], lines: new Map() }, placed: 0 };
+      // The converted model, with the old ids: the diagram's problems are found in the old text by them.
+      const state: DocState = { modelText: result.modelText, layoutText: result.layoutText, json: JSON.stringify(result.model), lines: new Map() };
+      return { state, old: { text: modelText, renames: result.renames, generated: result.generated, losses: result.losses }, placed: 0 };
+    }
+    let layoutText = await this.readText(layoutUriOf(uri));
+    // Only the layout file has merge conflicts: its current side (saving writes it clean).
+    let layoutConflict = false;
+    if (layoutText !== undefined && hasConflictMarkers(layoutText)) {
+      try {
+        layoutText = splitConflicts(layoutText).current;
+        layoutConflict = true;
+      } catch {
+        // unreadable: placed automatically
+      }
+    }
+    const s = stateOf(modelText, layoutText);
+    const layout = s.layoutProblem !== undefined && layoutText !== undefined && !layoutConflict ? { text: layoutText, problem: s.layoutProblem } : undefined;
+    // An unreadable layout file is left for automatic places: writing the state as it is keeps that file.
+    const state: DocState = { modelText: s.modelText, layoutText: layout ? undefined : layoutText, json: s.json, problems: s.problems, lines: s.lines };
+    return { state, layout, placed: s.placed, layoutMissing: layoutText === undefined, layoutConflict };
+  }
+
+  /**
+   * A model file with merge conflicts: its two sides (the layout file's too when it has conflicts) are the diagram
+   * merge's, and the result starts as the current side. When a side isn't a valid machine file, no merge: its problems.
+   */
+  private async loadConflicted(uri: vscode.Uri, modelText: string) {
+    const fail = (message: string) => ({ state: { modelText, problems: [{ line: 1, message }], lines: new Map() } as DocState, placed: 0, mergeFallback: true });
+    let model;
+    try {
+      model = splitConflicts(modelText);
+    } catch (e) {
+      return fail(`The file has merge conflicts whose markers can't be read: ${e instanceof Error ? e.message : e}`);
+    }
+    const layoutRaw = await this.readText(layoutUriOf(uri));
+    let layout = { current: layoutRaw, incoming: layoutRaw };
+    if (layoutRaw !== undefined && hasConflictMarkers(layoutRaw)) {
+      try {
+        layout = splitConflicts(layoutRaw);
+      } catch {
+        layout = { current: undefined, incoming: undefined };
+      }
+    }
+    for (const [side, text] of [['current', model.current], ['incoming', model.incoming]] as const) {
+      const r = readMachine(text, undefined);
+      if ('problems' in r) return fail(`The file has merge conflicts, and its ${side} side is not a valid state machine file: line ${r.problems[0].line}: ${r.problems[0].message}`);
+    }
+    const s = stateOf(model.current, layout.current);
+    const state: DocState = { modelText: s.modelText, layoutText: layout.current, json: s.json, lines: s.lines };
+    const merge = { current: { model: model.current, layout: layout.current }, incoming: { model: model.incoming, layout: layout.incoming }, base: await this.base(uri) };
+    return { state, placed: 0, merge };
+  }
+
+  /** The common version of a conflicted file, from Git (stage 1), when the Git extension is there. */
+  private async base(uri: vscode.Uri): Promise<Texts | undefined> {
+    try {
+      const git = vscode.extensions.getExtension('vscode.git');
+      if (!git) return undefined;
+      const api = (git.isActive ? git.exports : await git.activate())?.getAPI?.(1);
+      const repo = api?.getRepository?.(uri);
+      if (!repo) return undefined;
+      const model: string = await repo.show(':1', uri.fsPath);
+      let layout: string | undefined;
+      try {
+        layout = await repo.show(':1', layoutUriOf(uri).fsPath);
+      } catch {
+        layout = undefined;
+      }
+      return { model, layout };
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** A file's text, from an open text document with unsaved changes first; undefined when it can't be read. */
+  private async readText(uri: vscode.Uri): Promise<string | undefined> {
+    const open = vscode.workspace.textDocuments.find((d) => d.uri.toString() === uri.toString());
+    if (open) return open.getText();
+    try {
+      return decodeText(await vscode.workspace.fs.readFile(uri));
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * The old files linked to `uri` by submachine references, transitively and both ways (the files it uses, the files
+   * using it), with their texts: they are converted together.
+   */
+  private async linkedOldFiles(uri: vscode.Uri, text: string): Promise<{ path: string; text: string }[]> {
+    const found = new Map<string, string>([[uri.path, text]]);
+    const others = new Map<string, string>();
+    const at = (path: string) => uriWithPath(uri, path);
+    const uses = (path: string, t: string) => {
+      try {
+        return submachineFiles(fromXmi(t)).map((f) => joinPath(dirname(path), f));
+      } catch {
+        return [];
+      }
+    };
+    // The workspace's old files, for the machines using this one.
+    if (uri.scheme === vscode.workspace.workspaceFolders?.[0]?.uri.scheme) {
+      for (const u of await vscode.workspace.findFiles('**/*.fsm', '**/node_modules/**', 500)) {
+        if (u.authority !== uri.authority || found.has(u.path)) continue;
+        const t = await this.readText(u);
+        if (t !== undefined && isOldFormat(t)) others.set(u.path, t);
+      }
+    }
+    for (let changed = true; changed; ) {
+      changed = false;
+      for (const [path, t] of [...found]) {
+        for (const p of uses(path, t)) {
+          if (found.has(p)) continue;
+          const sub = others.get(p) ?? (await this.readText(at(p)));
+          if (sub !== undefined && isOldFormat(sub)) {
+            found.set(p, sub);
+            changed = true;
+          }
+        }
+      }
+      for (const [path, t] of others) {
+        if (found.has(path)) continue;
+        if (uses(path, t).some((p) => found.has(p))) {
+          found.set(path, t);
+          changed = true;
+        }
+      }
+    }
+    return [...found].map(([path, t]) => ({ path, text: t }));
+  }
+
+  /** The files changed on disk: a document without unsaved changes follows them. */
+  private async followDisk(doc: FsmDocument) {
+    if (doc.dirty || doc.uri.scheme === 'untitled' || doc.merge) return;
+    const modelText = await this.readText(doc.uri);
+    const layoutText = await this.readText(doc.layoutUri);
+    if (modelText === undefined) return; // deleted: the editor keeps what it has
+    if (modelText === doc.state.modelText && (layoutText === doc.state.layoutText || doc.unreadableLayout?.text === layoutText)) return;
+    if (doc.old && modelText === doc.old.text) return;
+    await this.reload(doc);
+  }
+
+  private async followText(doc: FsmDocument, text: string) {
+    if (text === doc.state.modelText || (doc.old && text === doc.old.text)) return;
+    if (isOldFormat(text)) {
+      await this.reload(doc);
+      return;
+    }
+    const layoutText = doc.state.layoutText ?? (await this.readText(doc.layoutUri));
+    const s = stateOf(text, layoutText);
+    const state: DocState = { modelText: s.modelText, layoutText: s.problems ? undefined : layoutText, json: s.json, problems: s.problems, lines: s.lines };
+    doc.old = undefined;
+    doc.saved = state;
+    doc.setState(state);
+  }
+
+  private async reload(doc: FsmDocument) {
+    const loaded = await this.load(doc.uri);
+    this.apply(doc, loaded);
+    doc.saved = loaded.state;
+    doc.setState(loaded.state);
+  }
+
+  /** What reading a document's files said, onto the document. */
+  private apply(doc: FsmDocument, loaded: Awaited<ReturnType<FsmEditorProvider['load']>>) {
+    doc.old = loaded.old;
+    doc.unreadableLayout = loaded.layout;
+    doc.placed = loaded.placed;
+    doc.layoutMissing = !!loaded.layoutMissing;
+    doc.merge = loaded.merge;
+    doc.mergeFallback = !!loaded.mergeFallback;
+    doc.layoutConflict = !!loaded.layoutConflict;
+  }
+
+  async saveCustomDocument(document: FsmDocument, _cancellation: vscode.CancellationToken): Promise<void> {
+    let state = document.state;
+    await this.write(document, document.uri, state);
+    document.old = undefined;
+    document.unreadableLayout = undefined;
+    document.layoutConflict = false;
+    // An edit made while the files were written (a slow file system, converting linked files): VS Code counts it
+    // saved once this save ends, so it is written too. `saved` is what was written.
+    while (document.state !== state) {
+      state = document.state;
+      await this.write(document, document.uri, state);
+    }
+    document.saved = state;
+    document.changed.fire();
+  }
+
+  async saveCustomDocumentAs(document: FsmDocument, destination: vscode.Uri, _cancellation: vscode.CancellationToken): Promise<void> {
+    await this.write(document, destination, document.state);
+  }
+
+  /**
+   * Writes a document's state `s`, its two files, at `target` (and, for an old file saved in place, converts the files
+   * linked to it).
+   */
+  private async write(doc: FsmDocument, target: vscode.Uri, s: DocState) {
+    if (s.problems || s.json === undefined) {
+      // A model file that can't be read: written as it is.
+      await vscode.workspace.fs.writeFile(target, encodeText(s.modelText));
+      return;
+    }
+    const layoutTarget = layoutUriOf(target);
+    let writeLayout = true;
+    if (doc.unreadableLayout && target.toString() === doc.uri.toString()) {
+      const onDisk = await this.readText(layoutTarget);
+      if (onDisk === doc.unreadableLayout.text) {
+        const overwrite = 'Overwrite It';
+        const answer = await vscode.window.showWarningMessage(
+          `${basename(layoutTarget.path)} could not be read when the diagram was opened (${doc.unreadableLayout.problem}), so its elements were placed automatically. Replace it with the diagram's layout?`,
+          { modal: true },
+          overwrite,
+          'Save the Model Only',
+        );
+        if (answer === undefined) throw new vscode.CancellationError();
+        writeLayout = answer === overwrite;
+      }
+    }
+    let layoutText = s.layoutText;
+    if (layoutText === undefined) layoutText = stateOfModel(normalizeModel(JSON.parse(s.json!))).layoutText;
+    await vscode.workspace.fs.writeFile(target, encodeText(s.modelText));
+    if (writeLayout && layoutText !== undefined) await vscode.workspace.fs.writeFile(layoutTarget, encodeText(layoutText));
+    if (doc.old && target.toString() === doc.uri.toString()) await this.convertLinked(doc);
+  }
+
+  /** After an old file was saved in the new format: converts the old files linked to it, and says what happened. */
+  private async convertLinked(doc: FsmDocument) {
+    const old = doc.old!;
+    const group = await this.linkedOldFiles(doc.uri, old.text);
+    const results = convertGroup(group);
+    const converted = [basename(doc.uri.path)];
+    const skipped: string[] = [];
+    const lines: string[] = [];
+    const report = (file: string, renames: string[], generated: number, losses: string[]) => {
+      for (const r of renames) lines.push(`${file}: ${r}.`);
+      if (generated) lines.push(`${file}: ${generated} unnamed element${generated === 1 ? '' : 's'} got a generated name (ending with *, not shown on the diagram).`);
+      for (const l of losses) lines.push(`${file}: left out ${l}.`);
+    };
+    report(basename(doc.uri.path), old.renames, old.generated, old.losses);
+    for (const r of results) {
+      if (r.path === doc.uri.path) continue;
+      const uri = uriWithPath(doc.uri, r.path);
+      const open = this.documents.get(uri.toString());
+      if (r.error || (open && open.dirty)) {
+        skipped.push(basename(r.path));
+        continue;
+      }
+      await vscode.workspace.fs.writeFile(uri, encodeText(r.modelText));
+      await vscode.workspace.fs.writeFile(layoutUriOf(uri), encodeText(r.layoutText));
+      converted.push(basename(r.path));
+      report(basename(r.path), r.renames, r.generated, r.losses);
+    }
+    let message = `Saved in the new format (the model in .fsm, the layout in .fsm.layout): ${converted.join(', ')}.`;
+    if (skipped.length) message += ` Not converted, as they have unsaved changes or can't be read: ${skipped.join(', ')}.`;
+    if (lines.length) message += ' ' + lines.join(' ');
+    void vscode.window.showInformationMessage(message);
+  }
+
+  async revertCustomDocument(document: FsmDocument, _cancellation: vscode.CancellationToken): Promise<void> {
+    await this.reload(document);
+  }
+
+  async backupCustomDocument(document: FsmDocument, context: vscode.CustomDocumentBackupContext, _cancellation: vscode.CancellationToken): Promise<vscode.CustomDocumentBackup> {
+    const s = document.state;
+    const data = { modelText: s.modelText, layoutText: s.layoutText, json: s.json, problems: s.problems, lines: [...s.lines] };
+    await vscode.workspace.fs.writeFile(context.destination, encodeText(JSON.stringify(data)));
+    return {
+      id: context.destination.toString(),
+      delete: async () => {
+        try {
+          await vscode.workspace.fs.delete(context.destination);
+        } catch {
+          // already gone
+        }
+      },
+    };
+  }
+
+  /** An edit of the webview (its model's JSON): the document's new state, undoable. */
+  edit(doc: FsmDocument, json: string, label = 'Edit'): string | undefined {
+    if (doc.readonly) return 'This diagram is read-only.';
+    let next: DocState;
+    try {
+      next = stateOfModel(normalizeModel(JSON.parse(json)), json);
+    } catch (e) {
+      return `The change can't be saved: ${e instanceof Error ? e.message : e}`;
+    }
+    const prev = doc.state;
+    if (next.modelText === prev.modelText && next.layoutText === prev.layoutText) {
+      // Nothing that the files hold changed (a selection, an equal value): no edit to undo.
+      if (next.json !== prev.json) {
+        prev.json = next.json;
+        prev.lines = next.lines;
+      }
+      doc.changed.fire();
+      return undefined;
+    }
+    doc.setState(next);
+    this.changeEmitter.fire({
+      document: doc,
+      label,
+      undo: () => doc.setState(prev),
+      redo: () => doc.setState(next),
+    });
+    return undefined;
+  }
+
+  /** The texts of a `.fsm` file as the editor sees them: an open document's current state, else the file on disk. */
+  async modelText(uri: vscode.Uri): Promise<string | undefined> {
+    const doc = this.documents.get(uri.toString());
+    if (doc) return doc.state.modelText;
+    return this.readText(uri);
+  }
+
+  /** Whether a document is open for `uri`. */
+  isOpen(uri: vscode.Uri): boolean {
+    return this.documents.has(uri.toString());
+  }
+
+  /** The current model of an open document (with its layout), or undefined. */
+  openModel(uri: vscode.Uri): FsmModel | undefined {
+    const json = this.documents.get(uri.toString())?.state.json;
+    return json ? normalizeModel(JSON.parse(json)) : undefined;
+  }
+
+  // ---------------------------------------------------------------- editors
+
+  async resolveCustomEditor(document: FsmDocument, panel: vscode.WebviewPanel): Promise<void> {
     const media = vscode.Uri.joinPath(this.context.extensionUri, 'media');
     panel.webview.options = { enableScripts: true, localResourceRoots: [media] };
     panel.webview.html = this.html(panel.webview);
@@ -93,41 +649,41 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let generation = 0;
     let disposed = false;
-    const ctx: EditorContext = { document, webview: panel.webview, sync: () => scheduleSync(), pending: 0 };
+    /** Notices to show once the diagram is up. */
+    const notices: string[] = [];
+    if (document.placed) notices.push(`${document.placed} element${document.placed === 1 ? ' was' : 's were'} placed automatically: the layout file had no place for ${document.placed === 1 ? 'it' : 'them'}.`);
+    if (document.unreadableLayout) notices.push(`The layout file could not be read (${document.unreadableLayout.problem}): the elements were placed automatically. It is replaced only if you confirm when saving.`);
     const sync = async () => {
       const current = ++generation;
-      const xmi = document.getText();
+      const s = document.state;
+      const text = document.displayJson ?? s.json;
       let issues: Issue[] = [];
-      let error: string | undefined;
-      let text = '';
       let submachines: SubmachineInfo = {};
       let machines: MachineInfo[] = [];
-      try {
-        let model: FsmModel;
-        if (ctx.echo && ctx.echo.xmi === xmi) {
-          // Our own edit coming back: hand the webview the exact model it sent.
-          text = ctx.echo.json;
-          model = normalizeModel(JSON.parse(text));
-        } else {
-          model = xmi.trim() ? fromXmi(xmi) : defaultModel(basename(document.uri.path, '.fsm'));
-          text = JSON.stringify(model, null, 2) + '\n';
+      let error: string | undefined;
+      let problems: Problem[] | undefined;
+      if (s.problems || !s.json) {
+        problems = s.problems;
+        error = 'This file is not a valid state machine file:';
+      } else {
+        try {
+          const model = normalizeModel(JSON.parse(text!));
+          machines = await this.listMachines(document.uri);
+          submachines = await this.resolveSubmachines(document.uri, model, machines);
+          issues = validate(model, submachines);
+        } catch (e) {
+          error = e instanceof Error ? e.message : String(e);
         }
-        machines = await this.listMachines(document);
-        submachines = await this.resolveSubmachines(document, model, machines);
-        issues = validate(model, submachines);
-      } catch (e) {
-        error = e instanceof Error ? e.message : String(e);
       }
-      if (current !== generation || disposed) return; // a newer sync is on its way, or the editor is gone
-      // The document changed meanwhile, or the webview's edit is on its way to it: posting this older text would
-      // take the webview back to it. The change syncs again (the edit once applied).
-      if (ctx.pending) return;
-      if (document.getText() !== xmi) {
+      if (current !== generation || disposed) return;
+      // The document changed meanwhile: posting this older state would take the webview back to it.
+      if (document.state !== s || (document.displayJson ?? s.json) !== text) {
         scheduleSync();
         return;
       }
-      this.publishDiagnostics(document, issues, error);
-      void panel.webview.postMessage({ type: 'update', text, issues, error, submachines, machines });
+      this.publishDiagnostics(document, issues, problems);
+      void panel.webview.postMessage({ type: 'update', text, issues, error, problems, submachines, machines, readonly: document.readonly, mergeFallback: document.mergeFallback });
+      while (notices.length) void panel.webview.postMessage({ type: 'toast', message: notices.shift() });
     };
     const scheduleSync = () => {
       if (disposed) return;
@@ -141,17 +697,57 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
     this.diagrams.add(diagram);
 
     const subs: vscode.Disposable[] = [
+      document.changed.event(scheduleSync),
       panel.onDidChangeViewState((e) => {
         if (e.webviewPanel.active) this.active = { panel, document };
         else if (this.active?.panel === panel) this.active = undefined;
       }),
-      panel.webview.onDidReceiveMessage((msg) => this.onMessage(msg, ctx)),
+      panel.webview.onDidReceiveMessage((msg) => this.onMessage(msg, document, panel)),
     ];
     if (panel.active) this.active = { panel, document };
+    // An old file is converted when saved, a conflicted one resolved. Opening it changes nothing (it isn't marked
+    // changed, so auto save doesn't write it): saving it does.
+    if (document.old && !document.readonly) {
+      notices.push('This file is in the old format (XMI): saving it writes the new format, a .fsm model file and a .fsm.layout layout file, and converts the files linked to it by submachines.');
+    }
+    if (document.layoutConflict && !document.readonly) {
+      notices.push('The layout file has merge conflicts: the diagram uses the current positions, and saving writes a clean layout file.');
+    }
+
+    // Diff and merge: this diagram as a pane.
+    const pane: Pane = {
+      panel,
+      uri: document.uri,
+      writable: !document.readonly,
+      model: () => {
+        const json = document.displayJson ?? document.state.json;
+        return json ? normalizeModel(JSON.parse(json)) : undefined;
+      },
+      post: (msg) => void panel.webview.postMessage(msg),
+    };
+    this.panes.add(pane);
+    subs.push(document.changed.event(() => pane.session?.update()));
+    if (document.merge && !document.readonly) this.openMerge(document, pane);
+    else if (document.uri.scheme === MergeFiles.scheme) {
+      const [, id, role] = document.uri.path.split('/');
+      const merge = [...this.merges.values()].find((m) => m.session.id === id);
+      merge?.session.attach(pane, role === 'Incoming' ? 'incoming' : 'current');
+    } else this.pairSoon();
 
     panel.onDidDispose(() => {
       if (timer) clearTimeout(timer);
       disposed = true;
+      const session = pane.session;
+      session?.remove(pane);
+      // The diff is over: its older version is drawn with its own layout again.
+      if (session instanceof DiffSession) {
+        const other = this.documents.get((pane === session.older ? session.newer : session.older).uri.toString());
+        if (other?.displayJson !== undefined) {
+          other.displayJson = undefined;
+          other.changed.fire();
+        }
+      }
+      this.panes.delete(pane);
       this.resyncs.delete(scheduleSync);
       this.webviews.delete(webview);
       this.diagrams.delete(diagram);
@@ -160,12 +756,13 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
     });
   }
 
-  private async onMessage(msg: any, ctx: EditorContext) {
-    const { document } = ctx;
+  private async onMessage(msg: any, document: FsmDocument, panel: vscode.WebviewPanel) {
+    const webview = panel.webview;
+    const toast = (message: string) => void webview.postMessage({ type: 'toast', message });
     switch (msg?.type) {
       case 'ready':
-        ctx.sync();
-        void ctx.webview.postMessage({ type: 'trace', highlight: this.traceHighlights.get(document.uri.toString()) ?? null });
+        document.changed.fire();
+        void webview.postMessage({ type: 'trace', highlight: this.highlightFor(document) });
         break;
       case 'panels': {
         const panels: PanelState = { toolbox: msg.panels?.toolbox !== false, props: msg.panels?.props !== false };
@@ -175,31 +772,35 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
       }
       case 'edit': {
         if (typeof msg.text !== 'string') break;
-        let xmi: string;
-        try {
-          xmi = toXmi(JSON.parse(msg.text));
-        } catch (e) {
-          void vscode.window.showErrorMessage(`The change could not be saved: ${e instanceof Error ? e.message : e}`);
+        const problem = this.edit(document, msg.text);
+        if (problem) {
+          toast(problem);
           // Back to what the document holds.
-          ctx.sync();
-          break;
-        }
-        ctx.echo = { xmi, json: msg.text };
-        if (xmi !== document.getText()) {
-          const edit = new vscode.WorkspaceEdit();
-          edit.replace(document.uri, new vscode.Range(0, 0, document.lineCount, 0), xmi);
-          ctx.pending++;
-          try {
-            await vscode.workspace.applyEdit(edit);
-          } finally {
-            ctx.pending--;
-            ctx.sync();
-          }
+          document.changed.fire();
         }
         break;
       }
       case 'command':
         if (WEBVIEW_COMMANDS.has(msg.command)) await vscode.commands.executeCommand(msg.command);
+        break;
+      case 'view':
+      case 'diffNav':
+      case 'diffGo':
+      case 'diffLayout':
+      case 'mergeChoose':
+      case 'mergeAll':
+      case 'mergeComplete': {
+        const p = [...this.panes].find((x) => x.panel === panel);
+        if (p?.session) await p.session.message(p, msg);
+        break;
+      }
+      case 'mergeText':
+        // VS Code's text merge editor (Git's), else the text editor with its conflict decorations.
+        try {
+          await vscode.commands.executeCommand('git.openMergeEditor', document.uri);
+        } catch {
+          await vscode.commands.executeCommand('vscode.openWith', document.uri, 'default');
+        }
         break;
       case 'svg':
       case 'png': {
@@ -209,13 +810,13 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
         break;
       }
       case 'openSubmachine':
-        await this.openSubmachine(document, String(msg.href ?? ''));
+        await this.openSubmachine(document.uri, String(msg.href ?? ''));
         break;
       case 'extractCheck':
-        void ctx.webview.postMessage({ type: 'extractCheck', requestId: msg.requestId, problem: this.extractProblem(document, msg.text, msg.ids) });
+        void webview.postMessage({ type: 'extractCheck', requestId: msg.requestId, problem: this.extractProblem(document, msg.text, msg.ids) });
         break;
       case 'extract':
-        if (typeof msg.text === 'string' && Array.isArray(msg.ids)) await this.extract(ctx, msg.text, msg.ids.map(String));
+        if (typeof msg.text === 'string' && Array.isArray(msg.ids)) await this.extract(document, toast, msg.text, msg.ids.map(String));
         break;
       case 'info':
         void vscode.window.showInformationMessage(String(msg.message));
@@ -225,19 +826,179 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
         if (typeof msg.text === 'string') await vscode.env.clipboard.writeText(msg.text);
         break;
       case 'clipboardRead':
-        void ctx.webview.postMessage({ type: 'clipboard', requestId: msg.requestId, text: await vscode.env.clipboard.readText() });
+        void webview.postMessage({ type: 'clipboard', requestId: msg.requestId, text: await vscode.env.clipboard.readText() });
         break;
+    }
+  }
+
+  /** The diffs and merges open, described (for the tests). */
+  sessionSummary(): string[] {
+    const out = new Set<string>();
+    for (const p of this.panes) {
+      if (p.session instanceof DiffSession) out.add(`diff ${basename(p.session.older.uri.path)} (${p.session.older.uri.scheme}) -> ${basename(p.session.newer.uri.path)} (${p.session.newer.uri.scheme})`);
+      if (p.session instanceof MergeSession) out.add(`merge ${p.session.conflictCount} conflicts, panes: ${[...p.session.sides.keys(), ...[...p.session.results].map(() => 'result')].sort().join(',')}`);
+    }
+    return [...out];
+  }
+
+  /** Diffs asked for (Compare as Diagrams), whose two diagrams are opening: older and newer URI. */
+  private readonly wanted: { older: string; newer: string }[] = [];
+
+  /**
+   * Opens two versions of a machine as a diagram diff: the older one in the active editor group, read-only when its
+   * file system is (Git's), the newer one beside it.
+   */
+  async openDiagramDiff(older: vscode.Uri, newer: vscode.Uri): Promise<void> {
+    const w = { older: older.toString(), newer: newer.toString() };
+    const forget = () => {
+      const i = this.wanted.indexOf(w);
+      if (i >= 0) this.wanted.splice(i, 1);
+    };
+    // Asked twice: once is enough.
+    const known = this.wanted.findIndex((x) => x.older === w.older && x.newer === w.newer);
+    if (known >= 0) this.wanted.splice(known, 1);
+    this.wanted.push(w);
+    try {
+      await vscode.commands.executeCommand('vscode.openWith', older, FsmEditorProvider.viewType, { viewColumn: vscode.ViewColumn.Active, preview: false });
+      await vscode.commands.executeCommand('vscode.openWith', newer, FsmEditorProvider.viewType, { viewColumn: vscode.ViewColumn.Beside, preview: false });
+    } catch (e) {
+      forget();
+      throw e;
+    }
+    this.pairSoon();
+    // Both diagrams are open: a side that didn't open as a diagram never will, and isn't paired later by surprise.
+    setTimeout(forget, 5000);
+  }
+
+  private pairTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Pairs the diffs asked for, soon (their two diagrams resolve one after the other). */
+  private pairSoon() {
+    if (this.pairTimer) clearTimeout(this.pairTimer);
+    this.pairTimer = setTimeout(() => this.pair(), 250);
+  }
+
+  /**
+   * The diffs asked for (Compare as Diagrams), whose sides are known: their two diagrams, wherever they are, become a
+   * diagram diff, the older version on the left. Nothing else is paired, so a side is never guessed.
+   */
+  private pair() {
+    for (const w of [...this.wanted]) {
+      const older = [...this.panes].reverse().find((p) => !p.session && p.uri.toString() === w.older);
+      const newer = [...this.panes].reverse().find((p) => !p.session && p.uri.toString() === w.newer && p !== older);
+      if (!older || !newer) continue;
+      this.wanted.splice(this.wanted.indexOf(w), 1);
+      this.startDiff(older, newer);
+    }
+  }
+
+  private startDiff(older: Pane, newer: Pane) {
+    // An older version without its layout file borrows the newer one's, for the elements with the same names.
+    const doc = this.documents.get(older.uri.toString());
+    const newerDoc = this.documents.get(newer.uri.toString());
+    if (doc && newerDoc && doc.layoutMissing && !doc.old && newerDoc.state.layoutText !== undefined) {
+      const read = readMachine(doc.state.modelText, newerDoc.state.layoutText);
+      if (!('problems' in read)) {
+        doc.displayJson = JSON.stringify(read.model);
+        doc.changed.fire();
+        older.post({ type: 'toast', message: 'This version has no layout file: its elements are drawn where the newer version has them.' });
+      }
+    }
+    new DiffSession(older, newer).update();
+  }
+
+  /**
+   * Opens the diagram merge of a document with conflicts: its two sides beside it (incoming, then current), read-only,
+   * and the document as the result.
+   */
+  private openMerge(doc: FsmDocument, pane: Pane) {
+    const known = this.merges.get(doc.uri.toString());
+    let merge = known?.doc === doc ? known.session : undefined;
+    if (!merge) {
+      if (known) this.endMerge(doc.uri, known.session);
+      const id = `m${++this.mergeSeq}`;
+      const m = doc.merge!;
+      const read = (t: Texts) => {
+        const r = readMachine(t.model, t.layout);
+        return 'problems' in r ? undefined : r.model;
+      };
+      const session: MergeSession = new MergeSession(id, m.current, m.incoming, m.base, {
+        read,
+        edit: (model, label) => this.edit(doc, JSON.stringify(model), label),
+        state: () => doc.state,
+        complete: async () => {
+          // Saved as VS Code saves it (the editor's dirty mark goes away); without workspace.save (before VS Code
+          // 1.86), or with nothing chosen (no changes to save: the file still has its markers), written directly.
+          const save = (vscode.workspace as unknown as { save?: (u: vscode.Uri) => Thenable<vscode.Uri | undefined> }).save;
+          try {
+            if (save && doc.dirty) {
+              if (!(await save(doc.uri))) throw new Error('it was not saved');
+            } else await this.saveCustomDocument(doc, new vscode.CancellationTokenSource().token);
+          } catch (e) {
+            if (e instanceof vscode.CancellationError) return;
+            void vscode.window.showErrorMessage(`${basename(doc.uri.path)}: the merge could not be completed, ${e instanceof Error ? e.message : e}. The file keeps its conflicts.`);
+            return;
+          }
+          await this.markResolved(doc.uri);
+          doc.merge = undefined;
+          this.endMerge(doc.uri, session);
+          for (const p of session.results) {
+            p.session = undefined;
+            p.post({ type: 'diff', diff: null });
+          }
+          void vscode.window.showInformationMessage(`${basename(doc.uri.path)}: merge completed.`);
+        },
+      }, () => {
+        const json = doc.state.json;
+        return json ? normalizeModel(JSON.parse(json)) : undefined;
+      });
+      merge = session;
+      this.merges.set(doc.uri.toString(), { session, doc });
+      const name = basename(doc.uri.path);
+      for (const [role, t] of [['Incoming', m.incoming], ['Current', m.current]] as const) {
+        this.mergeFiles.set(`/${id}/${role}/${name}`, encodeText(t.model));
+        if (t.layout !== undefined) this.mergeFiles.set(`/${id}/${role}/${name}.layout`, encodeText(t.layout));
+      }
+      const open = (role: string) =>
+        vscode.commands.executeCommand('vscode.openWith', vscode.Uri.from({ scheme: MergeFiles.scheme, path: `/${id}/${role}/${name}` }), FsmEditorProvider.viewType, { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true });
+      void open('Incoming').then(() => open('Current'));
+      if (!merge.conflictCount) pane.post({ type: 'toast', message: 'The two sides of the conflicts describe the same machine.' });
+    }
+    merge.attach(pane, 'result');
+  }
+
+  /** Forgets a merge: its side panes close, and its files go. */
+  private endMerge(uri: vscode.Uri, session: MergeSession) {
+    if (this.merges.get(uri.toString())?.session === session) this.merges.delete(uri.toString());
+    for (const p of [...this.panes]) if (p.uri.scheme === MergeFiles.scheme && p.uri.path.startsWith(`/${session.id}/`)) p.panel.dispose();
+    this.mergeFiles.drop(`/${session.id}/`);
+  }
+
+  /** Marks a file and its layout file resolved in Git (staged), when the Git extension is there. */
+  private async markResolved(uri: vscode.Uri) {
+    try {
+      const git = vscode.extensions.getExtension('vscode.git');
+      const api = git && (git.isActive ? git.exports : await git.activate())?.getAPI?.(1);
+      const repo = api?.getRepository?.(uri);
+      if (!repo) return;
+      const layout = layoutUriOf(uri);
+      let hasLayout = true;
+      try {
+        await vscode.workspace.fs.stat(layout);
+      } catch {
+        hasLayout = false;
+      }
+      await repo.add(hasLayout ? [uri.fsPath, layout.fsPath] : [uri.fsPath]);
+    } catch (e) {
+      void vscode.window.showWarningMessage(`The merge was saved, but could not be marked resolved in Git: ${e instanceof Error ? e.message : e}`);
     }
   }
 
   /**
    * Extract to Submachine: moves the selected elements (`ids` of the webview's model `text`) into a new
-   * state machine file next to the document, and puts a submachine state referencing it in their place.
-   * One workspace edit creates the file and changes the document, so undo takes back both.
+   * state machine next to the document (its two files), and puts a submachine state referencing it in their place:
+   * an edit of the document, which undo takes back (the new files stay).
    */
-  private async extract(ctx: EditorContext, text: string, ids: string[]) {
-    const { document } = ctx;
-    const toast = (message: string) => void ctx.webview.postMessage({ type: 'toast', message });
+  private async extract(document: FsmDocument, toast: (m: string) => void, text: string, ids: string[]) {
     // The context menu only offers it after the same check; the model may have changed since.
     const problem = this.extractProblem(document, text, ids);
     if (problem) {
@@ -262,41 +1023,43 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
       prompt: 'Name of the new state machine, saved next to this one',
       value,
       validateInput: async (v) =>
-        !/^[\w .-]+$/.test(v) ? 'Use letters, digits, spaces, dots, dashes or underscores.'
-          : (await exists(fileOf(v))) ? `${v}.fsm already exists.`
-            : undefined,
+        !/^[\w-]+$/.test(v) ? 'Use letters, digits, dashes or underscores.'
+          : namesInside(model, ids).has(v) ? `An element of the new machine is named ${v}: names are unique in a machine.`
+            : (await exists(fileOf(v))) ? `${v}.fsm already exists.`
+              : undefined,
     });
     if (!name) return;
     const uri = fileOf(name);
-    const { parent, machine } = extractSubmachine(model, ids, name, `${encodeHref(name)}.fsm#sm`);
-    let machineXmi: string;
-    let parentXmi: string;
+    const { parent, machine } = extractSubmachine(model, ids, name, `${name}.fsm`);
+    const parentText = JSON.stringify(parent);
+    let sub: DocState;
     try {
-      machineXmi = toXmi(machine);
-      parentXmi = toXmi(parent);
+      sub = stateOfModel(machine);
+      // The parent's edit, checked before anything is written.
+      stateOfModel(normalizeModel(JSON.parse(parentText)));
     } catch (e) {
-      toast(e instanceof Error ? e.message : String(e));
+      toast(`The change can't be saved: ${e instanceof Error ? e.message : e}`);
       return;
     }
-    const contents = encodeText(machineXmi);
-    const edit = new vscode.WorkspaceEdit();
-    const metadata = { label: 'Extract to Submachine', needsConfirmation: false };
-    edit.createFile(uri, { contents }, metadata);
-    edit.replace(document.uri, new vscode.Range(0, 0, document.lineCount, 0), parentXmi, metadata);
-    if (!(await vscode.workspace.applyEdit(edit))) {
-      toast(`${name}.fsm could not be created.`);
+    // The new machine's files first: the parent references a file that exists.
+    try {
+      await vscode.workspace.fs.writeFile(uri, encodeText(sub.modelText));
+      await vscode.workspace.fs.writeFile(layoutUriOf(uri), encodeText(sub.layoutText!));
+    } catch (e) {
+      void vscode.window.showErrorMessage(`Extract to Submachine: ${name}.fsm could not be written (${e instanceof Error ? e.message : e}). Nothing was changed.`);
       return;
     }
-    // VS Code versions without file contents in workspace edits create an empty file.
-    if ((await vscode.workspace.fs.stat(uri)).size === 0) await vscode.workspace.fs.writeFile(uri, contents);
+    const problemAfter = this.edit(document, parentText, 'Extract to Submachine');
+    if (problemAfter) toast(problemAfter);
   }
 
   /** Why the selected `ids` of the webview's model `text` can't be extracted to a submachine, or undefined when they can. */
-  private extractProblem(document: vscode.TextDocument, text: unknown, ids: unknown): string | undefined {
-    if (document.isUntitled) return 'Save the state machine first: the submachine goes in a file next to it.';
+  private extractProblem(document: FsmDocument, text: unknown, ids: unknown): string | undefined {
+    if (document.uri.scheme === 'untitled') return 'Save the state machine first: the submachine goes in a file next to it.';
+    if (document.readonly) return 'This diagram is read-only.';
     try {
       if (typeof text !== 'string' || !Array.isArray(ids)) throw new Error('no selection');
-      extractSubmachine(normalizeModel(JSON.parse(text)), ids.map(String), 'Submachine', 'Submachine.fsm#sm');
+      extractSubmachine(normalizeModel(JSON.parse(text)), ids.map(String), 'Submachine', 'Submachine.fsm');
       return undefined;
     } catch (e) {
       return e instanceof ExtractError ? e.message : `The selection can't be extracted: ${e instanceof Error ? e.message : e}`;
@@ -309,9 +1072,33 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
     this.traceHighlights = highlights;
     for (const { document, webview } of this.diagrams) {
       const key = document.uri.toString();
-      const h = highlights.get(key) ?? null;
-      if (JSON.stringify(h) !== JSON.stringify(before.get(key) ?? null)) void webview.postMessage({ type: 'trace', highlight: h });
+      if (JSON.stringify(highlights.get(key) ?? null) !== JSON.stringify(before.get(key) ?? null)) {
+        void webview.postMessage({ type: 'trace', highlight: this.highlightFor(document) });
+      }
     }
+  }
+
+  /**
+   * The Trace Player's highlights of a document, with the ids of its diagram: the trace's ids are those reading the
+   * file gives (see `derivedIds`), which elements created since the file was read, and an old file's (by their
+   * xmi:ids, until it is saved converted), don't have.
+   */
+  private highlightFor(document: FsmDocument): TraceView | null {
+    const h = this.traceHighlights.get(document.uri.toString());
+    if (!h || !document.state.json) return h ?? null;
+    const json = document.state.json;
+    let back = this.stateIds.get(document.state)?.json === json ? this.stateIds.get(document.state)!.back : undefined;
+    if (!back) {
+      try {
+        const derived = derivedIds(normalizeModel(JSON.parse(json)));
+        back = new Map([...derived].map(([own, d]) => [d, own]));
+      } catch {
+        return h;
+      }
+      this.stateIds.set(document.state, { json, back });
+    }
+    const map = (ids: string[]) => ids.map((id) => back.get(id) ?? id);
+    return { ...h, instances: h.instances.map((i) => ({ ...i, active: map(i.active), taken: map(i.taken), via: map(i.via), current: map(i.current) })) };
   }
 
   /** Asks the active diagram to render itself as a standalone SVG. */
@@ -338,12 +1125,31 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
     });
   }
 
-  /** Name, id and connection points of the state machine in `uri`, or null when it cannot be read. */
+  /**
+   * Name and connection points of the state machine in `uri`, or null when it cannot be read: an open diagram's
+   * (possibly unsaved) model, else an open text document's (possibly unsaved) text, else the file on disk. An old
+   * file's are its names once converted, which the references of a converted file use.
+   */
   private async summaryOf(uri: vscode.Uri): Promise<MachineSummary | null> {
+    const doc = this.documents.get(uri.toString());
+    if (doc) {
+      const s = doc.state;
+      if (!this.stateSummaries.has(s)) {
+        let summary: MachineSummary | null = null;
+        try {
+          const m = s.json ? normalizeModel(JSON.parse(s.json)) : undefined;
+          if (m) summary = { name: m.name, points: machineConnectionPoints(m) };
+        } catch {
+          summary = null;
+        }
+        this.stateSummaries.set(s, summary);
+      }
+      return this.stateSummaries.get(s)!;
+    }
     const open = vscode.workspace.textDocuments.find((d) => d.uri.toString() === uri.toString());
     let key: string;
     try {
-      key = open ? `v${open.version}` : `m${(await vscode.workspace.fs.stat(uri)).mtime}`;
+      key = open ? `t${open.version}` : `m${(await vscode.workspace.fs.stat(uri)).mtime}`;
     } catch {
       return null; // missing file
     }
@@ -351,90 +1157,95 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
     if (cached && cached.key === key) return cached.summary;
     let summary: MachineSummary | null = null;
     try {
-      // Prefer the open (possibly unsaved) document over the file on disk.
-      const text = open ? open.getText() : decodeText(await vscode.workspace.fs.readFile(uri));
-      const m = fromXmi(text);
-      summary = { id: m.id ?? 'sm', name: m.name, points: machineConnectionPoints(m) };
-    } catch {
+      const text = (await this.readText(uri)) ?? '';
+      let m: FsmModel;
+      if (isOldFormat(text)) {
+        const converted = convertGroup([{ path: uri.path, text }])[0];
+        if (converted.error) throw new LoadError(converted.error);
+        m = converted.model;
+      } else {
+        // Names and points only: no layout to apply.
+        const read = readModel(text);
+        if ('problems' in read) throw new LoadError(read.problems[0].message);
+        m = read.model;
+      }
+      summary = { name: m.name, points: machineConnectionPoints(m) };
+    } catch (e) {
+      if (!(e instanceof LoadError) && !(e instanceof SyntaxError)) throw e;
       summary = null;
     }
     this.summaries.set(uri.toString(), { key, summary });
     return summary;
   }
 
-  /** href of `target` as seen from `document`, e.g. `sub/Payment.fsm`. */
-  private relative(document: vscode.TextDocument, target: vscode.Uri): string {
-    return relative(dirname(document.uri.path), target.path);
+  /** Where a document's submachine path leads (for a Git version, the same version of that file). */
+  private resolvePath(uri: vscode.Uri, path: string): vscode.Uri {
+    const at = this.location(uri);
+    return uriWithPath(at, vscode.Uri.joinPath(at, '..', path).path);
   }
 
-  private resolveHref(document: vscode.TextDocument, href: string): { uri: vscode.Uri; id: string } {
-    const [file, id = ''] = href.split('#');
-    return { uri: vscode.Uri.joinPath(this.location(document), '..', decodeHref(file)), id };
-  }
-
-  /** Where `document` is, or for an untitled one, where it will be saved (its path in the workspace's file system). */
-  private location(document: vscode.TextDocument): vscode.Uri {
+  /** Where `uri` is, or for an untitled document, where it will be saved (its path in the workspace's file system). */
+  private location(uri: vscode.Uri): vscode.Uri {
     const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
-    return document.isUntitled && folder ? document.uri.with({ scheme: folder.scheme, authority: folder.authority }) : document.uri;
+    return uri.scheme === 'untitled' && folder ? uri.with({ scheme: folder.scheme, authority: folder.authority }) : uri;
   }
 
-  /** State machines in the workspace that `document` can use as submachines. */
-  private async listMachines(document: vscode.TextDocument): Promise<MachineInfo[]> {
+  /** State machines in the workspace that the document can use as submachines. */
+  private async listMachines(uri: vscode.Uri): Promise<MachineInfo[]> {
+    if (!vscode.workspace.workspaceFolders?.length) return [];
     const uris = await vscode.workspace.findFiles('**/*.fsm', '**/node_modules/**', 500);
     const out: MachineInfo[] = [];
-    for (const uri of uris) {
-      if (uri.toString() === document.uri.toString()) continue;
-      const s = await this.summaryOf(uri);
+    for (const u of uris) {
+      if (u.toString() === uri.toString()) continue;
+      const s = await this.summaryOf(u);
       if (!s) continue;
-      out.push({ href: `${encodeHref(this.relative(document, uri))}#${s.id}`, name: s.name, file: vscode.workspace.asRelativePath(uri), points: s.points });
+      out.push({ href: relative(dirname(this.location(uri).path), u.path), name: s.name, file: vscode.workspace.asRelativePath(u), points: s.points });
     }
     return out.sort((a, b) => a.name.localeCompare(b.name));
   }
 
   /** Reads the machines referenced by submachine states, to learn their names and connection points. */
-  private async resolveSubmachines(document: vscode.TextDocument, model: FsmModel, machines: MachineInfo[]): Promise<SubmachineInfo> {
-    const hrefs = new Set(model.vertices.filter((v) => v.type === 'state' && v.submachine).map((v) => v.submachine!));
+  private async resolveSubmachines(uri: vscode.Uri, model: FsmModel, machines: MachineInfo[]): Promise<SubmachineInfo> {
+    const paths = new Set(model.vertices.filter((v) => v.type === 'state' && v.submachine).map((v) => v.submachine!));
     const info: SubmachineInfo = {};
-    for (const href of hrefs) {
-      const known = machines.find((m) => m.href === href);
+    for (const path of paths) {
+      const known = machines.find((m) => m.href === path);
       if (known) {
-        info[href] = { found: true, name: known.name, file: known.file, points: known.points };
+        info[path] = { found: true, name: known.name, file: known.file, points: known.points };
         continue;
       }
       // Outside the workspace, or written with a different relative path.
-      const { uri, id } = this.resolveHref(document, href);
-      const s = await this.summaryOf(uri);
-      info[href] = s && s.id === id
-        ? { found: true, name: s.name, file: vscode.workspace.asRelativePath(uri), points: s.points }
-        : { found: false, points: [] };
+      const target = this.resolvePath(uri, path);
+      const s = await this.summaryOf(target);
+      info[path] = s ? { found: true, name: s.name, file: vscode.workspace.asRelativePath(target), points: s.points } : { found: false, points: [] };
     }
     return info;
   }
 
-  private async openSubmachine(document: vscode.TextDocument, href: string) {
-    if (!href) return;
-    const { uri } = this.resolveHref(document, href);
+  private async openSubmachine(from: vscode.Uri, path: string) {
+    if (!path) return;
+    const uri = this.resolvePath(from, path);
     try {
       await vscode.workspace.fs.stat(uri);
     } catch {
-      void vscode.window.showErrorMessage(`The referenced state machine file ${href.split('#')[0]} does not exist.`);
+      void vscode.window.showErrorMessage(`The referenced state machine file ${path} does not exist.`);
       return;
     }
     await vscode.commands.executeCommand('vscode.openWith', uri, FsmEditorProvider.viewType);
   }
 
-  private publishDiagnostics(document: vscode.TextDocument, issues: Issue[], error?: string) {
-    const text = document.getText();
+  private publishDiagnostics(document: FsmDocument, issues: Issue[], problems?: Problem[]) {
+    if (document.uri.scheme !== 'file' && document.uri.scheme !== 'untitled' && document.uri.scheme !== vscode.workspace.workspaceFolders?.[0]?.uri.scheme) return;
+    const s = document.state;
+    const old = document.old;
+    const lineRange = (line: number) => new vscode.Range(Math.max(0, line - 1), 0, Math.max(0, line - 1), Number.MAX_SAFE_INTEGER);
     const rangeOf = (id: string) => {
-      if (id) {
-        const at = text.indexOf(`xmi:id="${id}"`);
-        const idx = at >= 0 ? at : text.indexOf(`"${id}"`);
-        if (idx >= 0) {
-          const start = document.positionAt(idx);
-          return new vscode.Range(start, document.lineAt(start.line).range.end);
-        }
+      if (old) {
+        // The old file, by its xmi:ids.
+        const at = id ? old.text.indexOf(`xmi:id="${id}"`) : -1;
+        return lineRange(at >= 0 ? old.text.slice(0, at).split('\n').length : 1);
       }
-      return new vscode.Range(0, 0, 0, 0);
+      return lineRange(s.lines.get(id) ?? 1);
     };
     const severity = {
       error: vscode.DiagnosticSeverity.Error,
@@ -446,7 +1257,11 @@ export class FsmEditorProvider implements vscode.CustomTextEditorProvider {
       d.source = 'fsm';
       return d;
     });
-    if (error) list.push(new vscode.Diagnostic(new vscode.Range(0, 0, 0, 0), error, vscode.DiagnosticSeverity.Error));
+    for (const p of problems ?? []) {
+      const d = new vscode.Diagnostic(lineRange(p.line), p.message, vscode.DiagnosticSeverity.Error);
+      d.source = 'fsm';
+      list.push(d);
+    }
     this.diagnostics.set(document.uri, list);
   }
 

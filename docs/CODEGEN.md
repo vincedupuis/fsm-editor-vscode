@@ -14,7 +14,7 @@ FSM Editor turns `.fsm` state machines into source code with [Jinja](https://jin
 ## How it works
 
 ```
-.fsm (XMI) ──read──▶ model ──validate──▶ code model ──render──▶ files
+.fsm (JSON) ──read──▶ model ──validate──▶ code model ──render──▶ files
 ```
 
 1. The generator **reads** the files. Machines used by submachine states are read too, to validate them and to learn their events and connection points, but only the files you give are generated.
@@ -75,7 +75,7 @@ order.isIn('Payment');   // true
 order.activeStates;      // ['Payment']
 ```
 
-- **Actions:** every function called by an entry, exit or effect behavior is a `void` method of the actions interface. Every function called by a guard, invariant or pre/postcondition is a `boolean` method.
+- **Actions:** every function called by an entry, exit or transition action behavior is a `void` method of the actions interface. Every function called by a guard, invariant or pre/postcondition is a `boolean` method.
 - **Do activities** `do / blinkLed()` become `startBlinkLed()` and `stopBlinkLed()`. Call `machine.activityDone('blinkLed')` when an activity ends by itself. A state with do activities completes when all of them have ended. An activity listed twice in one `do` is started, stopped and awaited once.
 - **Time events** `after(5m)` use `setTimeout`. Pass `{ clock }` to control time in tests.
 - **Submachines:** each machine gets its own class. `OrderActions.submachines.Payment` gives the actions of the `Payment` submachine state. The parent routes events to the running submachine and follows its exit points. `Order.ts` imports `Payment.ts`, so generate `Payment.fsm` too, for example with `fsm write "models/*.fsm" …`.
@@ -121,14 +121,14 @@ order.activeStates();                  // {OrderState::Payment}
 - **Other methods:** `startMachineAt(point)` enters through an entry point, `stopMachine()` leaves every state, `resumeMachine()` re-enters what was active when it was stopped. `setListener()` is told when the machine finishes or leaves through an exit point, and through `Listener::onTrace()` what the machine does (see [Tracing](#tracing)). They are named so that they don't clash with events such as `start` or `stop`.
 - Identifiers that are C++ keywords get a `_` suffix.
 
-Boost.SML runs the transition tables: one per composite state, with a `*` initial state per region, and the machine's own. The runtime around them gives the machine UML's semantics where Boost.SML's differ: the event queue, completion events (processed before other events), deferred events (dispatched again after the next state change, after the completion events), timers, constraints and submachines. Boost.SML has no counterpart for some UML features; the template works around them, keeping the order of exits, effects and entries, and prints a warning for each:
+Boost.SML runs the transition tables: one per composite state, with a `*` initial state per region, and the machine's own. The runtime around them gives the machine UML's semantics where Boost.SML's differ: the event queue, completion events (processed before other events), deferred events (dispatched again after the next state change, after the completion events), timers, constraints and submachines. Boost.SML has no counterpart for some UML features; the template works around them, keeping the order of exits, transition actions and entries, and prints a warning for each:
 
 | UML | Generated code |
 | --- | --- |
 | Transition leaving a composite state from one of its substates, exit point, join | The substate takes the event, then the table of the composite state being left takes an internal event that continues the transition. A join's sources check, when they complete, that the others have completed. |
 | Transition entering a nested state, entry point, fork, history | Every region starts in an initial pseudostate whose anonymous transitions enter the region by default, follow the route set by the transition, or restore the region's last active state (shallow or deep). |
 | Local transition | A transition of each substate of the composite state, which leaves the active substate but not the composite state. |
-| Orthogonal regions reacting to the same event | Boost.SML fires the transitions region after region, so a later region's guards see the earlier regions' effects (UML selects them all first). This is the one difference in behavior, hence the warning. |
+| Orthogonal regions reacting to the same event | Boost.SML fires the transitions region after region, so a later region's guards see the earlier regions' actions (UML selects them all first). This is the one difference in behavior, hence the warning. |
 
 What it cannot express stops the generation with an error, and nothing is written: a transition between top-level regions, a local transition of a state with several regions, and names that would not compile (an event named like a method of the generated class, a function used both as a behavior and as a condition).
 
@@ -139,8 +139,8 @@ Both templates report what the machine does through a hook, always generated and
 | Argument | |
 | --- | --- |
 | `machine` | The machine's name. For a submachine, followed by the submachine states leading to it: `Order.Payment`. |
-| `kind` | `event` (an event or time event is processed), `enter` (a state is entered, before its entry behavior), `exit` (a state was left, after its exit behavior), `transition` (a transition is taken, before its effect). |
-| `id` | The xmi:id of the state or transition; for an event, its name. |
+| `kind` | `event` (an event or time event is processed), `enter` (a state is entered, before its entry behavior), `exit` (a state was left, after its exit behavior), `transition` (a transition is taken, before its action). |
+| `id` | The id of the state or transition in its `.fsm` file, derived from the names (see the file format in [fsm-cli's README](https://github.com/vincedupuis/fsm-cli#ids)): a state's name (`Off`), a transition's source and position among its transitions (`Off#1`, `On.fault#1`, `MediaPlayer.initial#1`); for an event, its name. |
 | `name` | The name of the state, the transition (`Cart -> Payment (checkout)`) or the event. |
 
 A compound transition reports each of its transitions: through junctions and choices, the branches taken. Writing them as lines in the Trace Player's built-in format, `fsm <machine> <kind> <id> <name>` after a timestamp, lets FSM Editor replay the log on the diagrams (see the [README](../README.md#trace-player)):
@@ -188,7 +188,7 @@ Top level:
 
 | Field | |
 | --- | --- |
-| `machine` | `name` (identifier), `displayName`, `id`, `kind` (`behavioral`/`protocol`), `protocol`, `context`, `documentation`, `sourceFile`, `modelHash` (the hash of the model in the `.fsm` file, without its layout: see the file format in [UML-CONFORMANCE.md](UML-CONFORMANCE.md#file-format)) |
+| `machine` | `name` (identifier), `displayName`, `kind` (`behavioral`/`protocol`), `protocol`, `documentation`, `sourceFile`, `modelHash` (the hash of the model in the `.fsm` file, without its layout: see the file format in [UML-CONFORMANCE.md](UML-CONFORMANCE.md#file-format)) |
 | `states` | All states and final states, depth first ([below](#states)). |
 | `regions`, `topRegions` | `index`, `name`, `displayName`, `top`, `owner`/`ownerIndex` (-1 at the top), `states`, `defaultSteps` (the initial transition; empty when the region has no initial pseudostate) |
 | `events` | Named events: `name`, `index`, `signalIndex`, `own` (false when only a submachine handles it) |
@@ -196,7 +196,7 @@ Top level:
 | `signals` | Events then timers, numbered from 0: `name`, `index`, `kind` (`event`/`timer`) |
 | `actions`, `conditions`, `activities` | Names of the functions called by behaviors, by conditions, and by do activities. |
 | `transitions` | Everything that can fire: `index`, `id` (of the UML transition, or of the join), `name`, `label`, `kind` (`external`/`internal`/`local`/`join`/`exitPoint`), `source`/`sourceIndex`, `steps`, `via` (the pseudostates it goes through, in order: `kind`, `name`, `id`; those of its own way through junctions, and those of every branch of its choices) |
-| `submachines` | Distinct machines used by submachine states: `name`, `href`, `events`, `entryPoints` and `exitPoints` (names), `timers` (it uses time events, itself or in its submachines), `states` |
+| `submachines` | Distinct machines used by submachine states: `name`, `href` (the path of its file, as the submachine state writes it), `events`, `entryPoints` and `exitPoints` (names), `timers` (it uses time events, itself or in its submachines), `states` |
 | `entryPoints`, `exitPoints` | The machine's own connection points: `name`, `id`, and `steps` for entry points. |
 | `start` | Steps of the default entry. |
 | `invariants` | The states that have an invariant. |
@@ -209,7 +209,7 @@ References to other elements are `{ name, index }` objects, or a `…Index` numb
 
 | Field | |
 | --- | --- |
-| `index`, `id`, `name`, `displayName` | `id` is the xmi:id. `name` is unique. Duplicate names are qualified with their parents (`On_Idle`), and final states are named `Final`. |
+| `index`, `id`, `name`, `displayName` | `id` is the state's id in the file: its name. `name` is unique (an identifier made from the name). Generated names (ending with `*`) count as no name: final states without a name of their own are named `Final`. |
 | `kind`, `isFinal` | `simple`, `composite`, `submachine`, `final` |
 | `region`/`regionIndex`, `parent`/`parentIndex`, `depth`, `regions` | Position in the hierarchy. |
 | `entry`, `exit` | Steps of the state's own entry: the entry behavior, then starting do activities and timers. Steps of its own exit: stopping the submachine, timers and activities, then the exit behavior. |
@@ -241,15 +241,15 @@ A **condition** is `{ op: "call", name }`, `{ op: "not", arg }`, or `{ op: "and"
 | `exitMachine` | `point` | Leave through the machine's exit point: exit every state, then tell the parent machine. |
 | `terminate` | | Stop the machine without exit behaviors. |
 | `check` | `constraint` (`postcondition`), `element`, `condition` | Report a violation when the condition is false. |
-| `transition` | `id`, `label` | A transition is taken (one of the transitions of a compound transition, before its effect): report it for [tracing](#tracing), or print nothing. |
+| `transition` | `id`, `label` | A transition is taken (one of the transitions of a compound transition, before its action): report it for [tracing](#tracing), or print nothing. |
 
 `exit`, `exitRegion`, `enterRegion` and `restoreHistory` depend on the configuration at run time. They need a small runtime: an active state per region, a history per region, and the tables in the code model. See `ts.jinja`.
 
 ### Transition tables
 
-`tables` is the same machine for frameworks whose transitions stay inside one table, such as Boost.SML: a table per composite state with the transitions between its substates, and one for the machine. Such frameworks can't leave a composite state from a substate or enter a nested state directly, so the tables do it with two mechanisms that keep UML's order of exits, effects and entries:
+`tables` is the same machine for frameworks whose transitions stay inside one table, such as Boost.SML: a table per composite state with the transitions between its substates, and one for the machine. Such frameworks can't leave a composite state from a substate or enter a nested state directly, so the tables do it with two mechanisms that keep UML's order of exits, transition actions and entries:
 
-- **Continuations** (leaving from inside): the substate takes the event without changing state and posts a continuation, a table event that the table of the composite state being left takes right away, once per state left when effects come between the exits.
+- **Continuations** (leaving from inside): the substate takes the event without changing state and posts a continuation, a table event that the table of the composite state being left takes right away, once per state left when actions come between the exits.
 - **Routes** (entering inside): every region starts in an `init` pseudostate whose anonymous rows enter the region by default (route 0), restore its last active state (route 1, deep resume, or the route of a history pseudostate), or follow the route a transition set before entering the composite state.
 
 | Field | |
@@ -276,8 +276,8 @@ The code model and the TypeScript template implement UML run-to-completion seman
 - **Priority:** the innermost states get the event first. A state's own transitions apply only when none of its substates used the event. Orthogonal regions each fire their own transition in the same step. When two selected transitions conflict (the first one fired has left the source of the other), only the first fires.
 - **Completion events** (states entered, do activities ended, all regions final, submachine finished) are processed before the next event. A completion event whose transitions are all disabled is lost.
 - **Deferred events** are kept while a deferring state is active and there is no transition for them. They are dispatched again after the next state change. A deferring state has priority over transitions of the states around it.
-- **Order of actions:** exits from the innermost state outwards, then the transition effects, then entries from the outside in. Other orthogonal regions get their default entry.
-- **Choices** are evaluated when reached, after the exits and effects before them. When no branch is enabled, the generated code throws.
+- **Order of actions:** exits from the innermost state outwards, then the transition actions, then entries from the outside in. Other orthogonal regions get their default entry.
+- **Choices** are evaluated when reached, after the exits and actions before them. When no branch is enabled, the generated code throws.
 - **Junctions** are static: each way through a chain of junctions becomes its own transition whose guard combines all the guards (`else` is the negation of its siblings). A transition fires only when a whole path is enabled.
 - **Forks** enter all their targets, and regions without a target get their default entry. **Joins** fire when all their source states are active and completed (join incoming transitions have no triggers).
 - **History:** shallow history restores the last active substate with default entry below it. Deep history restores all levels, including submachines. A region last left in a final state restores by default.

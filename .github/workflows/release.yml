@@ -10,8 +10,9 @@ on:
     tags: ['v*']
 
 env:
-  # Release of fsm-cli (github.com/vincedupuis/fsm-cli) whose fsm-<version>.wasm and
-  # fsm-templates-<version>.tar.gz the VSIX bundles. test-windows.yml reads it from here.
+  # Release of fsm-cli (github.com/vincedupuis/fsm-cli) whose fsm-<version>.wasm,
+  # fsm-templates-<version>.tar.gz and fsm-schemas-<version>.tar.gz the VSIX bundles, and whose
+  # fsm-cases-<version>.tar.gz the tests use. test-windows.yml reads it from here.
   FSM_CLI_VERSION: 0.6.3
 
 jobs:
@@ -43,10 +44,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download "v$FSM_CLI_VERSION" -R vincedupuis/fsm-cli -p "fsm-$FSM_CLI_VERSION.wasm" -p "fsm-templates-$FSM_CLI_VERSION.tar.gz" -D fsm
+          gh release download "v$FSM_CLI_VERSION" -R vincedupuis/fsm-cli -p "fsm-$FSM_CLI_VERSION.wasm" -p "fsm-*-$FSM_CLI_VERSION.tar.gz" -D fsm
           mv "fsm/fsm-$FSM_CLI_VERSION.wasm" fsm/fsm.wasm
-          tar xzf "fsm/fsm-templates-$FSM_CLI_VERSION.tar.gz" -C fsm
-          rm "fsm/fsm-templates-$FSM_CLI_VERSION.tar.gz"
+          for part in templates schemas cases; do
+            tar xzf "fsm/fsm-$part-$FSM_CLI_VERSION.tar.gz" -C fsm
+            rm "fsm/fsm-$part-$FSM_CLI_VERSION.tar.gz"
+          done
           ls -R fsm
 
       - name: Test

@@ -22,6 +22,17 @@ export function dirname(p: string): string {
   return i <= 0 ? '/' : p.slice(0, i);
 }
 
+/** `rel` resolved against the directory `dir` (absolute, `/`-separated), with `.` and `..` segments resolved. */
+export function joinPath(dir: string, rel: string): string {
+  const out: string[] = [];
+  for (const s of (rel.startsWith('/') ? rel : `${dir}/${rel}`).split('/')) {
+    if (!s || s === '.') continue;
+    if (s === '..') out.pop();
+    else out.push(s);
+  }
+  return '/' + out.join('/');
+}
+
 /** Relative path from directory `from` to `to`, both absolute `/`-separated paths. */
 export function relative(from: string, to: string): string {
   const a = from.split('/').filter(Boolean);
@@ -31,21 +42,13 @@ export function relative(from: string, to: string): string {
   return [...Array(a.length - i).fill('..'), ...b.slice(i)].join('/');
 }
 
-/**
- * The file part of an href: `encodeURI`, plus `#` and `?`, which would otherwise end the path (a file named
- * `a#b.fsm` is `a%23b.fsm`).
- */
-export function encodeHref(path: string): string {
-  return encodeURI(path).replace(/[#?]/g, (c) => (c === '#' ? '%23' : '%3F'));
-}
-
 const RESERVED = ';/:@&=+$,';
 const utf8 = new TextDecoder('utf-8', { fatal: true });
 
 /**
- * `decodeURI` without its URIError: decodes `%XX` escapes (UTF-8), except those of reserved characters
- * (`;/:@&=+$,`; unlike `decodeURI`, `%23` and `%3F` give `#` and `?`, as `encodeHref` writes them), and keeps
- * malformed ones as they are (as fsm-cli does).
+ * `decodeURI` without its URIError, for the submachine hrefs of old files: decodes `%XX` escapes (UTF-8), except
+ * those of reserved characters (`;/:@&=+$,`; unlike `decodeURI`, `%23` and `%3F` give `#` and `?`, as earlier
+ * versions wrote them in file names), and keeps malformed ones as they are.
  */
 export function decodeHref(s: string): string {
   const at = (i: number) => (s[i] === '%' && /^[0-9A-Fa-f]{2}$/.test(s.slice(i + 1, i + 3)) ? parseInt(s.slice(i + 1, i + 3), 16) : -1);

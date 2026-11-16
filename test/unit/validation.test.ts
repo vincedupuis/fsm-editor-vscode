@@ -201,18 +201,23 @@ describe('validation: completion transitions', () => {
   });
 });
 
-describe('validation: region ids', () => {
-  it('reports a region id used again, on the region id', () => {
+describe('validation: names', () => {
+  it('are unique in the machine, follow the name rules, and points are unique on their state', () => {
     const b = machine();
-    const s = b.state('S', 'r_root', {}, 1);
-    b.state('T', 'S_r0');
-    b.model.vertices.find((v) => v.id === s)!.regions![0].id = 'r_root';
-    b.state('U', 'r_root', { id: 'u' }, 1);
-    b.model.vertices.find((v) => v.id === 'u')!.regions![0].id = 'A';
-    const dup = validate(b.model).filter((i) => i.message.startsWith('Duplicate id'));
-    assert.deepEqual(dup.map((i) => [i.id, i.severity, i.message]), [
-      ['r_root', 'error', "Duplicate id 'r_root'."],
-      ['A', 'error', "Duplicate id 'A'."],
+    b.state('S', 'r_root', {}, 2);
+    b.model.vertices.find((v) => v.id === 'S')!.regions!.forEach((r, i) => (r.name = ['A', 'r'][i]));
+    b.state('T.x', 'S_r1');
+    b.vertex('entryPoint', 'S', { id: 'p1', name: 'in' });
+    b.vertex('entryPoint', 'S', { id: 'p2', name: 'in' });
+    b.vertex('exitPoint', 'S', { id: 'p3', name: 'deepHistory' });
+    b.vertex('choice', 'r_root', { id: 'c', name: 'c*x' });
+    const names = validate(b.model).filter((i) => /name/i.test(i.message) && !/can never/.test(i.message));
+    assert.deepEqual(names.map((i) => [i.id, i.message]), [
+      ['S_r0', "Name 'A' is used more than once in the state machine."],
+      ['T.x', "Name 'T.x' cannot contain '.'."],
+      ['p2', "'S' has two points named 'in'."],
+      ['p3', "A point cannot be named 'deepHistory'."],
+      ['c', "Name 'c*x' can contain '*' only as its last character."],
     ]);
   });
 });
@@ -226,7 +231,8 @@ describe('validation: several top-level regions', () => {
     b.state('B', 'r2');
     b.init('B', 'r2');
     b.state('C', 'r3');
-    b.vertex('final', 'r4');
+    b.vertex('final', 'r4', { name: 'F' });
+    b.model.regions.forEach((r, i) => (r.name = `region${i}`));
     const issues = validate(b.model).map((i) => [i.id, i.severity, i.message]);
     assert.deepEqual(issues, [
       ['', 'warning', 'The top-level region has no initial pseudostate.'],
@@ -236,7 +242,8 @@ describe('validation: several top-level regions', () => {
 
   it('warns once per top-level region with states but no initial pseudostate', () => {
     const b = new ModelBuilder('M');
-    b.model.regions.push({ id: 'r2', name: '' });
+    b.model.regions.push({ id: 'r2', name: 'r2' });
+    b.model.regions[0].name = 'r1';
     b.state('A');
     b.state('B', 'r2');
     assert.deepEqual(

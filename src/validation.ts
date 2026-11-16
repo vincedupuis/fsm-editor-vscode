@@ -1,10 +1,11 @@
 import * as expr from '../media/expressions';
-import { FsmModel, ModelIndex, PSEUDOSTATES, SubmachineInfo, Vertex } from './model';
+import { unresolved } from './format';
+import { FsmModel, ModelIndex, PSEUDOSTATES, Region, SubmachineInfo, Vertex } from './model';
 
 export type Severity = 'error' | 'warning' | 'info';
 
 export interface Issue {
-  /** Id of the offending vertex or transition ('' for the machine itself). */
+  /** Id of the offending vertex, transition or region ('' for the machine itself). */
   id: string;
   severity: Severity;
   message: string;
@@ -31,13 +32,8 @@ export function validate(model: FsmModel, submachines: SubmachineInfo = {}): Iss
     return TYPE_LABEL[v.type] ?? v.type;
   };
 
-  // Identity (a region id used again can also put a state inside its own region)
   const allRegions = [...model.regions, ...model.vertices.flatMap((v) => v.regions ?? [])];
-  const seen = new Set<string>();
-  for (const el of [...model.vertices, ...model.transitions, ...allRegions]) {
-    if (seen.has(el.id)) add(el.id, 'error', `Duplicate id '${el.id}'.`);
-    seen.add(el.id);
-  }
+  checkNames(model, ix, add, name);
 
   // Containment
   for (const v of model.vertices) {
@@ -46,7 +42,7 @@ export function validate(model: FsmModel, submachines: SubmachineInfo = {}): Iss
       const owner = ix.vertices.get(v.parent);
       const machineLevel = model.regions.some((r) => r.id === v.parent);
       if (machineLevel) {
-        if (!v.name) add(v.id, 'warning', `Connection points of the state machine need a name so submachine states can reference them.`);
+        // The machine's own connection point.
       } else if (!owner || owner.type !== 'state') {
         add(v.id, 'error', `${name(v)}: entry and exit points belong on the border of a state or at the top level of the state machine.`);
       } else if (owner.submachine) {
@@ -96,23 +92,14 @@ export function validate(model: FsmModel, submachines: SubmachineInfo = {}): Iss
     }
   }
 
-  // Names unique within a region
-  const byRegion = new Map<string, Map<string, Vertex>>();
-  for (const v of model.vertices) {
-    if (v.type !== 'state' || !v.name) continue;
-    const m = byRegion.get(v.parent) ?? new Map<string, Vertex>();
-    byRegion.set(v.parent, m);
-    if (m.has(v.name)) add(v.id, 'warning', `Another state named '${v.name}' exists in the same region.`);
-    else m.set(v.name, v);
-  }
-
   // Vertices
   for (const v of model.vertices) {
     const out = ix.outgoing(v.id).filter((t) => t.kind !== 'internal');
     const inc = ix.incoming(v.id).filter((t) => t.kind !== 'internal');
     switch (v.type) {
       case 'initial':
-        if (out.length !== 1) add(v.id, 'error', 'An initial pseudostate must have exactly one outgoing transition.');
+        if (!out.length || (out.length === 1 && unresolved(out[0].target) === '')) add(v.id, 'error', 'The initial pseudostate has no target.');
+        else if (out.length !== 1) add(v.id, 'error', 'An initial pseudostate must have exactly one outgoing transition.');
         if (inc.length) add(v.id, 'error', 'An initial pseudostate cannot have incoming transitions.');
         for (const t of out) {
           if (t.guard) add(t.id, 'error', 'The transition leaving an initial pseudostate cannot have a guard.');
@@ -210,7 +197,7 @@ export function validate(model: FsmModel, submachines: SubmachineInfo = {}): Iss
           add(v.id, 'error', 'The connection point reference does not refer to an entry or exit point of the submachine.');
         } else if (owner?.submachine && info?.found) {
           if (!target) {
-            add(v.id, 'error', `${machineName(owner.submachine)} has no entry or exit point with id '${v.ref}'.`);
+            add(v.id, 'error', `${machineName(owner.submachine)} has no entry or exit point named '${v.ref}'.`);
           } else if (target.kind !== kind) {
             add(v.id, 'error', `${label} is an ${target.kind} point of ${machineName(owner.submachine)}, but it is referenced as an ${kind} point.`);
           }
@@ -260,7 +247,13 @@ export function validate(model: FsmModel, submachines: SubmachineInfo = {}): Iss
     const s = ix.vertices.get(t.source);
     const g = ix.vertices.get(t.target);
     if (!s) add(t.id, 'error', `Transition source '${t.source}' does not exist.`);
-    if (!g) add(t.id, 'error', `Transition target '${t.target}' does not exist.`);
+    if (!g) {
+      const r = unresolved(t.target);
+      if (r === '') {
+        // An initial without target is reported on the initial pseudostate.
+        if (s?.type !== 'initial') add(t.id, 'error', 'The default transition of a history pseudostate has no target.');
+      } else add(t.id, 'error', `Transition target '${r ?? t.target}' does not exist.`);
+    }
     if (!s || !g) continue;
     if (s.type === 'comment' || g.type === 'comment') {
       add(t.id, 'error', 'Comments cannot be connected by transitions.');
@@ -279,7 +272,7 @@ export function validate(model: FsmModel, submachines: SubmachineInfo = {}): Iss
       }
     }
     if (protocol) {
-      if (t.effect) add(t.id, 'error', 'Protocol transitions cannot have effects.');
+      if (t.action) add(t.id, 'error', 'Protocol transitions cannot have actions.');
       if (t.guard) add(t.id, 'warning', 'Use a precondition instead of a guard in a protocol state machine.');
     } else if (t.precondition || t.postcondition) {
       add(t.id, 'warning', 'Pre/postconditions only apply to protocol state machines and are ignored.');
@@ -363,6 +356,75 @@ function cycleKinds(cycle: Vertex[]): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
+/**
+ * Names are the identity of elements in the file: the rules of a name, names unique in the machine (the machine's,
+ * the regions' when their owner has several, the elements'), point names unique on their owner.
+ */
+function checkNames(
+  model: FsmModel,
+  ix: ModelIndex,
+  add: (id: string, severity: Severity, message: string) => void,
+  name: (v: Vertex | undefined) => string,
+) {
+  const rules = (id: string, n: string, label: string): boolean => {
+    if (!n) {
+      add(id, 'error', `Every ${label} needs a name.`);
+      return false;
+    }
+    if (n.includes('.')) {
+      add(id, 'error', `Name '${n}' cannot contain '.'.`);
+      return false;
+    }
+    if (/\s/.test(n)) {
+      add(id, 'error', `Name '${n}' cannot contain spaces.`);
+      return false;
+    }
+    if (n.slice(0, -1).includes('*')) {
+      add(id, 'error', `Name '${n}' can contain '*' only as its last character.`);
+      return false;
+    }
+    return true;
+  };
+  const names = new Set<string>();
+  const unique = (id: string, n: string) => {
+    if (names.has(n)) add(id, 'error', `Name '${n}' is used more than once in the state machine.`);
+    names.add(n);
+  };
+  if (rules('', model.name, 'state machine')) unique('', model.name);
+  const regionNames = (regions: Region[]) => {
+    if (regions.length < 2) return;
+    for (const r of regions) if (rules(r.id, r.name, 'region')) unique(r.id, r.name);
+  };
+  regionNames(model.regions);
+  const points = new Set<string>();
+  for (const v of model.vertices) {
+    switch (v.type) {
+      case 'initial':
+      case 'shallowHistory':
+      case 'deepHistory':
+        break;
+      case 'entryPoint':
+      case 'exitPoint':
+      case 'connectionPointRef': {
+        const reference = v.type === 'connectionPointRef';
+        const n = reference ? v.ref ?? '' : v.name;
+        // A reference without a point is reported with the references.
+        if ((reference && !n) || !rules(v.id, n, TYPE_LABEL[v.type])) break;
+        const key = `${v.parent}\u0000${n}`;
+        if (n === 'history' || n === 'deepHistory') add(v.id, 'error', `A point cannot be named '${n}'.`);
+        else if (points.has(key)) {
+          const owner = ix.vertices.get(v.parent);
+          add(v.id, 'error', `${owner ? name(owner) : `'${model.name}'`} has two points named '${n}'.`);
+        } else points.add(key);
+        break;
+      }
+      default:
+        if (rules(v.id, v.name, TYPE_LABEL[v.type])) unique(v.id, v.name);
+        regionNames(v.regions ?? []);
+    }
+  }
+}
+
 /** Behaviors and conditions are argument-less function calls; triggers are event names or after(...). */
 function checkText(
   model: FsmModel,
@@ -387,7 +449,7 @@ function checkText(
     const s = ix.vertices.get(t.source);
     for (const trig of t.triggers) report(t.id, 'Trigger', expr.checkTrigger(trig));
     report(t.id, 'Guard', expr.checkGuard(t.guard, s?.type === 'choice' || s?.type === 'junction'));
-    report(t.id, 'Effect', expr.checkActions(t.effect));
+    report(t.id, 'Action', expr.checkActions(t.action));
     report(t.id, 'Precondition', expr.checkCondition(t.precondition));
     report(t.id, 'Postcondition', expr.checkCondition(t.postcondition));
     const times = t.triggers.filter((x) => expr.timeTriggerMs(x) !== null);

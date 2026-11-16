@@ -1,18 +1,23 @@
 import * as vscode from 'vscode';
 import { GenerateArgs, generateCode } from './codegenCommand';
-import { FsmEditorProvider } from './fsmEditorProvider';
+import { FsmEditorProvider, layoutUriOf, stateOfModel } from './fsmEditorProvider';
+import { isOldFormat } from './format';
 import { defaultModel } from './model';
 import { TracePlayer } from './trace/player';
 import { basename, encodeText, extname } from './util';
-import { toXmi } from './xmi';
 
-export function activate(context: vscode.ExtensionContext) {
+export function activate(context: vscode.ExtensionContext): { sessionSummary(): string[] } {
   const provider = new FsmEditorProvider(context);
   const player = new TracePlayer(context, provider);
 
+  vscode.workspace.textDocuments.forEach(oldFilesAsXml);
   context.subscriptions.push(
+    vscode.workspace.onDidOpenTextDocument(oldFilesAsXml),
+    // Reloaded from disk (not typed in): a file converted, or an old version checked out.
+    vscode.workspace.onDidChangeTextDocument((e) => !e.document.isDirty && oldFilesAsXml(e.document)),
     vscode.window.registerCustomEditorProvider(FsmEditorProvider.viewType, provider, {
       webviewOptions: { retainContextWhenHidden: true },
+      supportsMultipleEditorsPerDocument: true,
     }),
 
     vscode.window.registerWebviewViewProvider(TracePlayer.viewType, player, { webviewOptions: { retainContextWhenHidden: true } }),
@@ -23,7 +28,7 @@ export function activate(context: vscode.ExtensionContext) {
       const name = await vscode.window.showInputBox({
         prompt: 'Name of the new state machine',
         value: 'StateMachine',
-        validateInput: (v) => (/^[\w .-]+$/.test(v) ? undefined : 'Use letters, digits, spaces, dots, dashes or underscores.'),
+        validateInput: (v) => (/^[\w-]+$/.test(v) ? undefined : 'Use letters, digits, dashes or underscores.'),
       });
       if (!name) return;
       let dir = folder ?? vscode.workspace.workspaceFolders?.[0]?.uri;
@@ -40,7 +45,9 @@ export function activate(context: vscode.ExtensionContext) {
       } catch {
         // does not exist yet
       }
-      await vscode.workspace.fs.writeFile(uri, encodeText(toXmi(defaultModel(name))));
+      const files = stateOfModel(defaultModel(name));
+      await vscode.workspace.fs.writeFile(uri, encodeText(files.modelText));
+      await vscode.workspace.fs.writeFile(layoutUriOf(uri), encodeText(files.layoutText!));
       await vscode.commands.executeCommand('vscode.openWith', uri, FsmEditorProvider.viewType);
     }),
 
@@ -50,7 +57,7 @@ export function activate(context: vscode.ExtensionContext) {
       const untitled = (name: string) =>
         folder ? vscode.Uri.joinPath(folder, name).with({ scheme: 'untitled' }) : vscode.Uri.from({ scheme: 'untitled', path: name });
       const taken = async (name: string) => {
-        if (vscode.workspace.textDocuments.some((d) => d.uri.toString() === untitled(name).toString())) return true;
+        if (provider.isOpen(untitled(name))) return true;
         if (!folder) return false;
         try {
           await vscode.workspace.fs.stat(vscode.Uri.joinPath(folder, name));
@@ -61,17 +68,59 @@ export function activate(context: vscode.ExtensionContext) {
       };
       let name = 'StateMachine';
       for (let n = 2; await taken(`${name}.fsm`); n++) name = `StateMachine${n}`;
-      const uri = untitled(`${name}.fsm`);
-      const document = await vscode.workspace.openTextDocument(uri);
-      const edit = new vscode.WorkspaceEdit();
-      edit.insert(uri, new vscode.Position(0, 0), toXmi(defaultModel(name)));
-      await vscode.workspace.applyEdit(edit);
-      await vscode.commands.executeCommand('vscode.openWith', document.uri, FsmEditorProvider.viewType);
+      // The diagram makes the new machine (defaultModel) for an untitled file; saving asks where to put it.
+      await vscode.commands.executeCommand('vscode.openWith', untitled(`${name}.fsm`), FsmEditorProvider.viewType);
     }),
 
     vscode.commands.registerCommand('fsmEditor.openAsText', async () => {
-      const uri = provider.activeEditor?.document.uri;
-      if (uri) await vscode.commands.executeCommand('vscode.openWith', uri, 'default');
+      const document = provider.activeEditor?.document;
+      if (!document) return;
+      // The text editor shows the file: the diagram's unsaved changes aren't in it.
+      if (document.dirty && document.uri.scheme !== 'untitled') {
+        const save = 'Save and Open as Text';
+        const answer = await vscode.window.showWarningMessage(
+          `${basename(document.uri.path)} has unsaved changes in the diagram, which the text editor won't show (and saving the diagram later would replace what is changed in the text). Save them first?`,
+          { modal: true },
+          save,
+          'Open Without Saving',
+        );
+        if (answer === undefined) return;
+        if (answer === save) {
+          // workspace.save is VS Code 1.86's; before, the active editor (this diagram) is saved.
+          const save = (vscode.workspace as unknown as { save?: (u: vscode.Uri) => Thenable<vscode.Uri | undefined> }).save;
+          if (save) await save(document.uri);
+          else await vscode.commands.executeCommand('workbench.action.files.save');
+          if (document.dirty) return;
+        }
+      }
+      await vscode.commands.executeCommand('vscode.openWith', document.uri, 'default');
+    }),
+
+    // A diagram diff: from a text diff of a .fsm file (the editor title: Source Control, the timeline, Compare With…),
+    // or from a changed .fsm file in Source Control (the versions Git's own diff of it shows).
+    vscode.commands.registerCommand('fsmEditor.compareAsDiagrams', async (arg?: unknown) => {
+      const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+      const diff = input instanceof vscode.TabInputTextDiff && input.modified.path.endsWith('.fsm') ? input : undefined;
+      const resource = arg instanceof vscode.Uri ? undefined : (arg as GitResource | undefined);
+      const uri = arg instanceof vscode.Uri ? arg : resource?.resourceUri;
+      // The active diff, when the command is about it (its title bar passes its file, the palette nothing).
+      if (diff && (!uri || [diff.original.toString(), diff.modified.toString()].includes(uri.toString()))) {
+        await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+        return provider.openDiagramDiff(diff.original, diff.modified);
+      }
+      if (uri?.path.endsWith('.fsm')) {
+        if (resource?.leftUri instanceof vscode.Uri && resource.rightUri instanceof vscode.Uri) return provider.openDiagramDiff(resource.leftUri, resource.rightUri);
+        const git = (ref: string) => vscode.Uri.from({ scheme: 'git', path: uri.path, query: JSON.stringify({ path: uri.fsPath, ref }) });
+        // Git's resource groups: 0 merge, 1 index (staged), 2 working tree, 3 untracked.
+        if (resource?.resourceGroupType === 3) {
+          void vscode.window.showWarningMessage(`${basename(uri.path)} is untracked: Git has no earlier version to compare it with.`);
+          return;
+        }
+        if (resource?.resourceGroupType === 0) return vscode.commands.executeCommand('vscode.openWith', uri, FsmEditorProvider.viewType);
+        if (resource?.resourceGroupType === 1) return provider.openDiagramDiff(git('HEAD'), git(''));
+        return provider.openDiagramDiff(git('~'), uri);
+      }
+      void vscode.window.showWarningMessage('Open the changes of a .fsm file (a diff), or pick one in Source Control, to compare it as diagrams.');
     }),
 
     vscode.commands.registerCommand('fsmEditor.openDiagram', async (uri?: vscode.Uri) => {
@@ -84,7 +133,7 @@ export function activate(context: vscode.ExtensionContext) {
       if (uri && !(uri instanceof vscode.Uri)) [uri, args] = [undefined, uri];
       const active = vscode.window.activeTextEditor?.document.uri;
       const source = uri ?? provider.activeEditor?.document.uri ?? (active?.path.endsWith('.fsm') ? active : undefined);
-      return generateCode(context, source, args);
+      return generateCode(context, source, args, (u) => provider.modelText(u));
     }),
 
     vscode.commands.registerCommand('fsmEditor.exportSvg', async () => {
@@ -109,9 +158,30 @@ export function activate(context: vscode.ExtensionContext) {
       }
     }),
   );
+  // For the tests: the diagram diffs and merges open.
+  return { sessionSummary: () => provider.sessionSummary() };
 }
 
 export function deactivate() {}
+
+
+/** What Source Control passes for a changed file: Git's resource (the fields read here, when it has them). */
+interface GitResource {
+  resourceUri?: vscode.Uri;
+  leftUri?: unknown;
+  rightUri?: unknown;
+  resourceGroupType?: number;
+}
+
+/**
+ * An old file (XMI) opened as text is XML, not the JSON that .fsm files are now; once converted (the file saved by
+ * the diagram, reloaded in the text editor), it is JSON again.
+ */
+function oldFilesAsXml(d: vscode.TextDocument) {
+  if (!d.uri.path.endsWith('.fsm')) return;
+  if (d.languageId === 'json' && isOldFormat(d.getText())) void vscode.languages.setTextDocumentLanguage(d, 'xml');
+  else if (d.languageId === 'xml' && !isOldFormat(d.getText())) void vscode.languages.setTextDocumentLanguage(d, 'json');
+}
 
 function noEditor() {
   void vscode.window.showWarningMessage('Open a .fsm state machine in the FSM Editor first.');

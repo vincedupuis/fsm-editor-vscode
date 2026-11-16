@@ -8,15 +8,31 @@ import * as esbuild from 'esbuild';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { assignNames, derivedIds, writeMachine } from '../../src/format';
 import { FsmFile, FsmIssue, FsmResponse, Generator, loadGenerator } from '../../src/fsmCli';
 import { FsmModel, Transition, Vertex, VertexType } from '../../src/model';
-import { toXmi } from '../../src/xmi';
 
 export const root = resolve(__dirname, '../../..');
 
 let generator: Generator | undefined;
 
-/** The module's response for `machines` (file name → model or XMI text), all generated, in a folder /m. */
+/** A model's file text, as the editor writes it (generated names for what has none). */
+export function fileOf(model: FsmModel): string {
+  const m = JSON.parse(JSON.stringify(model)) as FsmModel;
+  assignNames(m);
+  const w = writeMachine(m);
+  if (w.lost.length) throw new Error(`The test model can't be written: ${w.lost.join('; ')}`);
+  return w.model;
+}
+
+/** The id fsm-cli gives the element `id` of `model` (in problems, the code model and traces): see derivedIds. */
+export function idOf(model: FsmModel, id: string): string {
+  const m = JSON.parse(JSON.stringify(model)) as FsmModel;
+  assignNames(m);
+  return derivedIds(m).get(id) ?? id;
+}
+
+/** The module's response for `machines` (file name → model or file text), all generated, in a folder /m. */
 export async function run(machines: Record<string, FsmModel | string>, template: string, templateName = 'test.jinja'): Promise<FsmResponse> {
   if (!generator) {
     const wasm = join(root, 'fsm/fsm.wasm');
@@ -24,14 +40,14 @@ export async function run(machines: Record<string, FsmModel | string>, template:
     generator = loadGenerator(readFileSync(wasm));
   }
   const files: Record<string, string> = {};
-  for (const [name, m] of Object.entries(machines)) files[`/m/${name}`] = typeof m === 'string' ? m : toXmi(m);
+  for (const [name, m] of Object.entries(machines)) files[`/m/${name}`] = typeof m === 'string' ? m : fileOf(m);
   return generator({ cwd: '/m', files, generate: Object.keys(machines), template, templateName });
 }
 
 /** A failed generation: the module's error, with the problems it reported. */
 export class GenerateFailure extends Error {
   constructor(readonly response: FsmResponse) {
-    super(response.error ?? `exit code ${response.exitCode}`);
+    super([response.error ?? `exit code ${response.exitCode}`, ...response.issues.map((i) => `  ${i.file}:${i.line}: ${i.severity}: ${i.message}`)].join('\n'));
   }
 
   get issues(): FsmIssue[] {
@@ -64,7 +80,7 @@ export class ModelBuilder {
   private n = 0;
 
   constructor(name: string, kind: 'behavioral' | 'protocol' = 'behavioral') {
-    this.model = { version: 1, id: 'sm', name, kind, context: '', documentation: '', regions: [{ id: 'r_root', name: '' }], vertices: [], transitions: [] };
+    this.model = { version: 1, name, kind, documentation: '', regions: [{ id: 'r_root', name: '' }], vertices: [], transitions: [] };
   }
 
   vertex(type: VertexType, parent = 'r_root', extra: Partial<Vertex> = {}): string {
@@ -82,7 +98,7 @@ export class ModelBuilder {
 
   t(source: string, target: string, extra: Partial<Transition> = {}): string {
     const id = extra.id ?? `t${++this.n}`;
-    this.model.transitions.push({ id, source, target, kind: 'external', triggers: [], guard: '', effect: '', ...extra });
+    this.model.transitions.push({ id, source, target, kind: 'external', triggers: [], guard: '', action: '', ...extra });
     return id;
   }
 
@@ -92,7 +108,7 @@ export class ModelBuilder {
   }
 }
 
-/** Generates TypeScript for `machines` (file name → model or XMI text) and loads the machine classes. */
+/** Generates TypeScript for `machines` (file name → model or file text) and loads the machine classes. */
 export async function load(machines: Record<string, FsmModel | string>): Promise<Record<string, any>> {
   const result = await generate(machines, bundled('ts'), 'ts.jinja');
   const dir = mkdtempSync(join(tmpdir(), 'fsm-codegen-'));

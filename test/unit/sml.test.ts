@@ -26,8 +26,8 @@ function forks(): FsmModel {
   const join = b.vertex('join');
   b.init(idle);
   b.t(idle, fork, { triggers: ['go'] });
-  b.t(fork, a1, { effect: 'toA()' });
-  b.t(fork, b1, { effect: 'toB()' });
+  b.t(fork, a1, { action: 'toA()' });
+  b.t(fork, b1, { action: 'toB()' });
   b.t(a1, a2, { triggers: ['a'] });
   b.t(b1, b2, { triggers: ['b'] });
   b.t(a2, join);
@@ -48,8 +48,8 @@ function priority(): FsmModel {
   b.init(x, 'P_r0');
   b.init(y, 'P_r1');
   b.t(p, out, { triggers: ['e'] });
-  b.t(x, x2, { triggers: ['e'], effect: 'fx()' });
-  b.t(y, y2, { triggers: ['e'], effect: 'fy()' });
+  b.t(x, x2, { triggers: ['e'], action: 'fx()' });
+  b.t(y, y2, { triggers: ['e'], action: 'fy()' });
   b.t(x2, out, { triggers: ['f'] });
   return b.model;
 }
@@ -74,8 +74,8 @@ function deferCompletion(): FsmModel {
   b.init(s);
   b.t(s, u, { triggers: ['f'] });
   b.t(u, v);
-  b.t(u, u, { triggers: ['e'], kind: 'internal', effect: 'tooEarly()' });
-  b.t(v, v, { triggers: ['e'], kind: 'internal', effect: 'handled()' });
+  b.t(u, u, { triggers: ['e'], kind: 'internal', action: 'tooEarly()' });
+  b.t(v, v, { triggers: ['e'], kind: 'internal', action: 'handled()' });
   return b.model;
 }
 
@@ -88,7 +88,7 @@ function junctions(): FsmModel {
   b.init(s);
   b.t(s, j, { triggers: ['e'], guard: 'g()' });
   b.t(j, x, { guard: 'c()' });
-  b.t(j, y, { guard: 'else', effect: 'toY()' });
+  b.t(j, y, { guard: 'else', action: 'toY()' });
   return b.model;
 }
 
@@ -101,7 +101,7 @@ function local(): FsmModel {
   b.init(c1, 'C_r0');
   b.t(c, 'C2', { triggers: ['local'], kind: 'local' });
   b.t(c, c1, { triggers: ['external'] });
-  b.t(c, c, { triggers: ['reset'], kind: 'local', effect: 'resetC()' });
+  b.t(c, c, { triggers: ['reset'], kind: 'local', action: 'resetC()' });
   return b.model;
 }
 
@@ -134,9 +134,9 @@ function points(): FsmModel {
   b.init(a);
   b.init(other, 'C_r0');
   b.t(a, ep, { triggers: ['go'] });
-  b.t(ep, inner, { effect: 'viaIn()' });
+  b.t(ep, inner, { action: 'viaIn()' });
   b.t(inner, xp, { triggers: ['quit'] });
-  b.t(xp, after, { effect: 'viaOut()' });
+  b.t(xp, after, { action: 'viaOut()' });
   return b.model;
 }
 
@@ -153,9 +153,9 @@ function nested(): FsmModel {
   b.init(c0, 'C_r0');
   b.init('D0', 'D_r0');
   void d;
-  b.t(a, deep, { triggers: ['dive'], effect: 'diving()' });
-  b.t(deep, a, { triggers: ['surface'], effect: 'surfacing()' });
-  b.t(deep, c0, { triggers: ['up'], effect: 'up()' });
+  b.t(a, deep, { triggers: ['dive'], action: 'diving()' });
+  b.t(deep, a, { triggers: ['surface'], action: 'surfacing()' });
+  b.t(deep, c0, { triggers: ['up'], action: 'up()' });
   return b.model;
 }
 
@@ -163,8 +163,8 @@ function self(): FsmModel {
   const b = new ModelBuilder('Self');
   const s = b.state('S', 'r_root', { entry: 'in()', exit: 'out()' });
   b.init(s);
-  b.t(s, s, { triggers: ['self'], effect: 'fx()' });
-  b.t(s, s, { triggers: ['internal'], kind: 'internal', effect: 'fx()' });
+  b.t(s, s, { triggers: ['self'], action: 'fx()' });
+  b.t(s, s, { triggers: ['internal'], kind: 'internal', action: 'fx()' });
   return b.model;
 }
 
@@ -174,7 +174,7 @@ function term(): FsmModel {
   const t = b.vertex('terminate');
   b.init(s);
   b.t(s, t, { triggers: ['kill'] });
-  b.t(s, s, { triggers: ['ping'], kind: 'internal', effect: 'pong()' });
+  b.t(s, s, { triggers: ['ping'], kind: 'internal', action: 'pong()' });
   return b.model;
 }
 
@@ -217,7 +217,7 @@ function keywords(): FsmModel {
   b.init(s);
   b.t(s, t, { guard: 'ready()' }); // completion: lost when not ready
   b.t(s, t, { triggers: ['union'] });
-  b.t(t, f, { triggers: ['after(1.5s)'], effect: 'class()' });
+  b.t(t, f, { triggers: ['after(1.5s)'], action: 'class()' });
   return b.model;
 }
 
@@ -233,9 +233,9 @@ function hops(): FsmModel {
   b.init(c1);
   b.init(c2, 'C1_r0');
   b.init(s, 'C2_r0');
-  b.t(s, x2, { triggers: ['go'], effect: 'e1()' });
-  b.t(x2, x1, { effect: 'e2()' });
-  b.t(x1, t, { effect: 'e3()' });
+  b.t(s, x2, { triggers: ['go'], action: 'e1()' });
+  b.t(x2, x1, { action: 'e2()' });
+  b.t(x1, t, { action: 'e3()' });
   return b.model;
 }
 
@@ -252,13 +252,13 @@ function composite(): FsmModel {
   const fq = b.vertex('final', 'P_r1');
   const done = b.state('Done', 'r_root', { entry: 'done()' });
   const ep = b.vertex('entryPoint', p, { name: 'deep' });
-  b.t(b.vertex('initial'), idle, { effect: 'boot()' });
-  b.t(b.vertex('initial', 'P_r0'), a, { effect: 'initA()' });
+  b.t(b.vertex('initial'), idle, { action: 'boot()' });
+  b.t(b.vertex('initial', 'P_r0'), a, { action: 'initA()' });
   b.t(b.vertex('initial', 'P_r1'), q);
   b.t(b.vertex('initial', 'Q_r0'), q1);
   b.t(idle, p, { triggers: ['go', 'start'] });
   b.t(idle, ep, { triggers: ['jump'] });
-  b.t(ep, q2, { effect: 'viaDeep()' });
+  b.t(ep, q2, { action: 'viaDeep()' });
   b.t(a, fa, { triggers: ['finishA'] });
   b.t(q1, q2, { triggers: ['next'] });
   b.t(q2, fq, { triggers: ['finishQ'] });
@@ -299,7 +299,7 @@ function clocked(): FsmModel {
 function clockHost(): FsmModel {
   const b = new ModelBuilder('ClockHost');
   const idle = b.state('Idle');
-  const run = b.state('Run', 'r_root', { submachine: 'Clocked.fsm#sm' });
+  const run = b.state('Run', 'r_root', { submachine: 'Clocked.fsm' });
   b.init(idle);
   b.t(idle, run, { triggers: ['go'] });
   b.t(run, idle, { triggers: ['halt'] });
@@ -329,7 +329,7 @@ function traced(): FsmModel {
 function host(): FsmModel {
   const b = new ModelBuilder('Host');
   const c = b.state('C', 'r_root', {}, 1);
-  const p = b.state('P', 'C_r0', { submachine: 'Sub.fsm#sm' });
+  const p = b.state('P', 'C_r0', { submachine: 'Sub.fsm' });
   const out = b.state('Out');
   const h = b.vertex('deepHistory', 'C_r0');
   b.init(c);
@@ -352,7 +352,7 @@ function orthoTerm(): FsmModel {
   b.init(a, 'P_r0');
   b.init(bb, 'P_r1');
   b.t(a, t, { triggers: ['kill'] });
-  b.t(bb, b2, { triggers: ['kill'], effect: 'tooLate()' });
+  b.t(bb, b2, { triggers: ['kill'], action: 'tooLate()' });
   return b.model;
 }
 
@@ -367,8 +367,8 @@ function entryMachine(): FsmModel {
   const xp = b.vertex('exitPoint', 'r_root', { name: 'away' });
   b.init(a);
   b.init(c0, 'C_r0');
-  b.t(ep, c1, { effect: 'viaInside()' });
-  b.t(c1, xp, { triggers: ['quit'], effect: 'bye()' });
+  b.t(ep, c1, { action: 'viaInside()' });
+  b.t(c1, xp, { triggers: ['quit'], action: 'bye()' });
   return b.model;
 }
 
@@ -480,21 +480,21 @@ describe('Boost.SML: tracing', () => {
     check('Traced', [
       'trace',
       'start',
-      'take => ~Traced transition tInit,~Traced enter S',
+      'take => ~Traced transition Traced.initial#1,~Traced enter S',
       'e e',
-      'take => ~Traced event e,g,g,~Traced exit S,~Traced transition tSJ,~Traced transition tJY,~Traced enter Y',
+      'take => ~Traced event e,g,g,~Traced exit S,~Traced transition S#1,~Traced transition junction1*#2,~Traced enter Y',
       'e back',
       'set g 1',
       'set h 1',
       'clear',
       'e e',
-      'take => ~Traced event e,g,~Traced exit S,~Traced transition tSJ,~Traced transition tJC,h,~Traced transition tCX,~Traced enter X',
+      'take => ~Traced event e,g,~Traced exit S,~Traced transition S#1,~Traced transition junction1*#1,h,~Traced transition choice1*#1,~Traced enter X',
     ]),
   );
 
   it(
     'names a submachine by the submachine states leading to it',
-    check('Order', ['trace', 'start', 'clear', 'e checkout', 'take => ~Order event checkout,~Order exit o_cart,~Order transition ot2,~Order enter o_pay,~Order.Payment transition pt1,~Order.Payment enter p_auth,Payment.requestAuthorization']),
+    check('Order', ['trace', 'start', 'clear', 'e checkout', 'take => ~Order event checkout,~Order exit Cart,~Order transition Cart#1,~Order enter Payment,~Order.Payment transition Payment.initial#1,~Order.Payment enter Authorizing,Payment.requestAuthorization']),
   );
 });
 
@@ -643,8 +643,8 @@ describe('Boost.SML: warnings and errors', () => {
       "Transition 'C -> C2 (local)': Boost.SML has no local transitions; it is written as a transition of each state of C's region, which leaves the active substate but not C",
       "Transition 'C -> C (reset)': Boost.SML has no local transitions; it is written as a transition of each state of C's region, which leaves the active substate but not C",
       "Transition 'A -> Deep (dive)': Boost.SML has no transitions into a composite state's inside; it enters C, whose initial pseudostate leads on to D",
-      "Transition 'Deep -> C0 (up)': Boost.SML has no transitions out of a composite state's inside; Deep takes the event and D is left through an internal event",
       "Transition 'Deep -> A (surface)': Boost.SML has no transitions out of a composite state's inside; Deep takes the event and C is left through an internal event",
+      "Transition 'Deep -> C0 (up)': Boost.SML has no transitions out of a composite state's inside; Deep takes the event and D is left through an internal event",
     ]);
   });
 
@@ -667,8 +667,8 @@ describe('Boost.SML: warnings and errors', () => {
     b.state('X');
     const split = b.vertex('fork', 'r_root', { name: 'split' });
     b.t(b.vertex('initial'), split);
-    b.t(split, 'A2', { effect: 'toA()' });
-    b.t(split, 'B1', { effect: 'toB()' });
+    b.t(split, 'A2', { action: 'toA()' });
+    b.t(split, 'B1', { action: 'toB()' });
     b.t('P', 'X', { triggers: ['go'] });
     b.t('X', 'A2', { triggers: ['dive'] });
     const { warnings } = await generateSml({ 'ForkInitDive.fsm': b.model });
@@ -742,7 +742,7 @@ describe('Boost.SML: warnings and errors', () => {
     const cin = b.vertex('entryPoint', 'C', { name: 'cin' });
     b.t(in1, cin);
     b.t(in2, cin);
-    b.t(cin, 'Y1', { effect: 'fx()' });
+    b.t(cin, 'Y1', { action: 'fx()' });
     b.t('A', 'C', { triggers: ['go'] });
     const { warnings } = await generateSml({ 'EntryPointsShare.fsm': b.model });
     assert.deepEqual(warnings, [
@@ -756,7 +756,7 @@ describe('Boost.SML: warnings and errors', () => {
     b.init(p);
     b.init(b.state('X', 'P_r0'), 'P_r0');
     b.init(b.state('Y', 'P_r1'), 'P_r1');
-    b.t('X', 'X', { triggers: ['e'], kind: 'internal', effect: 'fx()' });
+    b.t('X', 'X', { triggers: ['e'], kind: 'internal', action: 'fx()' });
     b.t('Y', 'Y', { triggers: ['e'], kind: 'internal', guard: 'g()' });
     const { warnings } = await generateSml({ 'Ortho.fsm': b.model });
     assert.deepEqual(warnings, [
@@ -772,7 +772,7 @@ describe('Boost.SML: warnings and errors', () => {
     b.init(p);
     b.init(x, 'P_r0');
     b.init('Y', 'P_r1');
-    b.t(p, p, { triggers: ['offer'], kind: 'local', effect: 'go()' });
+    b.t(p, p, { triggers: ['offer'], kind: 'local', action: 'go()' });
     b.t(x, x, { triggers: ['e'], guard: 'go()' });
     await assert.rejects(generateSml({ 'Bad.fsm': b.model }), (e: Error & { issues?: { message: string }[] }) => {
       assert.deepEqual(

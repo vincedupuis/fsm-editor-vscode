@@ -1,5 +1,5 @@
 /**
- * Minimal XML reader and writer, enough for XMI documents: elements,
+ * Minimal XML reader, enough for XMI documents (the files of earlier versions): elements,
  * attributes, text, CDATA, comments, processing instructions and namespaces.
  * Element and attribute names are rewritten to canonical prefixes for known
  * namespace URIs, so documents using other prefixes read the same.
@@ -196,46 +196,4 @@ export function parseXml(text: string, canonical: Record<string, string> = {}): 
     };
   };
   return resolve(root, {});
-}
-
-// ------------------------------------------------------------------ writing
-
-export function escapeXml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/\r/g, '&#13;')
-    .replace(/\n/g, '&#10;')
-    .replace(/\t/g, '&#9;');
-}
-
-/** An element to write: `[name, attributes, ...children]`, children being elements or text. */
-export type Node = [string, Record<string, string | number | undefined>, ...(Node | string)[]];
-
-export function writeXml(root: Node): string {
-  const out: string[] = ['<?xml version="1.0" encoding="UTF-8"?>'];
-  const write = (node: Node, indent: string) => {
-    const [name, attrs, ...children] = node;
-    let open = `${indent}<${name}`;
-    for (const [k, v] of Object.entries(attrs)) {
-      if (v === undefined || v === '') continue;
-      open += ` ${k}="${escapeXml(String(v))}"`;
-    }
-    if (!children.length) {
-      out.push(`${open}/>`);
-    } else if (children.length === 1 && typeof children[0] === 'string') {
-      out.push(`${open}>${escapeXml(children[0]).replace(/&#10;/g, '\n')}</${name}>`);
-    } else {
-      out.push(`${open}>`);
-      for (const c of children) {
-        if (typeof c === 'string') out.push(`${indent}  ${escapeXml(c)}`);
-        else write(c, indent + '  ');
-      }
-      out.push(`${indent}</${name}>`);
-    }
-  };
-  write(root, '');
-  return out.join('\n') + '\n';
 }

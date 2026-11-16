@@ -9,8 +9,8 @@
  */
 import * as vscode from 'vscode';
 import { FsmIssue, Generator, loadGenerator } from './fsmCli';
-import { basename, decodeHref, encodeText } from './util';
-import { fromXmi } from './xmi';
+import { loadModel, submachineFiles } from './load';
+import { basename, encodeText } from './util';
 
 export interface GenerateArgs {
   template?: vscode.Uri | string;
@@ -98,12 +98,15 @@ function decodeFile(bytes: Uint8Array): string | undefined {
   }
 }
 
+/** Reads a `.fsm` file's text as the editor sees it (a diagram with unsaved changes); undefined when it can't. */
+export type ReadText = (uri: vscode.Uri) => Promise<string | undefined>;
+
 /**
  * The texts of `source` and of the machines its submachine states use, transitively, by path (the module reads no
  * files). Open documents may have unsaved changes: their text is used. A file that can't be read is left out, and
- * the module reports it as `fsm write` does.
+ * the module reports it as `fsm write` does. Layout files aren't read: the module doesn't need them.
  */
-async function readMachines(source: vscode.Uri): Promise<Record<string, string>> {
+async function readMachines(source: vscode.Uri, readText?: ReadText): Promise<Record<string, string>> {
   const files: Record<string, string> = {};
   const seen = new Set<string>();
   const queue = [source];
@@ -113,20 +116,19 @@ async function readMachines(source: vscode.Uri): Promise<Record<string, string>>
     const open = vscode.workspace.textDocuments.find((d) => d.uri.toString() === uri!.toString());
     let text: string | undefined;
     try {
-      text = open ? open.getText() : decodeFile(await vscode.workspace.fs.readFile(uri));
+      text = readText ? await readText(uri) : open ? open.getText() : decodeFile(await vscode.workspace.fs.readFile(uri));
     } catch {
       text = undefined;
     }
     if (text === undefined) continue;
     files[uri.path] = text;
-    let hrefs: string[] = [];
+    let paths: string[] = [];
     try {
-      hrefs = fromXmi(text).vertices.flatMap((v) => (v.type === 'state' && v.submachine ? [v.submachine] : []));
+      paths = submachineFiles(loadModel(text));
     } catch {
       // not a state machine: the module says why
     }
-    for (const href of hrefs) {
-      const file = decodeHref(href.split('#')[0]);
+    for (const file of paths) {
       if (!file) continue;
       queue.push(file.startsWith('/') ? uri.with({ path: file }) : vscode.Uri.joinPath(uri, '..', file));
     }
@@ -134,7 +136,7 @@ async function readMachines(source: vscode.Uri): Promise<Record<string, string>>
   return files;
 }
 
-export async function generateCode(context: vscode.ExtensionContext, source: vscode.Uri | undefined, args: GenerateArgs = {}): Promise<vscode.Uri[]> {
+export async function generateCode(context: vscode.ExtensionContext, source: vscode.Uri | undefined, args: GenerateArgs = {}, readText?: ReadText): Promise<vscode.Uri[]> {
   if (!source || !source.path.endsWith('.fsm')) {
     void vscode.window.showWarningMessage('Select or open a .fsm state machine to generate code from.');
     return [];
@@ -173,7 +175,7 @@ export async function generateCode(context: vscode.ExtensionContext, source: vsc
       template = undefined;
     }
     if (template === undefined) return fail(`Cannot read the template ${templateName}.`);
-    const files = await readMachines(source);
+    const files = await readMachines(source, readText);
     const generate = await getGenerator(context);
     const result = await generate({ cwd: cwd.path, files, generate: [source.path], template, templateName });
     if (result.exitCode !== 0) return fail(result.error ?? `The code generator stopped with exit code ${result.exitCode}.`, result.issues);

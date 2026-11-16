@@ -35,17 +35,19 @@ jobs:
 
       - run: npm ci
 
-      # fsm-cli's WebAssembly module and templates, from the release pinned in release.yml.
+      # fsm-cli's WebAssembly module, templates, schemas and test cases, from the release pinned in release.yml.
       - name: Fetch fsm-cli
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           version=$(sed -n 's/^ *FSM_CLI_VERSION: *//p' .github/workflows/release.yml | tr -d '\r')
-          gh release download "v$version" -R vincedupuis/fsm-cli -p "fsm-$version.wasm" -p "fsm-templates-$version.tar.gz" -D fsm
+          gh release download "v$version" -R vincedupuis/fsm-cli -p "fsm-$version.wasm" -p "fsm-*-$version.tar.gz" -D fsm
           mv "fsm/fsm-$version.wasm" fsm/fsm.wasm
-          tar xzf "fsm/fsm-templates-$version.tar.gz" -C fsm
-          rm "fsm/fsm-templates-$version.tar.gz"
+          for part in templates schemas cases; do
+            tar xzf "fsm/fsm-$part-$version.tar.gz" -C fsm
+            rm "fsm/fsm-$part-$version.tar.gz"
+          done
           ls -R fsm
 
       - name: Test

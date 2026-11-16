@@ -4,12 +4,11 @@
  * examples/, mounted as a virtual file system.
  *
  * Diagnostics are published only after the webview has loaded and the
- * provider has parsed the XMI, listed the workspace machines and validated, so
+ * provider has read the files, listed the workspace machines and validated, so
  * waiting for them exercises the whole editor pipeline in the browser.
  */
 import * as vscode from 'vscode';
-import { fromXmi, toXmi } from '../../src/xmi';
-import { defaultModel } from '../../src/model';
+import { isOldFormat, readModel } from '../../src/format';
 import { decodeText, encodeText } from '../../src/util';
 
 const VIEW_TYPE = 'fsmEditor.stateMachine';
@@ -35,7 +34,16 @@ export async function run(): Promise<void> {
   assert(folder, 'a workspace folder is open');
   const file = (name: string) => vscode.Uri.joinPath(folder, name);
   const read = async (name: string) => decodeText(await vscode.workspace.fs.readFile(file(name)));
+  const exists = async (name: string) => {
+    try {
+      await vscode.workspace.fs.stat(file(name));
+      return true;
+    } catch {
+      return false;
+    }
+  };
 
+  const api = () => ext!.exports as { sessionSummary(): string[] };
   // 1. The extension activates in the web extension host.
   const ext = vscode.extensions.all.find((e) => e.packageJSON.name === 'fsm-editor');
   assert(ext, 'the extension is installed');
@@ -43,35 +51,50 @@ export async function run(): Promise<void> {
   console.log('✓ activates in the browser extension host');
 
   // 2. The custom editor opens, and validation runs on a machine with a broken guard.
-  const media = fromXmi(await read('MediaPlayer.fsm'));
-  const play = media.transitions.find((t) => t.id === 't7');
-  assert(play, 'transition t7 exists');
-  play.guard = 'count > 0';
-  await vscode.workspace.fs.writeFile(file('Broken.fsm'), encodeText(toXmi(media)));
+  const play = '{ "type": "external", "trigger": "play", "target": "Playing" }';
+  const media = await read('MediaPlayer.fsm');
+  assert(media.includes(play), 'Stopped -play-> Playing is in the file');
+  await vscode.workspace.fs.writeFile(file('Broken.fsm'), encodeText(media.replace(play, '{ "type": "external", "trigger": "play", "guard": "count > 0", "target": "Playing" }')));
+  await vscode.workspace.fs.writeFile(file('Broken.fsm.layout'), encodeText(await read('MediaPlayer.fsm.layout')));
   await vscode.commands.executeCommand('vscode.openWith', file('Broken.fsm'), VIEW_TYPE);
   const guardError = await waitFor('the guard error diagnostic', () =>
-    messages(file('Broken.fsm')).find((m) => m.startsWith('Guard:')),
+    vscode.languages.getDiagnostics(file('Broken.fsm')).find((d) => d.message.startsWith('Guard:')),
   );
-  assert(guardError.includes('no variables'), `guard error explains the rule: ${guardError}`);
-  console.log('✓ opens the diagram editor and reports the guard error');
+  assert(guardError.message.includes('no variables'), `guard error explains the rule: ${guardError.message}`);
+  assert(guardError.range.start.line === media.split('\n').findIndex((l) => l.includes(play)), `the diagnostic is on the transition's line (${guardError.range.start.line})`);
+  console.log('✓ opens the diagram editor and reports the guard error, at its line');
 
-  // 3. Editing the document is picked up: fixing the guard clears the error.
+  // 3. The model edited as text is picked up: fixing the guard clears the error.
   const doc = await vscode.workspace.openTextDocument(file('Broken.fsm'));
+  assert(doc.languageId === 'json', `a .fsm file is JSON (${doc.languageId})`);
   const text = doc.getText();
-  const at = text.indexOf('count &gt; 0');
-  assert(at >= 0, 'the guard is in the XMI');
+  const at = text.indexOf('count > 0');
+  assert(at >= 0, 'the guard is in the text');
   const edit = new vscode.WorkspaceEdit();
-  edit.replace(doc.uri, new vscode.Range(doc.positionAt(at), doc.positionAt(at + 'count &gt; 0'.length)), 'isReady()');
+  edit.replace(doc.uri, new vscode.Range(doc.positionAt(at), doc.positionAt(at + 'count > 0'.length)), 'isReady()');
   assert(await vscode.workspace.applyEdit(edit), 'the edit applies');
   await waitFor('the guard error to clear', () =>
     messages(file('Broken.fsm')).some((m) => m.startsWith('Guard:')) ? undefined : true,
   );
-  console.log('✓ re-validates after a document edit');
+  await doc.save();
+  const saved = readModel(await read('Broken.fsm'));
+  assert(!('problems' in saved) && saved.model.transitions.some((t) => t.guard === 'isReady()'), 'the saved file has the fixed guard');
+  console.log('✓ follows the model file edited as text, and its save');
+
+  // 3b. Its text editor closed without saving: the diagram goes back to the file.
+  const again = new vscode.WorkspaceEdit();
+  const at2 = doc.getText().indexOf('isReady()');
+  again.replace(doc.uri, new vscode.Range(doc.positionAt(at2), doc.positionAt(at2 + 'isReady()'.length)), 'count > 1');
+  assert(await vscode.workspace.applyEdit(again), 'the second edit applies');
+  await waitFor('the guard error of the unsaved text', () => (messages(file('Broken.fsm')).some((m) => m.startsWith('Guard:')) ? true : undefined));
+  await vscode.window.showTextDocument(doc);
+  await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+  await waitFor('the diagram back to the file', () => (messages(file('Broken.fsm')).some((m) => m.startsWith('Guard:')) ? undefined : true));
+  console.log('✓ follows the file again when its unsaved text is closed');
 
   // 4. Submachine references resolve across files in the virtual file system.
-  const order = fromXmi(await read('Order.fsm'));
-  order.vertices.push({ id: 'o_orphan', type: 'state', name: 'Orphan', parent: order.regions[0].id, x: 40, y: 400, w: 120, h: 56, regions: [] });
-  await vscode.workspace.fs.writeFile(file('OrderCheck.fsm'), encodeText(toXmi(order)));
+  const order = await read('Order.fsm');
+  await vscode.workspace.fs.writeFile(file('OrderCheck.fsm'), encodeText(order.replace('"elements": [', '"elements": [\n    { "name": "Orphan", "type": "state" },')));
   await vscode.commands.executeCommand('vscode.openWith', file('OrderCheck.fsm'), VIEW_TYPE);
   const orderMessages = await waitFor('diagnostics for OrderCheck.fsm', () => {
     const list = messages(file('OrderCheck.fsm'));
@@ -81,11 +104,30 @@ export async function run(): Promise<void> {
   assert(!referenceProblems.length, `submachine references resolve: ${referenceProblems.join(' | ')}`);
   console.log('✓ resolves the Payment submachine and its connection point references');
 
-  // 5. Saving writes XMI that reads back.
-  await doc.save();
-  const saved = fromXmi(await read('Broken.fsm'));
-  assert(saved.transitions.find((t) => t.id === 't7')?.guard === 'isReady()', 'the saved file has the fixed guard');
-  console.log('✓ saves the file as XMI');
+  // 5. An old file (XMI) opens converted, without being marked changed (auto save doesn't convert it); saving writes
+  // the model and layout files in the new format.
+  await vscode.workspace.fs.writeFile(file('Old.fsm'), encodeText(OLD));
+  await vscode.commands.executeCommand('vscode.openWith', file('Old.fsm'), VIEW_TYPE);
+  await waitFor('the old file open in the diagram', () => {
+    const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+    return input instanceof vscode.TabInputCustom && input.uri.toString() === file('Old.fsm').toString() ? true : undefined;
+  });
+  await new Promise((r) => setTimeout(r, 2000));
+  assert(!vscode.window.tabGroups.activeTabGroup.activeTab?.isDirty, 'opening an old file does not mark it changed');
+  assert(isOldFormat(await read('Old.fsm')) && !(await exists('Old.fsm.layout')), 'opening changes nothing on disk');
+  const oldText = await vscode.workspace.openTextDocument(file('Old.fsm'));
+  await waitFor('the old file as XML', () => (oldText.languageId === 'xml' ? true : undefined));
+  await vscode.commands.executeCommand('vscode.openWith', file('Old.fsm'), VIEW_TYPE);
+  await vscode.commands.executeCommand('workbench.action.files.save');
+  for (let i = 0; i < 100 && !(await exists('Old.fsm.layout')); i++) await new Promise((r) => setTimeout(r, 200));
+  assert(await exists('Old.fsm.layout'), 'saving creates the layout file');
+  const now = readModel(await read('Old.fsm'));
+  assert(!('problems' in now), 'the model file is in the new format');
+  assert(now.model.vertices.map((v) => v.name).join(',') === ',Idle,state1*', `with a generated name: ${now.model.vertices.map((v) => v.name)}`);
+  await waitFor('the converted file as JSON again', () =>
+    vscode.workspace.textDocuments.find((d) => d.uri.toString() === file('Old.fsm').toString())?.languageId === 'json' ? true : undefined,
+  );
+  console.log('✓ converts an old file when it is saved');
 
   // 6. Code generation runs in the browser (fsm-cli's WebAssembly module, workspace.fs); the submachine is read
   // but not generated.
@@ -108,13 +150,52 @@ export async function run(): Promise<void> {
   assert(custom.length === 1 && (await read('generated/Order.txt')) === 'Order: Payment', `custom template output: ${await read('generated/Order.txt')}`);
   console.log('✓ generates code from a workspace template');
 
-  // 7. File › New File… › State Machine opens an untitled machine in the diagram.
+  // 7. VS Code's diff editor shows two machines as text (JSON): Compare as Diagrams opens them as a diagram diff.
+  await vscode.workspace.fs.writeFile(file('MediaPlayer2.fsm'), encodeText(media.replace('"entry": "rewind()"', '"entry": "rewind(); beep()"')));
+  await vscode.workspace.fs.writeFile(file('MediaPlayer2.fsm.layout'), encodeText(await read('MediaPlayer.fsm.layout')));
+  await vscode.commands.executeCommand('vscode.diff', file('MediaPlayer.fsm'), file('MediaPlayer2.fsm'), 'MediaPlayer ↔ MediaPlayer2');
+  const tabInput = await waitFor('the text diff', () => vscode.window.tabGroups.activeTabGroup.activeTab?.input ?? undefined);
+  assert(tabInput instanceof vscode.TabInputTextDiff, 'VS Code opens a diff of .fsm files as text');
+  await vscode.commands.executeCommand('fsmEditor.compareAsDiagrams');
+  const diffs = await waitFor('a diagram diff', () => {
+    const list = api().sessionSummary().filter((x) => x.startsWith('diff '));
+    return list.length ? list : undefined;
+  });
+  assert(diffs.some((d) => d.startsWith('diff MediaPlayer.fsm') && d.includes('-> MediaPlayer2.fsm')), `the two versions are linked, the older first: ${diffs}`);
+  await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+  console.log('✓ opens a diff of two machines as a diagram diff');
+
+  // 8. A file with merge conflicts opens as the diagram merge: the result, with the incoming and current sides.
+  const pay = await read('Payment.fsm');
+  const captured = '      "entry": "capture()",\n';
+  assert(pay.includes(captured), 'Captured has its entry');
+  await vscode.workspace.fs.writeFile(file('Conflict.fsm'), encodeText(pay.replace(captured, '<<<<<<< HEAD\n      "entry": "capture(); log()",\n=======\n      "entry": "settle()",\n>>>>>>> feature\n')));
+  await vscode.workspace.fs.writeFile(file('Conflict.fsm.layout'), encodeText(await read('Payment.fsm.layout')));
+  await vscode.commands.executeCommand('vscode.openWith', file('Conflict.fsm'), VIEW_TYPE);
+  const merge = await waitFor('the diagram merge with its three panes', () => api().sessionSummary().find((x) => x.startsWith('merge ') && x.endsWith('current,incoming,result')));
+  assert(merge.startsWith('merge 1 conflicts'), `one conflict: ${merge}`);
+  const result = vscode.window.tabGroups.all.flatMap((g) => g.tabs).find((t) => t.input instanceof vscode.TabInputCustom && t.input.uri.toString() === file('Conflict.fsm').toString());
+  assert(result && !result.isDirty, 'opening a conflicted file does not mark it changed');
+  console.log(`✓ opens the diagram merge of a conflicted file (${merge})`);
+  await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+
+  // 9. Renaming a machine's model file renames its layout file with it.
+  await vscode.workspace.fs.writeFile(file('Rename.fsm'), encodeText(await read('Payment.fsm')));
+  await vscode.workspace.fs.writeFile(file('Rename.fsm.layout'), encodeText(await read('Payment.fsm.layout')));
+  const rename = new vscode.WorkspaceEdit();
+  rename.renameFile(file('Rename.fsm'), file('Renamed.fsm'));
+  assert(await vscode.workspace.applyEdit(rename), 'the rename applies');
+  for (let i = 0; i < 50 && !(await exists('Renamed.fsm.layout')); i++) await new Promise((r) => setTimeout(r, 200));
+  assert((await exists('Renamed.fsm.layout')) && !(await exists('Rename.fsm.layout')), 'the layout file follows its model file');
+  console.log('✓ renames the layout file with its model file');
+
+  // 10. File › New File… › State Machine opens an untitled machine in the diagram.
   await vscode.commands.executeCommand('fsmEditor.newUntitled');
-  const untitled = vscode.workspace.textDocuments.find((d) => d.isUntitled && d.uri.path.endsWith('/StateMachine.fsm'));
-  assert(untitled, 'an untitled StateMachine.fsm is open');
-  assert(untitled.getText() === toXmi(defaultModel('StateMachine')), 'it holds the default machine');
-  const tab = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
-  assert(tab instanceof vscode.TabInputCustom && tab.viewType === VIEW_TYPE, 'it opens in the diagram editor');
+  const tab = await waitFor('the untitled diagram', () => {
+    const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+    return input instanceof vscode.TabInputCustom && input.uri.scheme === 'untitled' ? input : undefined;
+  });
+  assert(tab.viewType === VIEW_TYPE && tab.uri.path.endsWith('/StateMachine.fsm'), 'it opens in the diagram editor');
   await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
   console.log('✓ creates an untitled state machine in the diagram');
 
@@ -124,3 +205,20 @@ export async function run(): Promise<void> {
   await vscode.commands.executeCommand('workbench.action.closeAllEditors');
   await new Promise((r) => setTimeout(r, 500));
 }
+
+/** A machine in the old format: an initial pseudostate, an unnamed state and a choice. */
+const OLD = `<?xml version="1.0" encoding="UTF-8"?>
+<xmi:XMI xmi:version="20131001" xmlns:xmi="http://www.omg.org/spec/XMI/20131001" xmlns:uml="http://www.omg.org/spec/UML/20161101">
+  <uml:Model xmi:id="m" name="Old">
+    <packagedElement xmi:type="uml:StateMachine" xmi:id="sm" name="Old">
+      <region xmi:type="uml:Region" xmi:id="r">
+        <subvertex xmi:type="uml:Pseudostate" xmi:id="i" kind="initial"/>
+        <subvertex xmi:type="uml:State" xmi:id="a" name="Idle"/>
+        <subvertex xmi:type="uml:State" xmi:id="b"/>
+        <transition xmi:type="uml:Transition" xmi:id="t0" source="i" target="a"/>
+        <transition xmi:type="uml:Transition" xmi:id="t1" source="a" target="b"><trigger xmi:id="g" name="go"/></transition>
+      </region>
+    </packagedElement>
+  </uml:Model>
+</xmi:XMI>
+`;

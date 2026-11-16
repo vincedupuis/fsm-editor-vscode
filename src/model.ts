@@ -1,6 +1,9 @@
 /**
- * In-memory UML state machine model. Files store it as XMI with UML DI
- * (see xmi.ts); the diagram editor works on this JSON form.
+ * In-memory UML state machine model. Files store it as JSON, the model and its
+ * layout in two files (see format.ts; files of earlier versions are XMI, see
+ * xmi.ts); the diagram editor works on this JSON form, with absolute coordinates.
+ * Ids are derived from the names when a file is read; the editor makes its own
+ * for the elements it creates.
  *
  * The hierarchy is flat: every vertex points to its owner through `parent`,
  * which is either a region id (root region of the machine or a region of a
@@ -41,7 +44,7 @@ export type ItemColors = Partial<Record<ItemColorKey, string>>;
  */
 export const ITEM_COLOR_KEYS = [
   'background', 'entry', 'exit', 'doActivity', 'deferrable', 'invariant',
-  'triggers', 'guard', 'effect', 'precondition', 'postcondition',
+  'triggers', 'guard', 'action', 'precondition', 'postcondition',
 ] as const;
 export type ItemColorKey = (typeof ITEM_COLOR_KEYS)[number];
 
@@ -76,14 +79,15 @@ export interface Vertex {
   doActivity?: string;
   deferrable?: string[];
   invariant?: string;
-  /** Submachine state: XMI href of the referenced state machine, e.g. `Payment.fsm#sm`. */
+  /** Submachine state: path of the referenced state machine's file, relative to this one, e.g. `Payment.fsm`. */
   submachine?: string;
   stereotype?: string;
-  // connectionPointRef: xmi:id of the entry/exit point, inside the submachine's file
+  // connectionPointRef: name of the entry/exit point in the submachine's file
   ref?: string;
   pointKind?: PointKind;
   // comment
   text?: string;
+  /** Ids of the annotated vertices and transitions (references that name nothing: see format.ts). */
   anchors?: string[];
   color?: string;
   itemColors?: ItemColors;
@@ -97,11 +101,12 @@ export interface Vertex {
 export interface Transition {
   id: string;
   source: string;
+  /** Id of the target vertex, or a reference that names nothing (see `unresolved` in format.ts). */
   target: string;
   kind: TransitionKind;
   triggers: string[];
   guard: string;
-  effect: string;
+  action: string;
   /** Protocol state machines only. */
   precondition?: string;
   postcondition?: string;
@@ -113,11 +118,8 @@ export interface Transition {
 
 export interface FsmModel {
   version: 1;
-  /** xmi:id of the state machine, used by other files to reference it. */
-  id?: string;
   name: string;
   kind: 'behavioral' | 'protocol';
-  context?: string;
   documentation?: string;
   regions: Region[];
   vertices: Vertex[];
@@ -143,6 +145,7 @@ export function isBorderVertex(v: Vertex, vertices: Map<string, Vertex>): boolea
 }
 
 export interface ConnectionPointInfo {
+  /** The point's name, by which the machines using it refer to it. */
   id: string;
   name: string;
   kind: PointKind;
@@ -153,12 +156,12 @@ export function machineConnectionPoints(model: FsmModel): ConnectionPointInfo[] 
   const top = new Set(model.regions.map((r) => r.id));
   return model.vertices
     .filter((v) => (v.type === 'entryPoint' || v.type === 'exitPoint') && top.has(v.parent))
-    .map((v) => ({ id: v.id, name: v.name, kind: v.type === 'entryPoint' ? 'entry' : 'exit' }));
+    .map((v) => ({ id: v.name, name: v.name, kind: v.type === 'entryPoint' ? 'entry' : 'exit' }));
 }
 
 /** A state machine found in the workspace that submachine states can reference. */
 export interface MachineInfo {
-  /** href relative to the referencing file, e.g. `Payment.fsm#sm`. */
+  /** Path relative to the referencing file, e.g. `Payment.fsm`. */
   href: string;
   name: string;
   file: string;
@@ -171,18 +174,16 @@ export type SubmachineInfo = Record<string, { found: boolean; name?: string; fil
 export function defaultModel(name = 'StateMachine'): FsmModel {
   return {
     version: 1,
-    id: 'sm',
     name,
     kind: 'behavioral',
-    context: '',
     documentation: '',
     regions: [{ id: 'r_root', name: '' }],
     vertices: [
       { id: 'v_init', type: 'initial', name: '', parent: 'r_root', x: 60, y: 80, w: 20, h: 20 },
-      { id: 'v_idle', type: 'state', name: 'Idle', parent: 'r_root', x: 160, y: 60, w: 140, h: 60, regions: [] },
+      { id: 'v_idle', type: 'state', name: name === 'Idle' ? 'Idle1' : 'Idle', parent: 'r_root', x: 160, y: 60, w: 140, h: 60, regions: [] },
     ],
     transitions: [
-      { id: 't_init', source: 'v_init', target: 'v_idle', kind: 'external', triggers: [], guard: '', effect: '' },
+      { id: 't_init', source: 'v_init', target: 'v_idle', kind: 'external', triggers: [], guard: '', action: '' },
     ],
   };
 }
@@ -190,7 +191,6 @@ export function defaultModel(name = 'StateMachine'): FsmModel {
 /** Fills in defaults so partially specified models are safe to use. */
 export function normalizeModel(m: FsmModel): FsmModel {
   m.version = 1;
-  m.id = m.id || 'sm';
   m.regions = Array.isArray(m.regions) && m.regions.length ? m.regions : [{ id: 'r_root', name: '' }];
   m.vertices = Array.isArray(m.vertices) ? m.vertices : [];
   m.transitions = Array.isArray(m.transitions) ? m.transitions : [];
@@ -204,7 +204,7 @@ export function normalizeModel(m: FsmModel): FsmModel {
   for (const t of m.transitions) {
     t.triggers = t.triggers ?? [];
     t.guard = t.guard ?? '';
-    t.effect = t.effect ?? '';
+    t.action = t.action ?? '';
     t.kind = t.kind ?? 'external';
     // A state's self-transition is a loop whose bend points are its three corners, or only its
     // far corner: other numbers of free bend points, from older versions, go back to the default loop.
