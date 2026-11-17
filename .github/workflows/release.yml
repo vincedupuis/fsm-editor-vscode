@@ -13,7 +13,7 @@ env:
   # Release of fsm-cli (github.com/vincedupuis/fsm-cli) whose fsm-<version>.wasm,
   # fsm-templates-<version>.tar.gz and fsm-schemas-<version>.tar.gz the VSIX bundles, and whose
   # fsm-cases-<version>.tar.gz the tests use. test-windows.yml reads it from here.
-  FSM_CLI_VERSION: 0.6.3
+  FSM_CLI_VERSION: 0.7.0
 
 jobs:
   release:
