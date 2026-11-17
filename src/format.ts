@@ -110,7 +110,7 @@ class Shape {
         case 'format': {
           const n = numOf(f.value);
           if (n === 1) break;
-          if (n !== undefined && n > 1 && Number.isInteger(n)) this.add(f.value.line, `This file is in format ${formatNumber(n)}: it needs a newer version of FSM Editor.`);
+          if (n !== undefined && n > 1 && Number.isInteger(n)) this.add(f.value.line, `This file is in format ${formatNumber(n)}: this version reads format 1 only.`);
           else this.add(f.value.line, "Field 'format' must be 1.");
           break;
         }

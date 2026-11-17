@@ -186,7 +186,7 @@ describe('format: reading', () => {
   it('reports problems with their lines, and no model', () => {
     const r = readModel('{\n  "format": 1,\n  "name": "X",\n  "type": "behavioral",\n  "elements": [\n    { "name": "A", "type": "state", "gaurd": "x" }\n  ]\n}\n');
     assert.deepEqual(r, { problems: [{ line: 6, message: "Unknown field 'gaurd' in a state." }] });
-    assert.deepEqual(readModel('{ "format": 3, "name": "X", "type": "behavioral" }'), { problems: [{ line: 1, message: 'This file is in format 3: it needs a newer version of FSM Editor.' }] });
+    assert.deepEqual(readModel('{ "format": 3, "name": "X", "type": "behavioral" }'), { problems: [{ line: 1, message: 'This file is in format 3: this version reads format 1 only.' }] });
   });
 
   it('reads CRLF line ends and a $schema field, which is not written back', () => {

@@ -66,7 +66,7 @@ The submachine is referenced by the path of its file (`"submachine": "Payment.fs
 
 ## File format
 
-A machine is two JSON files side by side: `Name.fsm`, the model, and `Name.fsm.layout`, its drawing. The format is described in full in [fsm-cli's README](https://github.com/vincedupuis/fsm-cli#the-fsm-file-format), with its JSON Schemas (`schemas/fsm.schema.json`, `schemas/fsm-layout.schema.json`), which the text view of `.fsm` and `.fsm.layout` files uses. In short:
+A machine is two JSON files side by side: `Name.fsm`, the model, and `Name.fsm.layout`, its drawing. The model file's format is described in full in [fsm-cli's README](https://github.com/vincedupuis/fsm-cli#the-fsm-file-format), with its JSON Schema (`schemas/fsm.schema.json` there); the layout file's [below](#the-layout-file), with its JSON Schema, [`schemas/fsm-layout.schema.json`](../schemas/fsm-layout.schema.json). The text view of `.fsm` and `.fsm.layout` files uses both schemas. In short:
 
 - The model file holds the machine and nothing about the drawing, without ids: elements are identified by their names, unique in the machine. A transition is written inside its source, with its `type`, `trigger`, `guard`, `action` (UML's effect), `precondition`, `postcondition` and `target`, a reference: an element's name, `<owner>.<point>`, `<owner>.history` or `<owner>.deepHistory`. A region's initial pseudostate is `"initial": { "target": … }`, its history pseudostates `"history"` and `"deepHistory"`. A state with several regions has `"regions": [{ "name": …, … }]`; a state with one region holds that region's fields itself, and the region has no name. A submachine state has `"submachine": "Payment.fsm"` and its points are the submachine's, by name.
 - The layout file mirrors the model file (the same nesting and names) and holds positions, sizes, region sizes and layout, bend points, label positions, colors and groups. Positions are relative to the owning state, bend points to the innermost state containing both ends of their transition, numbers rounded to 0.1: moving a state changes its own position only. A transition's entry is found under its source by its trigger and target (the events it names, however the trigger is spaced), then by order among identical ones: a transition with nothing to store gets an entry anyway when a later one with the same trigger and target has one. An initial or history pseudostate's color is its transition's. Renaming or moving a model file in VS Code renames its layout file with it.
@@ -77,6 +77,27 @@ The editor never drops or guesses anything in the model. A file that isn't valid
 **Model hash.** The code generator computes a model hash from the model file, and the bundled templates write it in the header of every generated file of a machine, which is how `fsm write --check` finds generated files that are out of date. It is computed from the model's content, the JSON value without `$schema` (the first 16 hex digits of the SHA-256 of its canonical form: compact, fields sorted by name), so reformatting, reordering fields or changing escapes doesn't change it, and the layout file has no part in it.
 
 **Files of earlier versions.** Until 0.6, a `.fsm` file was XMI 2.5.1 with the UML model and a UML DI diagram in one file. The editor still reads them, and converts one when it is saved: the model file becomes JSON and the layout file is created. The files linked to it by submachine states (the machines it uses and those using it, transitively) are converted at the same time, as their point references go from ids to names. Unnamed elements get generated names, a name used twice gets a number (`Idle2`), spaces, `*` and `.` in names become `_`, the machine's context is dropped, and what the format can't hold (names of initial and history pseudostates and of a state's only region, the size of a pseudostate, a second initial pseudostate in a region, a transition to an initial pseudostate, …) is left out: a message lists every file converted, every rename and every loss. A file nobody saves stays in the old format. The `fsm` command refuses old files.
+
+### The layout file
+
+`<Name>.fsm.layout` holds the drawing: positions and sizes, the arrangement and sizes of regions, bend points and label positions of transitions, colors, groups. It mirrors the model file, with the same nesting, names and order:
+
+| Object | Fields |
+| --- | --- |
+| top level | `format` (`1`, required, first), `points`, then the region fields or `regions` |
+| region fields | `initial`, `history`, `deepHistory` (each `x`, `y`, `group`, and for its arrow `bends`, `label`, `color`, `itemColors`), `elements` |
+| item of `regions` | `name`, `size` (its extent along its state's region layout), then the region fields |
+| element | `name`, `x`, `y`, `width`, `height` (states, comments, forks and joins: the others have a fixed size), `color`, `itemColors`, `group`, `regionLayout` (`"horizontal"` or `"vertical"`), `transitions`, `points`, then the region fields or `regions` |
+| point | `name`, `x`, `y`, `color`, `itemColors`, `group` (the machine's points), `transitions` |
+| transition, under its source | `trigger` and `target` (as in the model file: they identify it), `bends` (list of `{ "x", "y" }`), `label` (`{ "x", "y" }`, from the middle of the line), `color`, `itemColors`. A transition has an entry only when it has something to store. |
+
+`itemColors` gives items their own colors (`#rrggbb`), keyed by the model file's field names (see [fsm-cli's README](https://github.com/vincedupuis/fsm-cli#the-fsm-file-format)): `background` (a composite state's regions), `entry`, `exit`, `do`, `defer`, `invariant`, `trigger`, `guard`, `action`, `precondition`, `postcondition`.
+
+What keeps diffs small:
+
+- Every object is written one field per line, except an object holding only `x` and `y` (a bend point, a `label`, a bare position), which is one line: two people changing different elements don't touch adjacent lines.
+- `x` and `y` are relative to the top-left corner of the owning state (the diagram's origin at the top level); a point's position is relative to its owner. Bend points are relative to the top-left corner of the innermost state containing both ends of the transition (the state itself for a transition between a state and what it contains, or a self-transition; the origin at the top level). Moving a state changes its own `x` and `y` only; moving one end of a transition changes nothing in the transition's entry.
+- Numbers are rounded to 0.1. Saving rewrites nothing that didn't change: reading the two files and writing them again gives the same bytes.
 
 ## Deviations from UML 2.5.1
 

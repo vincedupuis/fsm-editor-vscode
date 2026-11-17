@@ -8,8 +8,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { layoutShapeProblem, readModel } from '../../src/format';
-import { JsonSyntaxError, parseJson } from '../../src/json';
+import { readModel } from '../../src/format';
 import { SubmachineInfo, machineConnectionPoints } from '../../src/model';
 import { validate } from '../../src/validation';
 import { root } from './harness';
@@ -22,7 +21,7 @@ describe('fsm-cli test cases', () => {
     it('need fsm/cases: npm run build:fsm', () => assert.fail('fsm/cases is missing: run npm run build:fsm'));
     return;
   }
-  const folders = readdirSync(cases).filter((d) => d !== 'layout' && statSync(join(cases, d)).isDirectory());
+  const folders = readdirSync(cases).filter((d) => statSync(join(cases, d)).isDirectory());
   for (const folder of folders) {
     it(`${folder}: the same problems as fsm`, () => {
       const dir = join(cases, folder);
@@ -52,19 +51,4 @@ describe('fsm-cli test cases', () => {
       assert.ok(compared > 0 || folder === 'examples');
     });
   }
-
-  it('layout files: the editor takes those the layout schema accepts, and refuses the others', () => {
-    for (const [sub, valid] of [['layout/valid', true], ['layout/invalid', false], ['examples', true]] as const) {
-      for (const f of readdirSync(join(cases, sub)).filter((x) => x.endsWith('.fsm.layout'))) {
-        let problem: string | undefined;
-        try {
-          problem = layoutShapeProblem(parseJson(readFileSync(join(cases, sub, f), 'utf8')));
-        } catch (e) {
-          if (!(e instanceof JsonSyntaxError)) throw e;
-          problem = e.message;
-        }
-        assert.equal(problem === undefined, valid, `${sub}/${f}: ${problem}`);
-      }
-    }
-  });
 });
