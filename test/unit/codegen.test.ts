@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { loadModel } from '../../src/load';
+import { loadModel } from '../../src/common';
 import { FakeClock, GenerateFailure, ModelBuilder, codeModel, generate, idOf, load, recorder, root, run } from './harness';
 
 const example = (name: string) => readFileSync(join(root, 'examples', name), 'utf8');

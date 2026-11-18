@@ -3,5 +3,6 @@ out/
 *.vsix
 .vscode-test-web/
 
-# fsm-cli's WebAssembly module and templates: npm run build:fsm, or downloaded by the workflows
-fsm/
+# fsm-editor-common's WebAssembly module, fsm-cli's templates, the schemas and the interface's cases: npm run
+# build:common, or downloaded by the workflows
+common/

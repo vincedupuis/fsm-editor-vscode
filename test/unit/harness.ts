@@ -1,47 +1,37 @@
 /**
- * Test helpers: build models in code, generate code for them with fsm-cli's
- * WebAssembly module (fsm/fsm.wasm, as the extension does) and the bundled
- * templates (fsm/templates/ts.jinja), bundle and load the TypeScript, and
- * record what the machines call.
+ * Test helpers: build models in code, generate code for them with fsm-cli's code
+ * generator in fsm-editor-common's WebAssembly module (common/common.wasm, as the
+ * extension does) and the bundled templates (common/templates/ts.jinja), bundle
+ * and load the TypeScript, and record what the machines call.
  */
 import * as esbuild from 'esbuild';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { assignNames, derivedIds, writeMachine } from '../../src/format';
-import { FsmFile, FsmIssue, FsmResponse, Generator, loadGenerator } from '../../src/fsmCli';
+import { FsmFile, FsmIssue, FsmResponse, derivedIds, generate as generateWith, initCommon, writeMachine } from '../../src/common';
 import { FsmModel, Transition, Vertex, VertexType } from '../../src/model';
 
 export const root = resolve(__dirname, '../../..');
 
-let generator: Generator | undefined;
+const wasm = join(root, 'common/common.wasm');
+if (!existsSync(wasm)) throw new Error('common/common.wasm is missing: build it with npm run build:common (see README.md, Development).');
+initCommon(readFileSync(wasm));
 
 /** A model's file text, as the editor writes it (generated names for what has none). */
 export function fileOf(model: FsmModel): string {
-  const m = JSON.parse(JSON.stringify(model)) as FsmModel;
-  assignNames(m);
-  const w = writeMachine(m);
-  if (w.lost.length) throw new Error(`The test model can't be written: ${w.lost.join('; ')}`);
-  return w.model;
+  return writeMachine(JSON.parse(JSON.stringify(model)) as FsmModel).modelText;
 }
 
 /** The id fsm-cli gives the element `id` of `model` (in problems, the code model and traces): see derivedIds. */
 export function idOf(model: FsmModel, id: string): string {
-  const m = JSON.parse(JSON.stringify(model)) as FsmModel;
-  assignNames(m);
-  return derivedIds(m).get(id) ?? id;
+  return derivedIds(model).get(id) ?? id;
 }
 
 /** The module's response for `machines` (file name → model or file text), all generated, in a folder /m. */
 export async function run(machines: Record<string, FsmModel | string>, template: string, templateName = 'test.jinja'): Promise<FsmResponse> {
-  if (!generator) {
-    const wasm = join(root, 'fsm/fsm.wasm');
-    if (!existsSync(wasm)) throw new Error('fsm/fsm.wasm is missing: build it with npm run build:fsm (see README.md, Development).');
-    generator = loadGenerator(readFileSync(wasm));
-  }
   const files: Record<string, string> = {};
   for (const [name, m] of Object.entries(machines)) files[`/m/${name}`] = typeof m === 'string' ? m : fileOf(m);
-  return generator({ cwd: '/m', files, generate: Object.keys(machines), template, templateName });
+  return generateWith({ cwd: '/m', files, generate: Object.keys(machines), template, templateName });
 }
 
 /** A failed generation: the module's error, with the problems it reported. */
@@ -62,8 +52,8 @@ export async function generate(machines: Record<string, FsmModel | string>, temp
   return r;
 }
 
-/** A bundled template's text (fsm/templates/<name>.jinja). */
-export const bundled = (name: 'ts' | 'sml') => readFileSync(join(root, 'fsm/templates', `${name}.jinja`), 'utf8');
+/** A bundled template's text (common/templates/<name>.jinja). */
+export const bundled = (name: 'ts' | 'sml') => readFileSync(join(root, 'common/templates', `${name}.jinja`), 'utf8');
 
 /** Template printing the code model of each machine as JSON, in <machine>.json: the keys of the code model. */
 const DUMP = `{% filter file(machine.name ~ ".json") %}{{ {"machine": machine, "regions": regions, "topRegions": topRegions, "states": states, "events": events, "timers": timers, "signals": signals, "actions": actions, "conditions": conditions, "activities": activities, "transitions": transitions, "submachines": submachines, "entryPoints": entryPoints, "exitPoints": exitPoints, "start": start, "invariants": invariants, "features": features, "tables": tables} | tojson }}{% endfilter %}`;

@@ -133,13 +133,13 @@ Files of earlier versions (XMI 2.5.1 with UML DI) still open, unchanged (opening
 
 ```sh
 npm install
-npm run build:fsm    # the code generator: builds ../fsm-cli as WebAssembly into fsm/, with its templates
+npm run build:common # builds ../fsm-editor-common as WebAssembly into common/, with fsm-cli's templates
 npm run compile      # type-check, then bundle for desktop and web; or: npm run watch
 npm run test:unit    # unit and code generation tests (Node; compiles the C++ of the sml template when a C++ compiler is found)
 npm run test:web     # smoke test in VS Code for the Web (Chromium)
 ```
 
-Code generation needs `fsm/fsm.wasm` and `fsm/templates/*.jinja`, and the text view of `.fsm` files `fsm/schemas`, which are not in the repository. `npm run build:fsm` builds them from a checkout of [fsm-cli](https://github.com/vincedupuis/fsm-cli) next to this one (`../fsm-cli`), and needs [Rust](https://rustup.rs) with the WebAssembly target: `rustup target add wasm32-unknown-unknown`. It uses `cargo` from the PATH, or else from `~/.cargo/bin`. Run it again after changing fsm-cli. The release workflow downloads them from the fsm-cli release named by `FSM_CLI_VERSION` in `.github/workflows/release.yml` instead.
+The extension needs `common/common.wasm` ([fsm-editor-common](https://github.com/vincedupuis/fsm-editor-common): reading, writing, converting, validating, comparing and merging machines, and code generation), `common/templates/*.jinja` and `common/schemas`, which are not in the repository. `npm run build:common` builds them from checkouts of fsm-editor-common and [fsm-cli](https://github.com/vincedupuis/fsm-cli) next to this one (`../fsm-editor-common`, `../fsm-cli`), and needs [Rust](https://rustup.rs) with the WebAssembly target: `rustup target add wasm32-unknown-unknown`. It uses `cargo` from the PATH, or else from `~/.cargo/bin`. Run it again after changing either. The release workflow downloads them from the fsm-editor-common release named by `FSM_COMMON_VERSION` in `.github/workflows/release.yml` instead.
 
 Press F5 in VS Code to launch an Extension Development Host with the `examples` folder open, then open `examples/MediaPlayer.fsm`, or `examples/Order.fsm` for a submachine with connection point references (it uses `examples/Payment.fsm`).
 
@@ -150,16 +150,13 @@ Package with `npm run package`, which produces a `.vsix` file.
 - `src/extension.ts`: commands and registration (bundled by `esbuild.mjs` into `out/extension.js` for desktop and `out/web/extension.js` for the web)
 - `src/fsmEditorProvider.ts`: the custom editor and its two-file document (edits, undo, save, revert, backups); publishes diagnostics
 - `src/model.ts`: the in-memory model the diagram editor works on
-- `src/json.ts`, `src/format.ts`: reading and writing the `.fsm` and `.fsm.layout` files
-- `src/xmi.ts`, `src/xml.ts`, `src/convert.ts`: reading files of earlier versions (XMI) and converting them
-- `src/compare.ts`, `src/merge.ts`: comparing two versions of a machine, splitting conflict markers and taking a side (no VS Code API); `src/sessions.ts`: the diff and merge panes
-- `src/validation.ts`: UML well-formedness rules
+- `src/common.ts`: the client of fsm-editor-common's module: reading and writing the `.fsm` and `.fsm.layout` files, converting files of earlier versions (XMI), validation, the grammar's checks, comparing and merging, code generation
+- `src/sessions.ts`: the diff and merge panes
 - `media/editor.js`, `media/editor.css`: the diagram editor webview (no dependencies)
-- `media/expressions.js`: grammar of behaviors, conditions and triggers, shared by the webview and the validator
 - `src/util.ts`: path and text helpers that work in both the desktop and web extension hosts
-- `src/codegenCommand.ts`: the *Generate Code…* command; `src/fsmCli.ts` runs fsm-cli's WebAssembly module
-- `fsm/`: the module (`fsm.wasm`), the bundled templates (`templates/*.jinja`), the file format's JSON Schemas (`schemas/`) and test cases (`cases/`), from `npm run build:fsm` (not in the repository)
-- `scripts/build-fsm.mjs`: builds them from `../fsm-cli`
+- `src/codegenCommand.ts`: the *Generate Code…* command
+- `common/`: fsm-editor-common's module (`common.wasm`), the bundled templates (`templates/*.jinja`), the files' JSON Schemas (`schemas/`) and the module's interface cases (`api-cases/`), from `npm run build:common` (not in the repository)
+- `scripts/build-common.mjs`: builds them from `../fsm-editor-common` and `../fsm-cli`
 - `test/unit/`: unit and code generation tests run by `npm run test:unit`
 - `test/web/`: browser smoke test run by `npm run test:web`
 - `docs/UML-CONFORMANCE.md`: supported UML features, deviations, validation rules and export mappings

@@ -1,7 +1,7 @@
 // Bundles the extension twice from the same sources:
 //   out/extension.js      desktop VS Code (Node.js extension host)   → package.json "main"
 //   out/web/extension.js  vscode.dev / github.dev (web worker)      → package.json "browser"
-// Code generation runs fsm/fsm.wasm in both (npm run build:fsm).
+// Both run fsm-editor-common's common/common.wasm (npm run build:common).
 // Usage: node esbuild.mjs [--watch] [--test]
 //   --test also bundles the browser smoke test (test/web/index.ts → out/test/web/index.js).
 import * as esbuild from 'esbuild';

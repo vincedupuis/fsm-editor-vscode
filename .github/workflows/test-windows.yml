@@ -35,20 +35,21 @@ jobs:
 
       - run: npm ci
 
-      # fsm-cli's WebAssembly module, templates, schemas and test cases, from the release pinned in release.yml.
-      - name: Fetch fsm-cli
+      # fsm-editor-common's WebAssembly module, templates, schemas and interface cases, from the release pinned in
+      # release.yml.
+      - name: Fetch fsm-editor-common
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          version=$(sed -n 's/^ *FSM_CLI_VERSION: *//p' .github/workflows/release.yml | tr -d '\r')
-          gh release download "v$version" -R vincedupuis/fsm-cli -p "fsm-$version.wasm" -p "fsm-*-$version.tar.gz" -D fsm
-          mv "fsm/fsm-$version.wasm" fsm/fsm.wasm
-          for part in templates schemas cases; do
-            tar xzf "fsm/fsm-$part-$version.tar.gz" -C fsm
-            rm "fsm/fsm-$part-$version.tar.gz"
+          v=$(sed -n 's/^ *FSM_COMMON_VERSION: *//p' .github/workflows/release.yml | tr -d '\r')
+          gh release download "v$v" -R vincedupuis/fsm-editor-common -p "fsm-editor-common-$v.wasm" -p "fsm-editor-common-*-$v.tar.gz" -D common
+          mv "common/fsm-editor-common-$v.wasm" common/common.wasm
+          for part in templates schemas api-cases; do
+            tar xzf "common/fsm-editor-common-$part-$v.tar.gz" -C common
+            rm "common/fsm-editor-common-$part-$v.tar.gz"
           done
-          ls -R fsm
+          ls -R common
 
       - name: Test
         run: npm run test:unit

@@ -1,15 +1,14 @@
 /**
  * The "Generate Code…" command: picks a template (bundled or any .jinja file)
- * and an output folder, then generates the code with fsm-cli's WebAssembly
- * module (fsmCli.ts). The files go through vscode.workspace.fs, so this works on
+ * and an output folder, then generates the code with fsm-cli's code generator, in
+ * fsm-editor-common's WebAssembly module (common.ts). The files go through vscode.workspace.fs, so this works on
  * desktop and on the web alike.
  *
  * Arguments (all optional, for tasks and keybindings):
  *   fsmEditor.generateCode(source?: Uri, { template?: Uri | string, out?: Uri | string })
  */
 import * as vscode from 'vscode';
-import { FsmIssue, Generator, loadGenerator } from './fsmCli';
-import { loadModel, submachineFiles } from './load';
+import { FsmIssue, generate, load } from './common';
 import { basename, encodeText } from './util';
 
 export interface GenerateArgs {
@@ -23,22 +22,8 @@ const OUT_KEY = 'fsmEditor.codegen.out';
 let output: vscode.OutputChannel | undefined;
 const log = () => (output ??= vscode.window.createOutputChannel('FSM Code Generation'));
 
-/** The module and its templates, shipped in the extension's fsm/ folder. */
-const fsmFolder = (context: vscode.ExtensionContext) => vscode.Uri.joinPath(context.extensionUri, 'fsm');
-
-let generator: Generator | undefined;
-async function getGenerator(context: vscode.ExtensionContext): Promise<Generator> {
-  if (!generator) {
-    let bytes: Uint8Array;
-    try {
-      bytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(fsmFolder(context), 'fsm.wasm'));
-    } catch {
-      throw new Error('The code generator (fsm/fsm.wasm) is missing from the extension.');
-    }
-    generator = loadGenerator(bytes);
-  }
-  return generator;
-}
+/** fsm-editor-common's module and fsm-cli's templates, shipped in the extension's common/ folder. */
+const commonFolder = (context: vscode.ExtensionContext) => vscode.Uri.joinPath(context.extensionUri, 'common');
 
 /** A Uri, a URI string, an absolute path, or a path relative to the first workspace folder. */
 function asUri(u: vscode.Uri | string): vscode.Uri {
@@ -51,7 +36,7 @@ function asUri(u: vscode.Uri | string): vscode.Uri {
 
 /** Templates: the bundled ones, then the workspace's. */
 async function pickTemplate(context: vscode.ExtensionContext): Promise<vscode.Uri | undefined> {
-  const bundledDir = vscode.Uri.joinPath(fsmFolder(context), 'templates');
+  const bundledDir = vscode.Uri.joinPath(commonFolder(context), 'templates');
   const items: (vscode.QuickPickItem & { uri?: vscode.Uri })[] = [];
   try {
     const entries = await vscode.workspace.fs.readDirectory(bundledDir);
@@ -124,7 +109,7 @@ async function readMachines(source: vscode.Uri, readText?: ReadText): Promise<Re
     files[uri.path] = text;
     let paths: string[] = [];
     try {
-      paths = submachineFiles(loadModel(text));
+      paths = load(text).submachines;
     } catch {
       // not a state machine: the module says why
     }
@@ -154,7 +139,7 @@ export async function generateCode(context: vscode.ExtensionContext, source: vsc
   const cwd = folder?.uri.scheme === source.scheme && folder.uri.authority === source.authority ? folder.uri : vscode.Uri.joinPath(source, '..');
   const display = (file: string) => vscode.workspace.asRelativePath(file.startsWith('/') ? cwd.with({ path: file }) : vscode.Uri.joinPath(cwd, file));
   const issueLine = (i: FsmIssue) => `${display(i.file)}:${i.line}: ${i.severity}: ${i.message}`;
-  const templateName = templateUri.toString().startsWith(fsmFolder(context).toString()) ? basename(templateUri.path) : vscode.workspace.asRelativePath(templateUri);
+  const templateName = templateUri.toString().startsWith(commonFolder(context).toString()) ? basename(templateUri.path) : vscode.workspace.asRelativePath(templateUri);
 
   const channel = log();
   const time = () => new Date().toLocaleTimeString();
@@ -176,8 +161,7 @@ export async function generateCode(context: vscode.ExtensionContext, source: vsc
     }
     if (template === undefined) return fail(`Cannot read the template ${templateName}.`);
     const files = await readMachines(source, readText);
-    const generate = await getGenerator(context);
-    const result = await generate({ cwd: cwd.path, files, generate: [source.path], template, templateName });
+    const result = generate({ cwd: cwd.path, files, generate: [source.path], template, templateName });
     if (result.exitCode !== 0) return fail(result.error ?? `The code generator stopped with exit code ${result.exitCode}.`, result.issues);
 
     const written: vscode.Uri[] = [];

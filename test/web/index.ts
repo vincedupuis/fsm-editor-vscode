@@ -8,7 +8,7 @@
  * waiting for them exercises the whole editor pipeline in the browser.
  */
 import * as vscode from 'vscode';
-import { isOldFormat, readModel } from '../../src/format';
+import { initCommon, isOldFormat, readMachine } from '../../src/common';
 import { decodeText, encodeText } from '../../src/util';
 
 const VIEW_TYPE = 'fsmEditor.stateMachine';
@@ -32,6 +32,10 @@ const messages = (uri: vscode.Uri) => vscode.languages.getDiagnostics(uri).map((
 export async function run(): Promise<void> {
   const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
   assert(folder, 'a workspace folder is open');
+  // This bundle's own client of fsm-editor-common, to read the files the extension writes.
+  const extension = vscode.extensions.all.find((e) => e.packageJSON?.name === 'fsm-editor');
+  assert(extension, 'the extension is installed');
+  initCommon(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(extension.extensionUri, 'common', 'common.wasm')));
   const file = (name: string) => vscode.Uri.joinPath(folder, name);
   const read = async (name: string) => decodeText(await vscode.workspace.fs.readFile(file(name)));
   const exists = async (name: string) => {
@@ -77,7 +81,7 @@ export async function run(): Promise<void> {
     messages(file('Broken.fsm')).some((m) => m.startsWith('Guard:')) ? undefined : true,
   );
   await doc.save();
-  const saved = readModel(await read('Broken.fsm'));
+  const saved = readMachine(await read('Broken.fsm'), undefined);
   assert(!('problems' in saved) && saved.model.transitions.some((t) => t.guard === 'isReady()'), 'the saved file has the fixed guard');
   console.log('✓ follows the model file edited as text, and its save');
 
@@ -121,7 +125,7 @@ export async function run(): Promise<void> {
   await vscode.commands.executeCommand('workbench.action.files.save');
   for (let i = 0; i < 100 && !(await exists('Old.fsm.layout')); i++) await new Promise((r) => setTimeout(r, 200));
   assert(await exists('Old.fsm.layout'), 'saving creates the layout file');
-  const now = readModel(await read('Old.fsm'));
+  const now = readMachine(await read('Old.fsm'), undefined);
   assert(!('problems' in now), 'the model file is in the new format');
   assert(now.model.vertices.map((v) => v.name).join(',') === ',Idle,state1*', `with a generated name: ${now.model.vertices.map((v) => v.name)}`);
   await waitFor('the converted file as JSON again', () =>
@@ -133,7 +137,7 @@ export async function run(): Promise<void> {
   // but not generated.
   const out = file('generated');
   const written: vscode.Uri[] = await vscode.commands.executeCommand('fsmEditor.generateCode', file('Order.fsm'), {
-    template: vscode.Uri.joinPath(ext.extensionUri, 'fsm/templates/ts.jinja'),
+    template: vscode.Uri.joinPath(ext.extensionUri, 'common/templates/ts.jinja'),
     out,
   });
   const names = written.map((u) => u.path.slice(u.path.lastIndexOf('/') + 1)).sort();

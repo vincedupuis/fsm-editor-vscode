@@ -1,4 +1,4 @@
-// The Boost.SML template (fsm/templates/sml.jinja): the C++ it generates for the
+// The Boost.SML template (common/templates/sml.jinja): the C++ it generates for the
 // examples and for a model of every feature is compiled and run against the same
 // scenarios as the TypeScript template in codegen.test.ts.
 import assert from 'node:assert/strict';

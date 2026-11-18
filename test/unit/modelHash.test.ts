@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { FsmModel } from '../../src/model';
-import { assignNames, writeMachine } from '../../src/format';
+import { writeMachine } from '../../src/common';
 import { ModelBuilder, bundled, fileOf, generate, root } from './harness';
 
 /** The model hashes of files (name → text), as fsm-cli computes them (`machine.modelHash` in templates). */
@@ -30,8 +30,7 @@ function machine(): FsmModel {
   b.t('A', 'A', { triggers: ['tick'] });
   b.vertex('comment', 'r_root', { id: 'n1', text: 'a <note> & "quotes"', anchors: ['A'] });
   b.model.documentation = 'Doc';
-  assignNames(b.model);
-  return b.model;
+  return writeMachine(b.model).model;
 }
 
 /** The transition A -go-> B. */
@@ -53,8 +52,8 @@ describe('model hash', () => {
     for (const [what, change] of changes) {
       const m = structuredClone(base);
       change(m);
-      assert.notEqual(writeMachine(m).layout, writeMachine(base).layout, what);
-      assert.equal(writeMachine(m).model, writeMachine(base).model, what);
+      assert.notEqual(writeMachine(m).layoutText, writeMachine(base).layoutText, what);
+      assert.equal(writeMachine(m).modelText, writeMachine(base).modelText, what);
     }
     assert.ok(await hashOf(fileOf(base)));
   });

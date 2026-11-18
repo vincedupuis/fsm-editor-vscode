@@ -5,9 +5,8 @@
  * result) and its two sides, served read-only by the `fsm-merge` file system.
  */
 import * as vscode from 'vscode';
-import { Change, compareModels, describeChange, isModelChange, itemsOf } from './compare';
+import { Change, adopt, compareModels, describeChange, isModelChange, keysOf } from './common';
 import { FsmModel } from './model';
-import { adopt } from './merge';
 
 /** An open diagram, as sessions see it. */
 export interface Pane {
@@ -212,18 +211,18 @@ export class MergeSession implements Session {
       post(pane, role, marks, det, role === 'incoming' ? 'theirs' : 'yours');
     }
     const r = this.result();
-    const items = r ? itemsOf(r) : new Map();
+    const items = r ? keysOf(r) : new Map<string, string>();
     const resultMarks: Record<string, string> = {};
     const resultDetails: Record<string, string[]> = {};
     for (const c of merged) {
-      const it = items.get(c.key);
-      if (it?.id) resultMarks[it.id] = 'merged';
+      const id = items.get(c.key);
+      if (id) resultMarks[id] = 'merged';
     }
     for (const c of this.conflicts) {
-      const it = items.get(c.oldKey ?? c.key) ?? items.get(c.key);
-      if (!it?.id) continue;
-      resultMarks[it.id] = this.choices.has(c.key) ? 'resolved' : 'conflict';
-      resultDetails[it.id] = details(c);
+      const id = items.get(c.oldKey ?? c.key) || items.get(c.key);
+      if (!id) continue;
+      resultMarks[id] = this.choices.has(c.key) ? 'resolved' : 'conflict';
+      resultDetails[id] = details(c);
     }
     for (const pane of this.results) post(pane, 'result', resultMarks, resultDetails, `${this.choices.size} of ${this.conflicts.length} chosen`);
   }
@@ -249,8 +248,9 @@ export class MergeSession implements Session {
         this.sides.get('incoming')?.post({ type: 'reveal', id: c.newId ?? null });
         this.sides.get('current')?.post({ type: 'reveal', id: c.oldId ?? null });
         const r = this.result();
-        const it = r && (itemsOf(r).get(c.oldKey ?? c.key) ?? itemsOf(r).get(c.key));
-        for (const p of this.results) p.post({ type: 'reveal', id: it?.id ?? null });
+        const keys = r ? keysOf(r) : undefined;
+        const id = keys && (keys.get(c.oldKey ?? c.key) || keys.get(c.key));
+        for (const p of this.results) p.post({ type: 'reveal', id: id || null });
         break;
       }
       case 'mergeChoose':

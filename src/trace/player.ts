@@ -18,7 +18,7 @@
 import * as vscode from 'vscode';
 import { FsmEditorProvider } from '../fsmEditorProvider';
 import { FsmModel, ModelIndex } from '../model';
-import { loadModel, submachineFiles } from '../load';
+import { loadModel, submachineFiles } from '../common';
 import { basename, decodeText } from '../util';
 import { TraceFormat, TraceRecord, detectFormat, traceFormats } from './format';
 import { Instance, TimelineEntry, TraceView, isResolved, replay } from './replay';

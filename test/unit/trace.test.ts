@@ -5,7 +5,7 @@ import { describe, it } from 'node:test';
 import { ModelIndex } from '../../src/model';
 import { builtInFormat, compileFormat, detectFormat, parseTime, TraceFormat, TraceFormatError, traceFormats } from '../../src/trace/format';
 import { findState, findTransitions, Instance, replay, TimelineEntry } from '../../src/trace/replay';
-import { loadModel } from '../../src/load';
+import { loadModel } from '../../src/common';
 import { ModelBuilder, fileOf, idOf, load, recorder, root } from './harness';
 
 const example = (name: string) => readFileSync(join(root, 'examples', name), 'utf8');

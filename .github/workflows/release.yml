@@ -1,8 +1,9 @@
 # On a version tag (v0.3.1), builds the VSIX, attaches it to the GitHub Release
 # of that tag, and publishes it to the Visual Studio Marketplace when the
 # VSCE_PAT secret is set (an Azure DevOps token with the Marketplace > Manage
-# scope). The VSIX bundles fsm-cli's WebAssembly module and templates, which
-# generate the code on desktop and on the web.
+# scope). The VSIX bundles fsm-editor-common's WebAssembly module (reading,
+# writing, converting, validating, comparing and merging machines, and code
+# generation) with fsm-cli's templates, on desktop and on the web.
 name: Release
 
 on:
@@ -10,10 +11,10 @@ on:
     tags: ['v*']
 
 env:
-  # Release of fsm-cli (github.com/vincedupuis/fsm-cli) whose fsm-<version>.wasm,
-  # fsm-templates-<version>.tar.gz and fsm-schemas-<version>.tar.gz the VSIX bundles, and whose
-  # fsm-cases-<version>.tar.gz the tests use. test-windows.yml reads it from here.
-  FSM_CLI_VERSION: 0.7.0
+  # Release of fsm-editor-common (github.com/vincedupuis/fsm-editor-common) whose
+  # fsm-editor-common-<version>.wasm and -templates, -schemas archives the VSIX bundles, and whose
+  # -api-cases archive the tests replay. test-windows.yml reads it from here.
+  FSM_COMMON_VERSION: 0.1.0
 
 jobs:
   release:
@@ -40,17 +41,18 @@ jobs:
 
       - run: npm ci
 
-      - name: Fetch fsm-cli
+      - name: Fetch fsm-editor-common
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download "v$FSM_CLI_VERSION" -R vincedupuis/fsm-cli -p "fsm-$FSM_CLI_VERSION.wasm" -p "fsm-*-$FSM_CLI_VERSION.tar.gz" -D fsm
-          mv "fsm/fsm-$FSM_CLI_VERSION.wasm" fsm/fsm.wasm
-          for part in templates schemas cases; do
-            tar xzf "fsm/fsm-$part-$FSM_CLI_VERSION.tar.gz" -C fsm
-            rm "fsm/fsm-$part-$FSM_CLI_VERSION.tar.gz"
+          v=$FSM_COMMON_VERSION
+          gh release download "v$v" -R vincedupuis/fsm-editor-common -p "fsm-editor-common-$v.wasm" -p "fsm-editor-common-*-$v.tar.gz" -D common
+          mv "common/fsm-editor-common-$v.wasm" common/common.wasm
+          for part in templates schemas api-cases; do
+            tar xzf "common/fsm-editor-common-$part-$v.tar.gz" -C common
+            rm "common/fsm-editor-common-$part-$v.tar.gz"
           done
-          ls -R fsm
+          ls -R common
 
       - name: Test
         run: npm run test:unit

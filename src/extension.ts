@@ -1,12 +1,19 @@
 import * as vscode from 'vscode';
 import { GenerateArgs, generateCode } from './codegenCommand';
 import { FsmEditorProvider, layoutUriOf, stateOfModel } from './fsmEditorProvider';
-import { isOldFormat } from './format';
+import { initCommon, isOldFormat } from './common';
 import { defaultModel } from './model';
 import { TracePlayer } from './trace/player';
 import { basename, encodeText, extname } from './util';
 
-export function activate(context: vscode.ExtensionContext): { sessionSummary(): string[] } {
+export async function activate(context: vscode.ExtensionContext): Promise<{ sessionSummary(): string[] }> {
+  // fsm-editor-common, compiled once: everything that reads or writes a machine's files goes through it.
+  try {
+    initCommon(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(context.extensionUri, 'common', 'common.wasm')));
+  } catch (e) {
+    void vscode.window.showErrorMessage(`FSM Editor cannot start: common/common.wasm is missing or invalid (${e instanceof Error ? e.message : e}).`);
+    throw e;
+  }
   const provider = new FsmEditorProvider(context);
   const player = new TracePlayer(context, provider);
 

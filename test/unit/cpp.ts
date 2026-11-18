@@ -1,5 +1,5 @@
 /**
- * Test helpers for the Boost.SML template (fsm/templates/sml.jinja): generate C++ for
+ * Test helpers for the Boost.SML template (common/templates/sml.jinja): generate C++ for
  * machines, compile it with a driver that records what the machines call, and
  * run scripts against it.
  *

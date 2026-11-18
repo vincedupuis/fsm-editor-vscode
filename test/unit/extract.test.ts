@@ -4,8 +4,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { ExtractError, ExtractResult, extractSubmachine, proposedName } from '../../src/extract';
 import { FsmModel, Transition, Vertex, machineConnectionPoints } from '../../src/model';
-import { validate } from '../../src/validation';
-import { assignNames, readMachine, writeMachine } from '../../src/format';
+import { readMachine, validate, writeMachine } from '../../src/common';
 import { FakeClock, ModelBuilder, load, recorder, root } from './harness';
 
 /** An example machine, as the editor reads it (its ids are derived from the names). */
@@ -16,11 +15,8 @@ function example(name: string): FsmModel {
 }
 /** A model written and read back, as saving and opening the files do. */
 function roundTrip(model: FsmModel): FsmModel {
-  const m = JSON.parse(JSON.stringify(model)) as FsmModel;
-  assignNames(m);
-  const w = writeMachine(m);
-  assert.deepEqual(w.lost, []);
-  const read = readMachine(w.model, w.layout);
+  const w = writeMachine(JSON.parse(JSON.stringify(model)) as FsmModel);
+  const read = readMachine(w.modelText, w.layoutText);
   if ('problems' in read) throw new Error(JSON.stringify(read.problems));
   return read.model;
 }

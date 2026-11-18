@@ -15,4 +15,5 @@ scripts/**
 .github/**
 CLAUDE.md
 .gitignore
-fsm/cases/**
+common/api-cases/**
+common/schemas/api.schema.json

@@ -1,15 +1,10 @@
 import * as vscode from 'vscode';
-import { convertGroup } from './convert';
+import { Issue, LoadError, Problem, checkText, convertGroup, derivedIds, hasConflictMarkers, isOldFormat, load, readMachine, splitConflicts, validate, writeMachine } from './common';
 import { ExtractError, extractSubmachine, namesInside, proposedName } from './extract';
-import { Problem, assignNames, derivedIds, isOldFormat, readMachine, readModel, resolveReferences, writeMachine } from './format';
-import { LoadError, submachineFiles } from './load';
-import { hasConflictMarkers, splitConflicts } from './merge';
 import { DiffSession, MergeFiles, MergeSession, Pane, Texts } from './sessions';
 import { ConnectionPointInfo, FsmModel, MachineInfo, SubmachineInfo, defaultModel, machineConnectionPoints, normalizeModel } from './model';
 import { TraceView } from './trace/replay';
 import { basename, decodeText, dirname, encodeText, joinPath, relative } from './util';
-import { Issue, validate } from './validation';
-import { fromXmi } from './xmi';
 
 /**
  * The diagram editor of `.fsm` files. A machine is two files, the model (`X.fsm`) and its layout (`X.fsm.layout`),
@@ -168,13 +163,10 @@ export function stateOf(modelText: string, layoutText: string | undefined): DocS
  * and doesn't reload (its focus, its typing and a drag in progress stay).
  */
 export function stateOfModel(model: FsmModel, sent?: string): DocState {
-  const before = sent === undefined ? undefined : JSON.stringify(JSON.parse(sent));
-  assignNames(model);
   const w = writeMachine(model);
-  if (w.lost.length) throw new Error(`the file can't hold ${w.lost.join('; ')}.`);
-  resolveReferences(model, w);
-  const json = JSON.stringify(model);
-  return { modelText: w.model, layoutText: w.layout, json: json === before ? sent : json, lines: w.lines };
+  // fsm-editor-common sends the model back only when writing changed it (names given, references resolved).
+  const json = w.model === model ? (sent ?? JSON.stringify(model)) : JSON.stringify(w.model);
+  return { modelText: w.modelText, layoutText: w.layoutText, json, lines: w.lines };
 }
 
 export class FsmEditorProvider implements vscode.CustomEditorProvider<FsmDocument> {
@@ -407,7 +399,7 @@ export class FsmEditorProvider implements vscode.CustomEditorProvider<FsmDocumen
     const at = (path: string) => uriWithPath(uri, path);
     const uses = (path: string, t: string) => {
       try {
-        return submachineFiles(fromXmi(t)).map((f) => joinPath(dirname(path), f));
+        return load(t).submachines.map((f) => joinPath(dirname(path), f));
       } catch {
         return [];
       }
@@ -825,6 +817,17 @@ export class FsmEditorProvider implements vscode.CustomEditorProvider<FsmDocumen
       case 'clipboardWrite':
         if (typeof msg.text === 'string') await vscode.env.clipboard.writeText(msg.text);
         break;
+      case 'checkText': {
+        // The grammar's checks of the webview's fields and labels (fsm-editor-common's).
+        let result: unknown;
+        try {
+          result = checkText(String(msg.kind), String(msg.text ?? ''), !!msg.allowElse);
+        } catch (e) {
+          result = { ok: false, error: e instanceof Error ? e.message : String(e) };
+        }
+        void webview.postMessage({ type: 'checkedText', requestId: msg.requestId, result });
+        break;
+      }
       case 'clipboardRead':
         void webview.postMessage({ type: 'clipboard', requestId: msg.requestId, text: await vscode.env.clipboard.readText() });
         break;
@@ -1158,18 +1161,15 @@ export class FsmEditorProvider implements vscode.CustomEditorProvider<FsmDocumen
     let summary: MachineSummary | null = null;
     try {
       const text = (await this.readText(uri)) ?? '';
-      let m: FsmModel;
       if (isOldFormat(text)) {
+        // An old file's names as converting it gives them.
         const converted = convertGroup([{ path: uri.path, text }])[0];
-        if (converted.error) throw new LoadError(converted.error);
-        m = converted.model;
+        if (converted.error || !converted.model) throw new LoadError(converted.error);
+        summary = { name: converted.model.name, points: machineConnectionPoints(converted.model) };
       } else {
-        // Names and points only: no layout to apply.
-        const read = readModel(text);
-        if ('problems' in read) throw new LoadError(read.problems[0].message);
-        m = read.model;
+        const loaded = load(text);
+        summary = { name: loaded.name, points: loaded.points };
       }
-      summary = { name: m.name, points: machineConnectionPoints(m) };
     } catch (e) {
       if (!(e instanceof LoadError) && !(e instanceof SyntaxError)) throw e;
       summary = null;
@@ -1294,7 +1294,6 @@ export class FsmEditorProvider implements vscode.CustomEditorProvider<FsmDocumen
     </div>
     <div id="statusbar"></div>
   </div>
-  <script nonce="${nonce}" src="${media('expressions.js')}"></script>
   <script nonce="${nonce}" src="${media('editor.js')}"></script>
 </body>
 </html>`;

@@ -5,9 +5,6 @@
 
   // eslint-disable-next-line no-undef
   const vscode = acquireVsCodeApi();
-  /** Grammar of behaviors, conditions and triggers (media/expressions.js). */
-  // @ts-ignore
-  const X = window.FsmExpressions;
 
   const GRID = 10;
   const NAME_H = 24;
@@ -310,39 +307,58 @@
   /** May transitions leaving `source` use the [else] guard? */
   const allowsElse = (source) => !!source && (source.type === 'choice' || source.type === 'junction');
 
+  // ---------------------------------------------------------------- grammar
   /**
-   * Parses "t1, after(2s) [guard] / action" (or "[pre] t / [post]" for protocol
-   * machines) into `t`. Returns an error message and leaves `t` untouched when
-   * any part breaks the grammar.
+   * The text grammar's checks are fsm-editor-common's, which runs in the extension host: each check is a request,
+   * answered with the normalized text or the message (`checkText` of its interface).
    */
-  function applyLabel(t, text) {
+  const grammar = { next: 0, waiting: new Map() };
+  function checkText(kind, text, allowElse = false) {
+    const requestId = ++grammar.next;
+    return new Promise((resolve) => {
+      grammar.waiting.set(requestId, resolve);
+      vscode.postMessage({ type: 'checkText', requestId, kind, text: String(text ?? ''), allowElse });
+    });
+  }
+
+  /**
+   * Checks "t1, after(2s) [guard] / action" (or "[pre] t / [post]" for protocol machines) for transition `t`: the
+   * message when any part breaks the grammar, else `apply`, which sets the parts on a transition.
+   */
+  async function labelChange(t, text) {
     if (model.kind === 'protocol') {
       const m = /^\s*(?:\[([^\]]*)\])?([^/]*?)\s*(?:\/\s*\[([^\]]*)\])?\s*$/.exec(text);
-      if (!m) return 'Write the label as [precondition] event / [postcondition].';
-      const pre = X.checkCondition(m[1]);
-      if (!pre.ok) return `Precondition: ${pre.error}`;
-      const trig = X.checkList(m[2], X.checkTrigger);
-      if (!trig.ok) return `Trigger: ${trig.error}`;
-      const post = X.checkCondition(m[3]);
-      if (!post.ok) return `Postcondition: ${post.error}`;
-      t.precondition = pre.value;
-      t.triggers = trig.value;
-      t.postcondition = post.value;
-      return null;
+      if (!m) return { error: 'Write the label as [precondition] event / [postcondition].' };
+      const [pre, trig, post] = await Promise.all([checkText('condition', m[1]), checkText('triggers', m[2]), checkText('condition', m[3])]);
+      if (!pre.ok) return { error: `Precondition: ${pre.error}` };
+      if (!trig.ok) return { error: `Trigger: ${trig.error}` };
+      if (!post.ok) return { error: `Postcondition: ${post.error}` };
+      return {
+        apply: (x) => {
+          x.precondition = pre.value;
+          x.triggers = trig.value;
+          x.postcondition = post.value;
+        },
+      };
     }
     const slash = indexOutsideBrackets(text, '/');
     const head = slash >= 0 ? text.slice(0, slash) : text;
     const g = /\[([^\]]*)\]\s*$/.exec(head);
-    const trig = X.checkList(g ? head.slice(0, g.index) : head, X.checkTrigger);
-    if (!trig.ok) return `Trigger: ${trig.error}`;
-    const guard = X.checkGuard(g ? g[1] : '', allowsElse(V.get(t.source)));
-    if (!guard.ok) return `Guard: ${guard.error}`;
-    const action = X.checkActions(slash >= 0 ? text.slice(slash + 1) : '');
-    if (!action.ok) return `Action: ${action.error}`;
-    t.triggers = trig.value;
-    t.guard = guard.value;
-    t.action = action.value;
-    return null;
+    const [trig, guard, action] = await Promise.all([
+      checkText('triggers', g ? head.slice(0, g.index) : head),
+      checkText('guard', g ? g[1] : '', allowsElse(V.get(t.source))),
+      checkText('actions', slash >= 0 ? text.slice(slash + 1) : ''),
+    ]);
+    if (!trig.ok) return { error: `Trigger: ${trig.error}` };
+    if (!guard.ok) return { error: `Guard: ${guard.error}` };
+    if (!action.ok) return { error: `Action: ${action.error}` };
+    return {
+      apply: (x) => {
+        x.triggers = trig.value;
+        x.guard = guard.value;
+        x.action = action.value;
+      },
+    };
   }
   function indexOutsideBrackets(s, ch) {
     let d = 0;
@@ -1203,6 +1219,12 @@
 
   window.addEventListener('message', (e) => {
     const msg = e.data;
+    if (msg.type === 'checkedText') {
+      const resolve = grammar.waiting.get(msg.requestId);
+      grammar.waiting.delete(msg.requestId);
+      resolve?.(msg.result);
+      return;
+    }
     if (msg.type === 'panels') {
       panels = msg.panels;
       renderPanels();
@@ -2935,17 +2957,35 @@ ${scene(true)}
     const v = V.get(id);
     const t = T.get(id);
     if (t && !cancelled && model && transitionLabel(t) !== el.value.trim()) {
-      const err = applyLabel(t, el.value);
-      if (err && fromKey) {
-        el.classList.add('invalid');
-        el.title = err;
-        toast(err);
+      const text = el.value;
+      const done = labelChange(t, text);
+      // The transition as the model has it once the grammar answers (the model may have been reloaded meanwhile).
+      const apply = (r) => {
+        const x = T.get(id);
+        if (!x || !model) return;
+        r.apply(x);
+        commit({ props: true });
+      };
+      if (fromKey) {
+        // Enter: the box stays open until the grammar answers, and when the label breaks it.
+        void done.then((r) => {
+          if (!inline || inline.el !== el) return;
+          if (r.error) {
+            el.classList.add('invalid');
+            el.title = r.error;
+            toast(r.error);
+            return;
+          }
+          inline = null;
+          el.remove();
+          apply(r);
+          svg.focus();
+        });
         return false;
       }
       inline = null;
       el.remove();
-      if (err) toast(`Label not changed. ${err}`);
-      else commit({ props: true });
+      void done.then((r) => (r.error ? toast(`Label not changed. ${r.error}`) : apply(r)));
       return true;
     }
     inline = null;
@@ -2989,13 +3029,13 @@ ${scene(true)}
       : h('input', { type: 'text', placeholder: opts.placeholder || '' });
     input.value = value ?? '';
     const error = h('div', { className: 'field-error' });
-    input.addEventListener('change', () => {
+    input.addEventListener('change', async () => {
       if (!opts.check) {
         onChange(input.value);
         return;
       }
       // Refuse text that breaks the grammar; keep it in the field so it can be fixed.
-      const r = opts.check(input.value);
+      const r = await opts.check(input.value);
       if (!r.ok) {
         input.classList.add('invalid');
         error.textContent = r.error;
@@ -3356,10 +3396,11 @@ ${scene(true)}
   }
 
   const CHECK = {
-    actions: X.checkActions,
-    condition: X.checkCondition,
-    triggers: (s) => X.checkList(s, X.checkTrigger),
-    events: (s) => X.checkList(s, X.checkEvent),
+    actions: (s) => checkText('actions', s),
+    condition: (s) => checkText('condition', s),
+    triggers: (s) => checkText('triggers', s),
+    events: (s) => checkText('events', s),
+    name: (s) => checkText('name', s),
   };
 
   function selectField(label, value, options, onChange) {
@@ -3513,7 +3554,7 @@ ${scene(true)}
 
     if (v.type === 'state') {
       propsEl.append(
-        textField('Stereotype', v.stereotype, set('stereotype'), { check: X.checkName, placeholder: 'e.g. Critical' }),
+        textField('Stereotype', v.stereotype, set('stereotype'), { check: CHECK.name, placeholder: 'e.g. Critical' }),
         h('h4', {}, 'Behaviors'),
         textField('entry /', v.entry, set('entry'), { check: CHECK.actions, placeholder: 'e.g. start(); log()', color: colorOpt(v, 'entry', 'entry') }),
         textField('exit /', v.exit, set('exit'), { check: CHECK.actions, placeholder: 'e.g. stop()', color: colorOpt(v, 'exit', 'exit') }),
@@ -3581,12 +3622,13 @@ ${scene(true)}
       for (const t of internal) {
         const input = h('input', { type: 'text' });
         input.value = transitionLabel(t);
-        input.addEventListener('change', () => {
-          const err = applyLabel(t, input.value);
-          input.classList.toggle('invalid', !!err);
-          input.title = err || '';
-          if (err) toast(err);
-          else {
+        input.addEventListener('change', async () => {
+          const r = await labelChange(t, input.value);
+          input.classList.toggle('invalid', !!r.error);
+          input.title = r.error || '';
+          if (r.error) toast(r.error);
+          else if (model.transitions.includes(t)) {
+            r.apply(t);
             input.value = transitionLabel(t);
             commit();
           }
@@ -3722,7 +3764,7 @@ ${scene(true)}
     } else {
       propsEl.append(
         textField('Guard', t.guard, set('guard'), {
-          check: (val) => X.checkGuard(val, allowsElse(s)),
+          check: (val) => checkText('guard', val, allowsElse(s)),
           placeholder: allowsElse(s) ? 'e.g. hasDisc() && !isJammed(), or else' : 'e.g. hasDisc() && !isJammed()',
           color: item('guard', 'the guard'),
         }),

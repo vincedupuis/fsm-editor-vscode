@@ -65,11 +65,11 @@
     "jsonValidation": [
       {
         "fileMatch": "*.fsm",
-        "url": "./fsm/schemas/fsm.schema.json"
+        "url": "./common/schemas/fsm.schema.json"
       },
       {
         "fileMatch": "*.fsm.layout",
-        "url": "./schemas/fsm-layout.schema.json"
+        "url": "./common/schemas/fsm-layout.schema.json"
       }
     ],
     "viewsContainers": {
@@ -277,7 +277,7 @@
     "package": "npx @vscode/vsce package --no-dependencies",
     "test:web": "tsc -p ./ && node esbuild.mjs --test && node test/web/run.mjs",
     "test:unit": "node test/unit/run.mjs",
-    "build:fsm": "node scripts/build-fsm.mjs"
+    "build:common": "node scripts/build-common.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
