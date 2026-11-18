@@ -3983,7 +3983,8 @@ ${scene(true)}
     toastEl.textContent = msg;
     toastEl.hidden = false;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => (toastEl.hidden = true), 2600);
+    // Long enough to read: 60 ms a character, from 2.6 s to 8 s.
+    toastTimer = setTimeout(() => (toastEl.hidden = true), Math.min(8000, Math.max(2600, msg.length * 60)));
   }
 
   new ResizeObserver(() => scheduleRender()).observe(wrap);
