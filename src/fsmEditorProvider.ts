@@ -531,20 +531,13 @@ export class FsmEditorProvider implements vscode.CustomEditorProvider<FsmDocumen
     if (doc.old && target.toString() === doc.uri.toString()) await this.convertLinked(doc);
   }
 
-  /** After an old file was saved in the new format: converts the old files linked to it, and says what happened. */
+  /** After an old file was saved in the new format: converts the old files linked to it, and says which files changed format. */
   private async convertLinked(doc: FsmDocument) {
     const old = doc.old!;
     const group = await this.linkedOldFiles(doc.uri, old.text);
     const results = convertGroup(group);
     const converted = [basename(doc.uri.path)];
     const skipped: string[] = [];
-    const lines: string[] = [];
-    const report = (file: string, renames: string[], generated: number, losses: string[]) => {
-      for (const r of renames) lines.push(`${file}: ${r}.`);
-      if (generated) lines.push(`${file}: ${generated} unnamed element${generated === 1 ? '' : 's'} got a generated name (ending with *, not shown on the diagram).`);
-      for (const l of losses) lines.push(`${file}: left out ${l}.`);
-    };
-    report(basename(doc.uri.path), old.renames, old.generated, old.losses);
     for (const r of results) {
       if (r.path === doc.uri.path) continue;
       const uri = uriWithPath(doc.uri, r.path);
@@ -556,11 +549,12 @@ export class FsmEditorProvider implements vscode.CustomEditorProvider<FsmDocumen
       await vscode.workspace.fs.writeFile(uri, encodeText(r.modelText));
       await vscode.workspace.fs.writeFile(layoutUriOf(uri), encodeText(r.layoutText));
       converted.push(basename(r.path));
-      report(basename(r.path), r.renames, r.generated, r.losses);
     }
-    let message = `Saved in the new format (the model in .fsm, the layout in .fsm.layout): ${converted.join(', ')}.`;
-    if (skipped.length) message += ` Not converted, as they have unsaved changes or can't be read: ${skipped.join(', ')}.`;
-    if (lines.length) message += ' ' + lines.join(' ');
+    let message =
+      converted.length === 1
+        ? `${converted[0]} is no longer saved in XMI but in JSON, in two separate files: ${converted[0]} and ${converted[0]}.layout.`
+        : `${converted.join(', ')} are no longer saved in XMI but in JSON, each in two separate files: .fsm and .fsm.layout.`;
+    if (skipped.length) message += ` Still in XMI, as they have unsaved changes or can't be read: ${skipped.join(', ')}.`;
     void vscode.window.showInformationMessage(message);
   }
 
