@@ -1287,7 +1287,7 @@ export class FsmEditorProvider implements vscode.CustomEditorProvider<FsmDocumen
       <div id="canvas-wrap">
         <svg id="canvas" tabindex="0"><g id="world"></g></svg>
         <div id="problems" hidden></div>
-        <div id="toast" hidden></div>
+        <div id="toast" hidden><span id="toast-text"></span><button id="toast-close" title="Close" aria-label="Close">×</button></div>
         <div id="parse-error" hidden></div>
       </div>
       <aside id="props-pane" class="side right"><div class="side-head"><span>Properties</span></div><div id="props" class="props"></div></aside>

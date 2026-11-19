@@ -177,6 +177,7 @@
   const toolbarEl = $('toolbar');
   const problemsEl = $('problems');
   const toastEl = $('toast');
+  const toastTextEl = $('toast-text');
   const parseErrorEl = $('parse-error');
 
   // ---------------------------------------------------------------- model index
@@ -3978,14 +3979,14 @@ ${scene(true)}
     }
   }
 
-  let toastTimer = 0;
+  // Stays until its × is clicked or the next toast replaces it.
   function toast(msg) {
-    toastEl.textContent = msg;
+    toastTextEl.textContent = msg;
     toastEl.hidden = false;
-    clearTimeout(toastTimer);
-    // Long enough to read: 60 ms a character, from 2.6 s to 8 s.
-    toastTimer = setTimeout(() => (toastEl.hidden = true), Math.min(8000, Math.max(2600, msg.length * 60)));
   }
+  const toastClose = $('toast-close');
+  toastClose.addEventListener('mousedown', (e) => e.preventDefault()); // keeps the canvas's focus
+  toastClose.addEventListener('click', () => (toastEl.hidden = true));
 
   new ResizeObserver(() => scheduleRender()).observe(wrap);
 
