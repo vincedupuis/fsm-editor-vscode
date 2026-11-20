@@ -276,12 +276,14 @@
     "check:webview": "node --check media/editor.js",
     "package": "npx @vscode/vsce package --no-dependencies",
     "test:web": "tsc -p ./ && node esbuild.mjs --test && node test/web/run.mjs",
+    "test:desktop": "tsc -p ./ && node esbuild.mjs --test && node test/desktop/run.mjs",
     "test:unit": "node test/unit/run.mjs",
     "build:common": "node scripts/build-common.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
+    "@vscode/test-electron": "^3.1.0",
     "@vscode/test-web": "^0.0.81",
     "ajv": "8.17.1",
     "esbuild": "^0.28.2",

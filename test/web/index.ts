@@ -1,7 +1,8 @@
 /**
- * Smoke test for the browser build, run by @vscode/test-web inside the web
- * extension host (`npm run test:web`). The workspace is a temporary copy of
- * examples/, mounted as a virtual file system.
+ * Smoke test of the extension in VS Code: run by @vscode/test-web inside the web
+ * extension host (`npm run test:web`), the workspace a temporary copy of
+ * examples/ mounted as a virtual file system, and by @vscode/test-electron in
+ * desktop VS Code (`npm run test:desktop`), on a temporary copy on disk.
  *
  * Diagnostics are published only after the webview has loaded and the
  * provider has read the files, listed the workspace machines and validated, so

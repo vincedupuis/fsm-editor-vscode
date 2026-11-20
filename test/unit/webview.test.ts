@@ -20,6 +20,7 @@ import { Webview, closeBrowser, example } from './webview';
 after(closeBrowser);
 
 const GEOMETRY = join(root, 'test/unit/fixtures/geometry');
+const CLIPBOARD = join(root, 'test/unit/fixtures/clipboard');
 
 /** The export without the webview's own attributes (the other editions' export has none). */
 const plain = (svg: string) => svg.replace(/ data-(?:id|label)="[^"]*"/g, '');
@@ -53,6 +54,39 @@ describe('webview', () => {
       else if (svg !== readFileSync(file, 'utf8').replace(/\r\n/g, '\n')) failed.push(name);
     }
     assert.deepEqual(failed, [], 'drawn differently from their reference SVG (FSM_UPDATE_SVG=1 writes them)');
+  });
+
+  it('copies the clipboard JSON of the clipboard fixtures', async () => {
+    // A case: a machine of the geometry fixtures, the selection (every vertex, or one vertex with what it contains)
+    // and the clipboard JSON this edition copies for it, which the other editions' Core tests copy too.
+    const update = !!process.env.FSM_UPDATE_CLIPBOARD;
+    const cases: { name: string; machine: string; select: string }[] = [
+      ...readdirSync(GEOMETRY).filter((f) => f.endsWith('.fsm')).map((f) => f.slice(0, -4)).map((m) => ({ name: m, machine: m, select: '*' })),
+      { name: 'MediaPlayer-On', machine: 'MediaPlayer', select: 'On' },
+      { name: 'Order-Payment', machine: 'Order', select: 'Payment' },
+    ];
+    const failed: string[] = [];
+    for (const c of cases) {
+      const read = readMachine(readFileSync(join(GEOMETRY, `${c.machine}.fsm`), 'utf8'), readFileSync(join(GEOMETRY, `${c.machine}.fsm.layout`), 'utf8'));
+      if ('problems' in read) throw new Error(`${c.machine}: ${JSON.stringify(read.problems)}`);
+      const view = await Webview.open(read.model);
+      if (c.select === '*') await view.page.keyboard.press('ControlOrMeta+a');
+      else await view.send({ type: 'reveal', id: c.select });
+      await view.page.waitForTimeout(30);
+      const text = await view.page.evaluate(() => {
+        const w = globalThis as any;
+        const data = new w.DataTransfer();
+        w.document.dispatchEvent(new w.ClipboardEvent('copy', { clipboardData: data, bubbles: true, cancelable: true }));
+        return data.getData('text/plain') as string;
+      });
+      await view.close();
+      assert.ok(text, `${c.name}: something copied`);
+      const fixture = `${JSON.stringify({ machine: c.machine, select: c.select, clipboard: JSON.parse(text) }, null, 2)}\n`;
+      const file = join(CLIPBOARD, `${c.name}.json`);
+      if (update) writeFileSync(file, fixture);
+      else if (fixture !== readFileSync(file, 'utf8').replace(/\r\n/g, '\n')) failed.push(c.name);
+    }
+    assert.deepEqual(failed, [], 'copied differently from the clipboard fixtures (FSM_UPDATE_CLIPBOARD=1 writes them)');
   });
 
   describe('editing', () => {

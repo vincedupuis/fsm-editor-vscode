@@ -1,7 +1,7 @@
 # Runs the unit tests on Windows on every push and pull request, so that the
 # C++ of the Boost.SML template (fsm-cli's sml.jinja) is compiled with MSVC, the
-# compiler of FSM Editor for Visual Studio's users. The release workflow tests
-# on Linux with GCC.
+# compiler of FSM Editor for Visual Studio's users, then the smoke test in
+# desktop VS Code. The release workflow tests on Linux with GCC.
 name: Test on Windows
 
 on:
@@ -53,3 +53,7 @@ jobs:
 
       - name: Test
         run: npm run test:unit
+
+      # The smoke test in desktop VS Code (the latest stable, downloaded by @vscode/test-electron).
+      - name: Test in desktop VS Code
+        run: npm run test:desktop

@@ -3,7 +3,8 @@
 //   out/web/extension.js  vscode.dev / github.dev (web worker)      → package.json "browser"
 // Both run fsm-editor-common's common/common.wasm (npm run build:common).
 // Usage: node esbuild.mjs [--watch] [--test]
-//   --test also bundles the browser smoke test (test/web/index.ts → out/test/web/index.js).
+//   --test also bundles the smoke test, test/web/index.ts, for the browser (out/test/web/index.js, npm run test:web)
+//   and for desktop VS Code (out/test/desktop/index.js, npm run test:desktop).
 import * as esbuild from 'esbuild';
 import { join } from 'node:path';
 
@@ -32,7 +33,10 @@ const builds = [
   { ...common, entryPoints: ['src/extension.ts'], outfile: 'out/web/extension.js', platform: 'browser', target: 'es2022', plugins: [webTail] },
 ];
 if (test) {
-  builds.push({ ...common, entryPoints: ['test/web/index.ts'], outfile: 'out/test/web/index.js', platform: 'browser', target: 'es2022' });
+  builds.push(
+    { ...common, entryPoints: ['test/web/index.ts'], outfile: 'out/test/web/index.js', platform: 'browser', target: 'es2022' },
+    { ...common, entryPoints: ['test/web/index.ts'], outfile: 'out/test/desktop/index.js', platform: 'node', target: 'node18' },
+  );
 }
 
 if (watch) {

@@ -11,6 +11,7 @@ test/**
 esbuild.mjs
 out/test/**
 .vscode-test-web/**
+.vscode-test/**
 scripts/**
 .github/**
 CLAUDE.md
