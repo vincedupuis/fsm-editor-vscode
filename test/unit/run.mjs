@@ -18,7 +18,7 @@ await esbuild.build({
   target: 'node18',
   format: 'cjs',
   sourcemap: true,
-  external: ['esbuild'],
+  external: ['esbuild', 'playwright'],
   logLevel: 'warning',
 });
 
