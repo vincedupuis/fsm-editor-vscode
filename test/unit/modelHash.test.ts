@@ -86,7 +86,7 @@ describe('model hash', () => {
     const hash = await hashOf(text);
     assert.equal(await hashOf(text.replace(/\n/g, '\r\n')), hash);
     assert.equal(await hashOf(JSON.stringify(JSON.parse(text))), hash);
-    assert.equal(await hashOf(text.replace('"format": 1,\n  "name": "Hash",', '"name": "Hash",\n  "format": 1,')), hash);
+    assert.equal(await hashOf(text.replace('"version": 1,\n  "name": "Hash",', '"name": "Hash",\n  "version": 1,')), hash);
     assert.equal(await hashOf(text.replace('"name": "Hash"', '"name": "\\u0048ash"')), hash);
     assert.equal(await hashOf(text.replace('{\n', '{\n  "$schema": "fsm.schema.json",\n')), hash);
   });
