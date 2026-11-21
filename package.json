@@ -2,7 +2,7 @@
   "name": "fsm-editor",
   "displayName": "FSM Editor — UML State Machines & Code Generation",
   "description": "Visual editor and code generator for UML 2.5.1 state machines: draw composite/orthogonal states, submachines with connection point references, all pseudostates and protocol state machines, then generate source code from Jinja templates (TypeScript and Boost.SML C++ bundled), in VS Code and VS Code for the Web, or with the fsm command-line tool. Stored as readable JSON, the layout in a file of its own, with validation, diagram diff and merge views, and SVG and PNG export.",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "publisher": "VinceGoSoftware",
   "icon": "images/icon.png",
   "galleryBanner": {
