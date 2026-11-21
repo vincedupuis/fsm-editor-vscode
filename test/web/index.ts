@@ -323,9 +323,6 @@ export async function run(): Promise<void> {
 
   // ---------------------------------------------------------------- Editing through the IDE
 
-  // VS Code sends its Select All, Copy, Cut and Paste (Edit menu, keys) to a focused webview. In VS Code for the Web they
-  // don't reach the diagram (tried: the clipboard unchanged after Copy, nothing pasted), so these run on desktop only.
-  const noClipboard = "VS Code for the Web: the Copy and Paste commands VS Code sends to a webview (the browser's execCommand) don't reach the diagram";
   const empty = JSON.stringify({ version: 1, name: 'Empty', type: 'behavioral', elements: [] }, null, 2) + '\n';
   const emptyLayout = '{\n  "version": 1\n}\n';
   let pasted = false;
@@ -342,7 +339,6 @@ export async function run(): Promise<void> {
   };
 
   await scenario('ide-edit-commands', async () => {
-    if (!desktop) return noClipboard;
     await write('Empty.fsm', empty);
     await write('Empty.fsm.layout', emptyLayout);
     await openDiagram('Order.fsm');
@@ -373,7 +369,6 @@ export async function run(): Promise<void> {
   });
 
   await scenario('undo-redo-save-both-files', async () => {
-    if (!desktop) return noClipboard;
     assert(pasted, 'after the paste of ide-edit-commands');
     const hasCart = () => !!api.openModel(file('Empty.fsm'))?.vertices.some((v) => v.name === 'Cart');
     await openDiagram('Empty.fsm');

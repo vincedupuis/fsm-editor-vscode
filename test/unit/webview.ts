@@ -113,6 +113,9 @@ export class Webview {
     }
     await page.addScriptTag({ path: join(root, 'media/editor.js') });
     await page.waitForSelector('#world g.vertex', { timeout: 10000 }).catch(() => undefined);
+    // The first load fits the view in the next animation frame, after the first drawing: positions read before it
+    // (a busy machine, the test files running side by side) would be stale once it moves the diagram.
+    await page.evaluate(() => new Promise((r) => (globalThis as any).requestAnimationFrame(() => (globalThis as any).requestAnimationFrame(r))));
     if (errors.length) throw new Error(`the webview failed: ${errors.join('; ')}`);
     view.errors = errors;
     return view;
