@@ -1,0 +1,7 @@
+{
+  "name": "fsm-editor-install-test",
+  "description": "Runs the smoke test against the FSM Editor installed from its VSIX (test/install/run.mjs): no code of its own.",
+  "version": "0.0.0",
+  "publisher": "test",
+  "engines": { "vscode": "^1.90.0" }
+}

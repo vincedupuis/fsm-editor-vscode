@@ -51,16 +51,12 @@ const THEMES: Record<string, Record<string, string>> = {
 const TEXT = 4.5;
 const MARK = 3;
 
-/**
- * Known exceptions, at their measured contrast (so that they can't get worse): VS Code's own colors for the theme,
- * slightly under the WCAG ratio. A label of a taken transition in the first instance's color (charts.green), and
- * the border of a state with a warning (editorWarning.foreground).
- */
-const KNOWN: Record<string, Record<string, number>> = {
-  'Light Modern': {
-    'text Stopped#1 tlabel "play"': 4.33,
-    'mark vertex v-state has-warning: Off shape': 2.93,
-  },
+/** The body class VS Code gives a webview in each theme. */
+const KIND: Record<string, string> = {
+  'Light Modern': 'vscode-light',
+  'Dark Modern': 'vscode-dark',
+  'Dark High Contrast': 'vscode-high-contrast',
+  'Light High Contrast': 'vscode-high-contrast-light',
 };
 
 interface Measure {
@@ -161,15 +157,14 @@ describe('webview: themes and fonts', () => {
   for (const [theme, vars] of Object.entries(THEMES)) {
     it(`draws text, selection, problems and the trace readably in ${theme}`, async () => {
       const model = example('MediaPlayer');
-      const view = await Webview.open(model, { theme: vars });
+      const view = await Webview.open(model, { theme: vars, themeKind: KIND[theme] });
       await marked(view, model);
       const { texts, marks } = await view.page.evaluate(measure);
       assert.ok(texts.length > 20 && marks.length > 5, `measured ${texts.length} texts and ${marks.length} marks`);
-      const known = KNOWN[theme] ?? {};
-      const low = [...texts.map((m) => ({ ...m, kind: 'text', min: TEXT })), ...marks.map((m) => ({ ...m, kind: 'mark', min: MARK }))]
-        .map((m) => ({ ...m, key: `${m.kind} ${m.what}` }))
-        .filter((m) => m.ratio < Math.min(m.min, (known[m.key] ?? Infinity) - 0.005))
-        .map((m) => `${m.key}: ${m.ratio.toFixed(2)} < ${known[m.key] ?? m.min}`);
+      const low = [
+        ...texts.filter((m) => m.ratio < TEXT).map((m) => `text ${m.what}: ${m.ratio.toFixed(2)} < ${TEXT}`),
+        ...marks.filter((m) => m.ratio < MARK).map((m) => `mark ${m.what}: ${m.ratio.toFixed(2)} < ${MARK}`),
+      ];
       assert.deepEqual(low, [], 'contrast too low');
       await view.close();
     });

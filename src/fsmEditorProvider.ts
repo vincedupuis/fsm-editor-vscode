@@ -828,6 +828,29 @@ export class FsmEditorProvider implements vscode.CustomEditorProvider<FsmDocumen
     }
   }
 
+  /**
+   * For the tests: an edit of the open document of `uri`, as its diagram sends one (the model as JSON); undefined
+   * when it was taken, else why not.
+   */
+  editForTests(uri: vscode.Uri, json: string): string | undefined {
+    const doc = this.documents.get(uri.toString());
+    return doc ? this.edit(doc, json) : `${uri} is not open`;
+  }
+
+  /**
+   * For the tests: the open document of `uri` backed up as hot exit does it, then reopened from that backup as VS
+   * Code does it at the next start; the reopened document's model (the open one is kept).
+   */
+  async backupRoundTripForTests(uri: vscode.Uri, destination: vscode.Uri): Promise<FsmModel | undefined> {
+    const doc = this.documents.get(uri.toString());
+    if (!doc) return undefined;
+    const backup = await this.backupCustomDocument(doc, { destination }, new vscode.CancellationTokenSource().token);
+    const restored = await this.openCustomDocument(uri, { backupId: backup.id, untitledDocumentData: undefined });
+    this.documents.set(uri.toString(), doc);
+    await backup.delete();
+    return restored.state.json ? normalizeModel(JSON.parse(restored.state.json)) : undefined;
+  }
+
   /** The diffs and merges open, described (for the tests). */
   sessionSummary(): string[] {
     const out = new Set<string>();

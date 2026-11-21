@@ -6,7 +6,19 @@ import { defaultModel } from './model';
 import { TracePlayer } from './trace/player';
 import { basename, encodeText, extname } from './util';
 
-export async function activate(context: vscode.ExtensionContext): Promise<{ sessionSummary(): string[] }> {
+/** The extension's API, for the tests: what they can't see from VS Code's own. */
+export interface FsmEditorApi {
+  sessionSummary(): string[];
+  traceSummary(): ReturnType<TracePlayer['summary']>;
+  /** An open document's model (with its layout), or undefined. */
+  openModel(uri: vscode.Uri): ReturnType<FsmEditorProvider['openModel']>;
+  /** An edit of an open document, as its diagram sends one; undefined when taken, else why not. */
+  edit(uri: vscode.Uri, json: string): string | undefined;
+  /** An open document backed up (hot exit) into `destination` and reopened from it: the reopened document's model. */
+  backupRoundTrip(uri: vscode.Uri, destination: vscode.Uri): ReturnType<FsmEditorProvider['backupRoundTripForTests']>;
+}
+
+export async function activate(context: vscode.ExtensionContext): Promise<FsmEditorApi> {
   // fsm-editor-common, compiled once: everything that reads or writes a machine's files goes through it.
   try {
     initCommon(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(context.extensionUri, 'common', 'common.wasm')));
@@ -143,30 +155,37 @@ export async function activate(context: vscode.ExtensionContext): Promise<{ sess
       return generateCode(context, source, args, (u) => provider.modelText(u));
     }),
 
-    vscode.commands.registerCommand('fsmEditor.exportSvg', async () => {
+    // `{ target }`: where to write the file, without asking (the tests).
+    vscode.commands.registerCommand('fsmEditor.exportSvg', async (args?: { target?: vscode.Uri }) => {
       const editor = provider.activeEditor;
       if (!editor) return noEditor();
       try {
         const svg = await provider.requestSvg(editor);
-        await saveExport(editor.document.uri, '.svg', { SVG: ['svg'] }, svg);
+        await saveExport(editor.document.uri, '.svg', { SVG: ['svg'] }, svg, args?.target);
       } catch (e) {
         void vscode.window.showErrorMessage(`SVG export failed: ${e instanceof Error ? e.message : e}`);
       }
     }),
 
-    vscode.commands.registerCommand('fsmEditor.exportPng', async () => {
+    vscode.commands.registerCommand('fsmEditor.exportPng', async (args?: { target?: vscode.Uri }) => {
       const editor = provider.activeEditor;
       if (!editor) return noEditor();
       try {
         const png = await provider.requestPng(editor);
-        await saveExport(editor.document.uri, '.png', { PNG: ['png'] }, decodeBase64(png));
+        await saveExport(editor.document.uri, '.png', { PNG: ['png'] }, decodeBase64(png), args?.target);
       } catch (e) {
         void vscode.window.showErrorMessage(`PNG export failed: ${e instanceof Error ? e.message : e}`);
       }
     }),
   );
   // For the tests: the diagram diffs and merges open.
-  return { sessionSummary: () => provider.sessionSummary() };
+  return {
+    sessionSummary: () => provider.sessionSummary(),
+    traceSummary: () => player.summary(),
+    openModel: (uri) => provider.openModel(uri),
+    edit: (uri, json) => provider.editForTests(uri, json),
+    backupRoundTrip: (uri, destination) => provider.backupRoundTripForTests(uri, destination),
+  };
 }
 
 export function deactivate() {}
@@ -199,14 +218,15 @@ function decodeBase64(text: string): Uint8Array {
   return Uint8Array.from(atob(text), (c) => c.charCodeAt(0));
 }
 
-async function saveExport(source: vscode.Uri, ext: string, filters: Record<string, string[]>, content: string | Uint8Array) {
+async function saveExport(source: vscode.Uri, ext: string, filters: Record<string, string[]>, content: string | Uint8Array, given?: vscode.Uri) {
   const base = basename(source.path, extname(source.path));
-  const target = await vscode.window.showSaveDialog({
+  const target = given instanceof vscode.Uri ? given : await vscode.window.showSaveDialog({
     defaultUri: vscode.Uri.joinPath(source, '..', base + ext),
     filters,
   });
   if (!target) return;
   await vscode.workspace.fs.writeFile(target, typeof content === 'string' ? encodeText(content) : content);
+  if (given) return;
   const open = await vscode.window.showInformationMessage(`Exported to ${basename(target.path)}.`, 'Open');
   if (open) await vscode.commands.executeCommand('vscode.open', target);
 }

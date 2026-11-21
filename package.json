@@ -277,6 +277,7 @@
     "package": "npx @vscode/vsce package --no-dependencies",
     "test:web": "tsc -p ./ && node esbuild.mjs --test && node test/web/run.mjs",
     "test:desktop": "tsc -p ./ && node esbuild.mjs --test && node test/desktop/run.mjs",
+    "test:install": "tsc -p ./ && node esbuild.mjs --test && node test/install/run.mjs",
     "test:unit": "node test/unit/run.mjs",
     "build:common": "node scripts/build-common.mjs"
   },

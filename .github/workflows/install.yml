@@ -1,0 +1,47 @@
+# Install smoke test on every push to main, on Linux, macOS and Windows: packages the VSIX, installs it into desktop
+# VS Code (the latest stable) and runs the smoke test against the installed extension (npm run test:install).
+name: Install
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # fsm-editor-common's WebAssembly module, templates and schemas, from the release pinned in release.yml.
+      - name: Fetch fsm-editor-common
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v=$(sed -n 's/^ *FSM_COMMON_VERSION: *//p' .github/workflows/release.yml | tr -d '\r')
+          gh release download "v$v" -R vincedupuis/fsm-editor-common -p "fsm-editor-common-$v.wasm" -p "fsm-editor-common-*-$v.tar.gz" -D common
+          mv "common/fsm-editor-common-$v.wasm" common/common.wasm
+          for part in templates schemas api-cases; do
+            tar xzf "common/fsm-editor-common-$part-$v.tar.gz" -C common
+            rm "common/fsm-editor-common-$part-$v.tar.gz"
+          done
+
+      - name: Install and run the smoke test
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run test:install
+
+      - name: Install and run the smoke test
+        if: runner.os != 'Linux'
+        run: npm run test:install

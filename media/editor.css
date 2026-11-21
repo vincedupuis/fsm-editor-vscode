@@ -418,6 +418,11 @@ textarea.inline-edit { text-align: left; resize: none; }
 .vertex.has-error > .fill { fill: var(--fsm-error); }
 .transition.has-warning .line, .transition.has-warning .arrow { stroke: var(--fsm-warn); }
 .transition.has-error .line, .transition.has-error .arrow { stroke: var(--fsm-error); }
+/* Light themes: VS Code's chart colors and warning yellow are a little light on white for a transition's label
+   (WCAG 4.5:1) and a warning's line (3:1): darkened toward the text color. */
+body.vscode-light .transition.trace-taken .tlabel { fill: color-mix(in srgb, var(--fsm-trace-taken) 80%, var(--fsm-fg)); }
+body.vscode-light .vertex.has-warning > .shape, body.vscode-light .vertex.has-warning > .stroke,
+body.vscode-light .transition.has-warning .line, body.vscode-light .transition.has-warning .arrow { stroke: color-mix(in srgb, var(--fsm-warn) 80%, var(--fsm-fg)); }
 
 .drop-target > .shape { stroke: var(--fsm-accent) !important; stroke-width: 2.5 !important; stroke-dasharray: 6 3; }
 .drop-region { fill: var(--fsm-accent); opacity: 0.08; pointer-events: none; }

@@ -91,6 +91,8 @@ export class TracePlayer implements vscode.WebviewViewProvider {
   private problems: string[] = [];
   private modelsDirty = true;
   private refreshTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The highlights last handed to the diagrams, by file URI. */
+  private views = new Map<string, TraceView>();
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -111,6 +113,17 @@ export class TracePlayer implements vscode.WebviewViewProvider {
       }),
       { dispose: () => this.dispose() },
     );
+  }
+
+  /** What the player shows (for the tests): its traces, records, cursor, whether it follows the logs, and the highlights by file. */
+  summary(): { traces: { name: string; format: string; records: number; error: string }[]; count: number; cursor: number; live: boolean; active: Record<string, string[][]> } {
+    return {
+      traces: this.traces.map((t) => ({ name: basename(t.uri.path), format: t.format.name, records: t.records.length, error: t.error ?? '' })),
+      count: this.entries.length,
+      cursor: this.cursor,
+      live: this.live,
+      active: Object.fromEntries([...this.views].map(([uri, v]) => [uri, v.instances.map((i) => i.active)])),
+    };
   }
 
   private dispose(): void {
@@ -588,6 +601,7 @@ export class TracePlayer implements vscode.WebviewViewProvider {
       view.instances.push({ ...highlight, label: inst.label ?? inst.key, color: this.colors.get(inst.key) ?? -1 });
     }
     for (const view of views.values()) view.instances.sort((a, b) => a.color - b.color);
+    this.views = views;
     this.editors.setTraceHighlights(views);
     this.post();
   }

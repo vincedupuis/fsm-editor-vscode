@@ -1,0 +1,6 @@
+# The files the extension writes have LF line ends: the examples and the test fixtures are compared with them, also
+# on Windows, where git would check them out with CRLF.
+*.fsm text eol=lf
+*.fsm.layout text eol=lf
+*.log text eol=lf
+test/unit/fixtures/** text eol=lf

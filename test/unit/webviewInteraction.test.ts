@@ -417,3 +417,48 @@ describe('webview: export', () => {
     }
   });
 });
+
+describe('webview: toolbar and side panels', () => {
+  it("runs the extension's commands from the toolbar", async () => {
+    const view = await Webview.open(small());
+    for (const [title, command] of [
+      ['Undo (Ctrl/Cmd+Z)', 'undo'],
+      ['Redo (Ctrl/Cmd+Shift+Z)', 'redo'],
+      ['Show the Trace Player: replay a log on the diagrams', 'fsmEditor.tracePlayer.focus'],
+      ['Generate code from a template', 'fsmEditor.generateCode'],
+      ['Export as SVG', 'fsmEditor.exportSvg'],
+      ['Export as PNG', 'fsmEditor.exportPng'],
+    ]) {
+      await view.page.locator(`#toolbar button[title="${title}"]`).click();
+      assert.deepEqual(view.posted.at(-1), { type: 'command', command }, title);
+    }
+    await view.close();
+  });
+
+  it('hides and shows the Toolbox and the Properties, for every diagram', async () => {
+    const view = await Webview.open(small());
+    const shown = async () => ({
+      toolbox: !(await view.page.locator('#toolbox-pane').evaluate((e) => (e as any).hidden)),
+      props: !(await view.page.locator('#props-pane').evaluate((e) => (e as any).hidden)),
+    });
+    assert.deepEqual(await shown(), { toolbox: true, props: true });
+    await view.page.locator('#toolbar button[title="Toggle Toolbox"]').click();
+    assert.deepEqual(await shown(), { toolbox: false, props: true });
+    assert.deepEqual(view.posted.at(-1), { type: 'panels', panels: { toolbox: false, props: true } }, 'kept by the extension');
+    await view.page.locator('#props-pane button[title="Close Properties"]').click();
+    assert.deepEqual(await shown(), { toolbox: false, props: false });
+    assert.deepEqual(view.posted.at(-1), { type: 'panels', panels: { toolbox: false, props: false } });
+    // Another diagram's change, as the extension passes it on to every diagram.
+    await view.send({ type: 'panels', panels: { toolbox: true, props: false } });
+    await view.page.waitForTimeout(30);
+    assert.deepEqual(await shown(), { toolbox: true, props: false });
+    await view.close();
+    // A new diagram (another window): as the extension's global state says.
+    const next = await Webview.open(small(), { panels: { toolbox: false, props: true } });
+    assert.deepEqual({
+      toolbox: !(await next.page.locator('#toolbox-pane').evaluate((e) => (e as any).hidden)),
+      props: !(await next.page.locator('#props-pane').evaluate((e) => (e as any).hidden)),
+    }, { toolbox: false, props: true });
+    await next.close();
+  });
+});

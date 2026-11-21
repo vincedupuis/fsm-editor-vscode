@@ -63,6 +63,10 @@ export interface OpenOptions {
   machines?: Record<string, FsmModel>;
   /** VS Code's theme variables, as `--vscode-*` names and values (a light theme by default). */
   theme?: Record<string, string>;
+  /** Which side panels are shown, as the provider writes them into the page (its global state). */
+  panels?: { toolbox: boolean; props: boolean };
+  /** The theme's kind, as VS Code puts it on the webview's body: `vscode-light` (the default), `vscode-dark`, `vscode-high-contrast`, `vscode-high-contrast-light`. */
+  themeKind?: string;
 }
 
 export class Webview {
@@ -70,6 +74,8 @@ export class Webview {
   readonly posted: any[] = [];
   /** The model texts the webview sent as edits, as written and read back. */
   readonly edits: FsmModel[] = [];
+  /** The two files each edit was written as. */
+  readonly files: { model: string; layout: string }[] = [];
   /** The toasts the host sent (an edit the format can't hold). */
   readonly toasts: string[] = [];
   /** The system clipboard, as the context menu's Cut, Copy and Paste reach it through the extension. */
@@ -92,7 +98,8 @@ export class Webview {
     const errors: string[] = [];
     page.on('pageerror', (e) => errors.push(e.message));
     await page.exposeFunction('__host', (msg: any) => view.onMessage(msg));
-    await page.setContent(HTML);
+    await page.setContent(HTML.replace('<body>', `<body class="${opts.themeKind ?? 'vscode-light'}">`)
+      .replace(`data-panels='{"toolbox":true,"props":true}'`, `data-panels='${JSON.stringify(opts.panels ?? { toolbox: true, props: true })}'`));
     await page.addStyleTag({
       content: opts.theme ? `:root { --vscode-font-family: sans-serif; --vscode-font-size: 13px; ${Object.entries(opts.theme).map(([k, v]) => `${k}: ${v};`).join(' ')} }` : THEME,
     });
@@ -158,6 +165,7 @@ export class Webview {
           const read = readMachine(written.modelText, written.layoutText);
           if ('problems' in read) throw new Error(JSON.stringify(read.problems));
           this.text = JSON.stringify(read.model);
+          this.files.push({ model: written.modelText, layout: written.layoutText });
           this.edits.push(read.model);
         } catch (e) {
           const message = e instanceof LostError ? e.message : `the edit can't be written: ${(e as Error).message}`;

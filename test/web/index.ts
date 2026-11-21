@@ -10,6 +10,7 @@
  */
 import * as vscode from 'vscode';
 import { initCommon, isOldFormat, readMachine } from '../../src/common';
+import type { FsmEditorApi } from '../../src/extension';
 import { decodeText, encodeText } from '../../src/util';
 
 const VIEW_TYPE = 'fsmEditor.stateMachine';
@@ -53,7 +54,7 @@ export async function run(): Promise<void> {
   const ext = vscode.extensions.all.find((e) => e.packageJSON.name === 'fsm-editor');
   assert(ext, 'the extension is installed');
   await ext.activate();
-  console.log('✓ activates in the browser extension host');
+  console.log('✓ activates');
 
   // 2. The custom editor opens, and validation runs on a machine with a broken guard.
   const play = '{ "type": "external", "trigger": "play", "target": "Playing" }';
@@ -203,6 +204,86 @@ export async function run(): Promise<void> {
   assert(tab.viewType === VIEW_TYPE && tab.uri.path.endsWith('/StateMachine.fsm'), 'it opens in the diagram editor');
   await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
   console.log('✓ creates an untitled state machine in the diagram');
+
+  // 11. Every command of the menus is contributed, and every contributed command is registered.
+  const contributes = ext.packageJSON.contributes as { commands: { command: string }[]; menus: Record<string, { command: string }[]> };
+  const contributed = new Set(contributes.commands.map((c) => c.command));
+  const registered = new Set(await vscode.commands.getCommands(true));
+  for (const [menu, items] of Object.entries(contributes.menus)) {
+    for (const item of items) assert(contributed.has(item.command), `${menu} names ${item.command}, a contributed command`);
+  }
+  for (const c of contributed) assert(registered.has(c), `${c} is registered`);
+  console.log(`✓ registers the ${contributed.size} commands its ${Object.keys(contributes.menus).length} menus show`);
+
+  // 12. Open as Text, then Open in FSM Editor (the editor title's buttons).
+  await vscode.commands.executeCommand('vscode.openWith', file('MediaPlayer.fsm'), VIEW_TYPE);
+  await waitFor('the diagram', () => (vscode.window.tabGroups.activeTabGroup.activeTab?.input instanceof vscode.TabInputCustom ? true : undefined));
+  await vscode.commands.executeCommand('fsmEditor.openAsText');
+  await waitFor('the text editor', () => (vscode.window.activeTextEditor?.document.uri.path.endsWith('/MediaPlayer.fsm') ? true : undefined));
+  await vscode.commands.executeCommand('fsmEditor.openDiagram');
+  await waitFor('the diagram again', () => {
+    const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+    return input instanceof vscode.TabInputCustom && input.uri.path.endsWith('/MediaPlayer.fsm') ? true : undefined;
+  });
+  console.log('✓ opens the diagram as text and back');
+
+  // 13. Export as SVG and as PNG (to a given file: the save dialog aside); the PNG is twice the SVG's size.
+  await new Promise((r) => setTimeout(r, 500));
+  await vscode.commands.executeCommand('fsmEditor.exportSvg', { target: file('export.svg') });
+  const svg = await read('export.svg');
+  assert(svg.startsWith('<?xml') && svg.includes('<svg ') && svg.includes('Stopped'), 'an SVG of the diagram');
+  await vscode.commands.executeCommand('fsmEditor.exportPng', { target: file('export.png') });
+  const png = await vscode.workspace.fs.readFile(file('export.png'));
+  const be = (i: number) => ((png[i] << 24) | (png[i + 1] << 16) | (png[i + 2] << 8) | png[i + 3]) >>> 0;
+  const [sw, sh] = [/<svg [^>]*width="([\d.]+)"/, /<svg [^>]*height="([\d.]+)"/].map((r) => Number(r.exec(svg)![1]));
+  assert(String.fromCharCode(png[1], png[2], png[3]) === 'PNG', 'a PNG');
+  assert(be(16) === Math.round(sw * 2) && be(20) === Math.round(sh * 2), `the PNG is ${be(16)}×${be(20)}, the SVG ${sw}×${sh}`);
+  await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+  console.log('✓ exports the diagram as SVG and PNG');
+
+  // 14. Hot exit: an unsaved change backed up and the document reopened from its backup, as VS Code does at exit and
+  // at the next start; the file on disk unchanged.
+  await vscode.commands.executeCommand('vscode.openWith', file('MediaPlayer.fsm'), VIEW_TYPE);
+  const editor = ext.exports as FsmEditorApi;
+  const model = await waitFor('the diagram', () => editor.openModel(file('MediaPlayer.fsm')));
+  model.vertices.find((v) => v.name === 'Off')!.name = 'Standby';
+  const refused = editor.edit(file('MediaPlayer.fsm'), JSON.stringify(model));
+  assert(!refused, `the edit is taken: ${refused}`);
+  const changed = vscode.window.tabGroups.all.flatMap((g) => g.tabs).find((t) => t.input instanceof vscode.TabInputCustom && t.input.uri.toString() === file('MediaPlayer.fsm').toString());
+  await waitFor('the diagram marked changed', () => (changed && vscode.window.tabGroups.all.flatMap((g) => g.tabs).some((t) => t.label === changed.label && t.isDirty) ? true : undefined));
+  const restored = await editor.backupRoundTrip(file('MediaPlayer.fsm'), file('MediaPlayer.backup'));
+  assert(restored?.vertices.some((v) => v.name === 'Standby'), 'the reopened document has the unsaved change');
+  assert(!(await exists('MediaPlayer.backup')), 'the backup is deleted once used');
+  assert((await read('MediaPlayer.fsm')).includes('"name": "Off"'), 'the file on disk is unchanged');
+  await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+  console.log('✓ backs up an unsaved diagram and reopens it from its backup (hot exit)');
+
+  // 15. The Trace Player: a log opened (as Open Trace… with files), its records shown on the diagram's machine;
+  // followed as it grows where logs can be followed (desktop); a log in a format of fsmEditor.trace.formats.
+  const trace = () => (ext.exports as FsmEditorApi).traceSummary();
+  await vscode.workspace.fs.writeFile(file('run.log'), encodeText('fsm MediaPlayer transition MediaPlayer.initial#1 initial -> Off\nfsm MediaPlayer enter Off Off\n'));
+  await vscode.commands.executeCommand('fsmEditor.openTrace', file('run.log'));
+  await waitFor('the log read', () => (trace().count === 2 ? true : undefined));
+  // On a file of the machine MediaPlayer (earlier steps made copies of it).
+  const active = (state: string) => Object.values(trace().active).some((v) => v.some((a) => a.includes(state)));
+  await waitFor('Off active on MediaPlayer', () => (active('Off') ? true : undefined)).catch((e) => {
+    throw new Error(`${e.message}: ${JSON.stringify(trace())}`);
+  });
+  if (trace().live) {
+    const more = 'fsm MediaPlayer exit Off Off\nfsm MediaPlayer transition Off#1 powerOn -> On\nfsm MediaPlayer enter On On\n';
+    await vscode.workspace.fs.writeFile(file('run.log'), encodeText((await read('run.log')) + more));
+    await waitFor('the lines appended', () => (trace().count === 5 ? true : undefined), 20000);
+    await waitFor('On active, at the last record', () => (active('On') && trace().cursor === 4 ? true : undefined));
+    console.log('✓ follows a log as it grows');
+  }
+  await vscode.workspace.getConfiguration('fsmEditor').update('trace.formats', [
+    { name: 'plain', machine: 'MediaPlayer', rules: [{ kind: 'enter', match: '^ENTER (?<name>\\w+)$' }] },
+  ], vscode.ConfigurationTarget.Workspace);
+  await vscode.workspace.fs.writeFile(file('plain.log'), encodeText('ENTER Off\nENTER On\n'));
+  await vscode.commands.executeCommand('fsmEditor.openTrace', file('plain.log'));
+  const plain = await waitFor('the log in the configured format', () => trace().traces.find((t) => t.name === 'plain.log' && t.records === 2));
+  assert(plain.format === 'plain' && !plain.error, `read with the configured format: ${JSON.stringify(plain)}`);
+  console.log('✓ replays a log on its machine, in the built-in format and in a configured one');
 
   // Let VS Code finish re-reading the saved file and close the editors, so
   // closing the browser doesn't cancel work in flight (logged as errors).
