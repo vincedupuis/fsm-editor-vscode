@@ -5,6 +5,7 @@ import { DiffSession, MergeFiles, MergeSession, Pane, Texts } from './sessions';
 import { ConnectionPointInfo, FsmModel, MachineInfo, SubmachineInfo, defaultModel, machineConnectionPoints, normalizeModel } from './model';
 import { TraceView } from './trace/replay';
 import { basename, decodeText, dirname, encodeText, joinPath, relative } from './util';
+import { showError } from './errors';
 
 /**
  * The diagram editor of `.fsm` files. A machine is two files, the model (`X.fsm`) and its layout (`X.fsm.layout`),
@@ -851,11 +852,27 @@ export class FsmEditorProvider implements vscode.CustomEditorProvider<FsmDocumen
     return restored.state.json ? normalizeModel(JSON.parse(restored.state.json)) : undefined;
   }
 
+  /** For the tests: a message of the active diagram of `uri`, handled as if its webview had sent it; undefined when handled, else why not. */
+  async messageForTests(uri: vscode.Uri, msg: object): Promise<string | undefined> {
+    const active = this.active;
+    if (active?.document.uri.toString() !== uri.toString()) return `${uri} is not the active diagram`;
+    await this.onMessage(msg, active.document, active.panel);
+    return undefined;
+  }
+
+  /** For the tests: the item `label` of the context menu of the active diagram of `uri`'s empty canvas, clicked by its webview once enabled. */
+  contextMenuForTests(uri: vscode.Uri, label: string): string | undefined {
+    const active = this.active;
+    if (active?.document.uri.toString() !== uri.toString()) return `${uri} is not the active diagram`;
+    void active.panel.webview.postMessage({ type: 'contextMenuItem', label });
+    return undefined;
+  }
+
   /** The diffs and merges open, described (for the tests). */
   sessionSummary(): string[] {
     const out = new Set<string>();
     for (const p of this.panes) {
-      if (p.session instanceof DiffSession) out.add(`diff ${basename(p.session.older.uri.path)} (${p.session.older.uri.scheme}) -> ${basename(p.session.newer.uri.path)} (${p.session.newer.uri.scheme})`);
+      if (p.session instanceof DiffSession) out.add(`diff ${basename(p.session.older.uri.path)} (${p.session.older.uri.scheme}) -> ${basename(p.session.newer.uri.path)} (${p.session.newer.uri.scheme}), ${p.session.changeCount} changes`);
       if (p.session instanceof MergeSession) out.add(`merge ${p.session.conflictCount} conflicts, panes: ${[...p.session.sides.keys(), ...[...p.session.results].map(() => 'result')].sort().join(',')}`);
     }
     return [...out];
@@ -955,7 +972,7 @@ export class FsmEditorProvider implements vscode.CustomEditorProvider<FsmDocumen
             } else await this.saveCustomDocument(doc, new vscode.CancellationTokenSource().token);
           } catch (e) {
             if (e instanceof vscode.CancellationError) return;
-            void vscode.window.showErrorMessage(`${basename(doc.uri.path)}: the merge could not be completed, ${e instanceof Error ? e.message : e}. The file keeps its conflicts.`);
+            void showError(`${basename(doc.uri.path)}: the merge could not be completed, ${e instanceof Error ? e.message : e}. The file keeps its conflicts.`);
             return;
           }
           await this.markResolved(doc.uri);
@@ -1066,7 +1083,7 @@ export class FsmEditorProvider implements vscode.CustomEditorProvider<FsmDocumen
       await vscode.workspace.fs.writeFile(uri, encodeText(sub.modelText));
       await vscode.workspace.fs.writeFile(layoutUriOf(uri), encodeText(sub.layoutText!));
     } catch (e) {
-      void vscode.window.showErrorMessage(`Extract to Submachine: ${name}.fsm could not be written (${e instanceof Error ? e.message : e}). Nothing was changed.`);
+      void showError(`Extract to Submachine: ${name}.fsm could not be written (${e instanceof Error ? e.message : e}). Nothing was changed.`);
       return;
     }
     const problemAfter = this.edit(document, parentText, 'Extract to Submachine');
@@ -1245,7 +1262,7 @@ export class FsmEditorProvider implements vscode.CustomEditorProvider<FsmDocumen
     try {
       await vscode.workspace.fs.stat(uri);
     } catch {
-      void vscode.window.showErrorMessage(`The referenced state machine file ${path} does not exist.`);
+      void showError(`The referenced state machine file ${path} does not exist.`);
       return;
     }
     await vscode.commands.executeCommand('vscode.openWith', uri, FsmEditorProvider.viewType);

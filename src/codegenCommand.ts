@@ -10,6 +10,7 @@
 import * as vscode from 'vscode';
 import { FsmIssue, generate, load } from './common';
 import { basename, encodeText } from './util';
+import { showError } from './errors';
 
 export interface GenerateArgs {
   template?: vscode.Uri | string;
@@ -146,7 +147,7 @@ export async function generateCode(context: vscode.ExtensionContext, source: vsc
   const fail = (message: string, issues: FsmIssue[] = []) => {
     channel.appendLine(`${time()} ${message}`);
     for (const line of issues.map(issueLine)) channel.appendLine(`  ${line}`);
-    void vscode.window.showErrorMessage(`Code generation failed: ${message}`, 'Show Output').then((a) => {
+    void showError(`Code generation failed: ${message}`, 'Show Output').then((a) => {
       if (a) channel.show();
     });
     return [];

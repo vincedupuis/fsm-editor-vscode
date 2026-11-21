@@ -57,6 +57,11 @@ export class DiffSession implements Session {
     newer.session = this;
   }
 
+  /** How many changes the two panes mark (for the tests). */
+  get changeCount(): number {
+    return this.changes.length;
+  }
+
   update(): void {
     const a = this.older.model();
     const b = this.newer.model();

@@ -1322,6 +1322,17 @@
         renderProps();
       } else selection = new Set();
       render();
+    } else if (msg.type === 'contextMenuItem') {
+      // For the tests (the extension's test API): an item of the empty canvas's context menu, clicked once enabled
+      // (Paste is, once the extension has read the clipboard).
+      showContextMenu(svg, window.innerWidth / 2, window.innerHeight / 2);
+      const button = [...(contextMenu?.querySelectorAll('.ctx-item') ?? [])].find((b) => b.textContent === msg.label);
+      const click = (tries) => {
+        if (!button?.isConnected) return;
+        if (!button.disabled) button.click();
+        else if (tries > 0) setTimeout(() => click(tries - 1), 50);
+      };
+      click(100);
     } else if (msg.type === 'requestSvg') {
       vscode.postMessage({ type: 'svg', requestId: msg.requestId, svg: exportSvg() });
     } else if (msg.type === 'requestPng') {
@@ -2798,6 +2809,24 @@ ${scene(true)}
   });
 
   // ---------------------------------------------------------------- keyboard
+  function selectAll() {
+    selection = new Set(model.vertices.map((v) => v.id));
+    renderProps();
+    render();
+  }
+
+  // VS Code's Edit › Select All runs the page's select-all in a focused webview, which starts with a selectstart
+  // event; one that starts while a button is down is a text selection made with the mouse.
+  let buttonsDown = 0;
+  window.addEventListener('pointerdown', (e) => (buttonsDown = e.buttons), true);
+  window.addEventListener('pointerup', (e) => (buttonsDown = e.buttons), true);
+  document.addEventListener('selectstart', (e) => {
+    const active = document.activeElement;
+    if (buttonsDown || isEditable(active) || (active && propsPop?.el.contains(active)) || !model) return;
+    e.preventDefault();
+    selectAll();
+  });
+
   window.addEventListener('keydown', (e) => {
     if (isEditable(/** @type {Element} */ (e.target)) || propsPop?.el.contains(/** @type {Node} */ (e.target)) || !model) return;
     const mod = e.metaKey || e.ctrlKey;
@@ -2810,9 +2839,7 @@ ${scene(true)}
     if (mod) {
       const k = e.key.toLowerCase();
       if (k === 'a') {
-        selection = new Set(model.vertices.map((v) => v.id));
-        renderProps();
-        render();
+        selectAll();
         e.preventDefault();
       } else if (k === 'd') {
         const data = collectSelection();

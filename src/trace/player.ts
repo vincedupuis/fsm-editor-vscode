@@ -116,8 +116,9 @@ export class TracePlayer implements vscode.WebviewViewProvider {
   }
 
   /** What the player shows (for the tests): its traces, records, cursor, whether it follows the logs, and the highlights by file. */
-  summary(): { traces: { name: string; format: string; records: number; error: string }[]; count: number; cursor: number; live: boolean; active: Record<string, string[][]> } {
+  summary(): { shown: boolean; traces: { name: string; format: string; records: number; error: string }[]; count: number; cursor: number; live: boolean; active: Record<string, string[][]> } {
     return {
+      shown: !!this.view?.visible,
       traces: this.traces.map((t) => ({ name: basename(t.uri.path), format: t.format.name, records: t.records.length, error: t.error ?? '' })),
       count: this.entries.length,
       cursor: this.cursor,

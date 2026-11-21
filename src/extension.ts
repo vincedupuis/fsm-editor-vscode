@@ -5,6 +5,7 @@ import { initCommon, isOldFormat } from './common';
 import { defaultModel } from './model';
 import { TracePlayer } from './trace/player';
 import { basename, encodeText, extname } from './util';
+import { errorsShown, showError } from './errors';
 
 /** The extension's API, for the tests: what they can't see from VS Code's own. */
 export interface FsmEditorApi {
@@ -16,6 +17,12 @@ export interface FsmEditorApi {
   edit(uri: vscode.Uri, json: string): string | undefined;
   /** An open document backed up (hot exit) into `destination` and reopened from it: the reopened document's model. */
   backupRoundTrip(uri: vscode.Uri, destination: vscode.Uri): ReturnType<FsmEditorProvider['backupRoundTripForTests']>;
+  /** A message of the active diagram of `uri`, handled as if its webview had sent it (e.g. `openSubmachine`): undefined when handled, else why not. */
+  message(uri: vscode.Uri, msg: object): Promise<string | undefined>;
+  /** The item `label` of the context menu of the active diagram of `uri`'s empty canvas, clicked once enabled: undefined when asked, else why not. */
+  contextMenu(uri: vscode.Uri, label: string): string | undefined;
+  /** The error messages the extension showed, oldest first. */
+  errors(): string[];
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<FsmEditorApi> {
@@ -23,7 +30,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<FsmEdi
   try {
     initCommon(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(context.extensionUri, 'common', 'common.wasm')));
   } catch (e) {
-    void vscode.window.showErrorMessage(`FSM Editor cannot start: common/common.wasm is missing or invalid (${e instanceof Error ? e.message : e}).`);
+    void showError(`FSM Editor cannot start: common/common.wasm is missing or invalid (${e instanceof Error ? e.message : e}).`);
     throw e;
   }
   const provider = new FsmEditorProvider(context);
@@ -59,7 +66,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<FsmEdi
       const uri = vscode.Uri.joinPath(dir, `${name}.fsm`);
       try {
         await vscode.workspace.fs.stat(uri);
-        void vscode.window.showErrorMessage(`${name}.fsm already exists.`);
+        void showError(`${name}.fsm already exists.`);
         return;
       } catch {
         // does not exist yet
@@ -163,7 +170,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<FsmEdi
         const svg = await provider.requestSvg(editor);
         await saveExport(editor.document.uri, '.svg', { SVG: ['svg'] }, svg, args?.target);
       } catch (e) {
-        void vscode.window.showErrorMessage(`SVG export failed: ${e instanceof Error ? e.message : e}`);
+        void showError(`SVG export failed: ${e instanceof Error ? e.message : e}`);
       }
     }),
 
@@ -174,7 +181,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<FsmEdi
         const png = await provider.requestPng(editor);
         await saveExport(editor.document.uri, '.png', { PNG: ['png'] }, decodeBase64(png), args?.target);
       } catch (e) {
-        void vscode.window.showErrorMessage(`PNG export failed: ${e instanceof Error ? e.message : e}`);
+        void showError(`PNG export failed: ${e instanceof Error ? e.message : e}`);
       }
     }),
   );
@@ -185,6 +192,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<FsmEdi
     openModel: (uri) => provider.openModel(uri),
     edit: (uri, json) => provider.editForTests(uri, json),
     backupRoundTrip: (uri, destination) => provider.backupRoundTripForTests(uri, destination),
+    message: (uri, msg) => provider.messageForTests(uri, msg),
+    contextMenu: (uri, label) => provider.contextMenuForTests(uri, label),
+    errors: errorsShown,
   };
 }
 
