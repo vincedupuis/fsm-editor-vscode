@@ -334,6 +334,8 @@
       if (!pre.ok) return { error: `Precondition: ${pre.error}` };
       if (!trig.ok) return { error: `Trigger: ${trig.error}` };
       if (!post.ok) return { error: `Postcondition: ${post.error}` };
+      const s = V.get(t.source);
+      if (isStart(s) && (pre.value || trig.value.length || post.value)) return { error: startOnly(s) };
       return {
         apply: (x) => {
           x.precondition = pre.value;
@@ -353,6 +355,8 @@
     if (!trig.ok) return { error: `Trigger: ${trig.error}` };
     if (!guard.ok) return { error: `Guard: ${guard.error}` };
     if (!action.ok) return { error: `Action: ${action.error}` };
+    const s = V.get(t.source);
+    if (isStart(s) && (trig.value.length || guard.value)) return { error: startOnly(s) };
     return {
       apply: (x) => {
         x.triggers = trig.value;
@@ -1565,9 +1569,9 @@ ${scene(true)}
       v.y = snap(p.y - v.h / 2);
       const r = regionAt(p, new Set());
       v.parent = r ? r.id : rootRegion();
-      // A region has one initial, one shallow and one deep history pseudostate at most (the file holds one).
-      if ((v.type === 'initial' || v.type === 'shallowHistory' || v.type === 'deepHistory') && model.vertices.some((x) => x.parent === v.parent && x.type === v.type)) {
-        toast(`This region already has ${v.type === 'initial' ? 'an initial pseudostate' : `a ${TYPE_LABEL[v.type].toLowerCase()}`}.`);
+      const problem = regionProblem([v], v.parent);
+      if (problem) {
+        toast(problem);
         return;
       }
     }
@@ -2066,6 +2070,11 @@ ${scene(true)}
   function connect(source, targetId) {
     if (source.type === 'comment') {
       if (targetId === source.id) return;
+      const problem = anchorProblem(targetId);
+      if (problem) {
+        toast(problem);
+        return;
+      }
       source.anchors = source.anchors || [];
       if (!source.anchors.includes(targetId)) source.anchors.push(targetId);
       selection = new Set([source.id]);
@@ -2075,6 +2084,11 @@ ${scene(true)}
     const target = V.get(targetId);
     if (!target) return;
     if (target.type === 'comment') {
+      const problem = anchorProblem(source.id);
+      if (problem) {
+        toast(problem);
+        return;
+      }
       target.anchors = target.anchors || [];
       if (!target.anchors.includes(source.id)) target.anchors.push(source.id);
       commit({ props: true });
@@ -2092,8 +2106,64 @@ ${scene(true)}
     if (source.type === 'state') setTimeout(() => startInlineEdit(t.id), 0);
   }
 
-  /** Why a transition can't go from `source` to `target`, or null when it can. */
-  function connectProblem(source, target) {
+  /** Initial and history pseudostates: the file holds their one transition's target and action only. */
+  const isStart = (v) => !!v && (v.type === 'initial' || v.type === 'shallowHistory' || v.type === 'deepHistory');
+  /** Does `t` have triggers, a guard, conditions or a kind other than external? */
+  const beyondAction = (t) => !!((t.triggers || []).length || t.guard || t.precondition || t.postcondition || (t.kind || 'external') !== 'external');
+  const startOnly = (v) => `A transition leaving a${v.type === 'initial' ? 'n initial' : ' history'} pseudostate holds its target and an action only.`;
+  const ANCHOR_INITIAL = 'A comment cannot be attached to an initial pseudostate or to its transition.';
+  /** Why a comment can't be attached to element `id` (the file doesn't name an initial pseudostate or its transition), or null. */
+  function anchorProblem(id) {
+    const t = T.get(id);
+    const v = t ? V.get(t.source) : V.get(id);
+    return v && v.type === 'initial' ? ANCHOR_INITIAL : null;
+  }
+  const anchored = (id) => model.vertices.some((v) => v.type === 'comment' && (v.anchors || []).includes(id));
+
+  /**
+   * Why transition `t` can't go from `source` to `target` (reconnected or reversed), or null when it can: as drawing it
+   * would be, and as the file holds it.
+   */
+  function transitionProblem(t, source, target) {
+    const problem = connectProblem(source, target, t);
+    if (problem) return problem;
+    if (t.kind === 'internal' && source !== target) return 'An internal transition stays on its state.';
+    if (isStart(source) && beyondAction(t)) return startOnly(source);
+    if (source.type === 'initial' && anchored(t.id)) return ANCHOR_INITIAL;
+    return null;
+  }
+
+  /**
+   * Why vertices `vs` can't all be in region `regionId`, or null when they can: a region has one initial, one shallow
+   * and one deep history pseudostate at most (the file holds one).
+   */
+  function regionProblem(vs, regionId) {
+    const ids = new Set(vs.map((v) => v.id));
+    for (const type of ['initial', 'shallowHistory', 'deepHistory']) {
+      const n = vs.filter((v) => v.type === type).length;
+      if (n && (n > 1 || model.vertices.some((x) => x.parent === regionId && x.type === type && !ids.has(x.id)))) {
+        return `This region already has ${type === 'initial' ? 'an initial pseudostate' : `a ${TYPE_LABEL[type].toLowerCase()}`}.`;
+      }
+    }
+    return null;
+  }
+
+  /** Why pseudostate `v` can't become a `type`, or null when it can. */
+  function typeProblem(v, type) {
+    if (type === v.type) return null;
+    const outs = model.transitions.filter((t) => t.source === v.id);
+    const as = { ...v, type };
+    if (type === 'terminate' && outs.length) return 'A terminate cannot have outgoing transitions.';
+    if (!isStart(as)) return null;
+    if (type === 'initial' && model.transitions.some((t) => t.target === v.id)) return 'An initial pseudostate cannot be the target of a transition.';
+    if (outs.length > 1) return `A${type === 'initial' ? 'n initial pseudostate' : ' history pseudostate'} has one transition only.`;
+    if (outs.some(beyondAction)) return startOnly(as);
+    if (type === 'initial' && (anchored(v.id) || outs.some((t) => anchored(t.id)))) return ANCHOR_INITIAL;
+    return regionProblem([as], v.parent);
+  }
+
+  /** Why a transition can't go from `source` to `target`, or null when it can (`moving`: the transition being reconnected). */
+  function connectProblem(source, target, moving = null) {
     if (source.type === 'connectionPointRef' && refKind(source) === 'entry') {
       return 'An entry reference only receives transitions; execution continues inside the submachine.';
     }
@@ -2105,7 +2175,7 @@ ${scene(true)}
     }
     if (target.type === 'initial') return 'An initial pseudostate cannot be the target of a transition.';
     if (source.type === 'initial' || source.type === 'shallowHistory' || source.type === 'deepHistory') {
-      const others = model.transitions.filter((t) => t.source === source.id && !(drag && drag.kind === 'reconnect' && drag.t === t));
+      const others = model.transitions.filter((t) => t.source === source.id && t !== moving && !(drag && drag.kind === 'reconnect' && drag.t === t));
       if (others.length) return `A${source.type === 'initial' ? 'n initial pseudostate' : ' history pseudostate'} has one transition only.`;
     }
     return null;
@@ -2120,7 +2190,7 @@ ${scene(true)}
     const source = end === 'source' ? v : V.get(t.source);
     const target = end === 'target' ? v : V.get(t.target);
     if (!source || !target) return;
-    const problem = connectProblem(source, target);
+    const problem = transitionProblem(t, source, target);
     if (problem) {
       toast(problem);
       render();
@@ -2207,12 +2277,22 @@ ${scene(true)}
       } else if (at || !regionOwner.has(v.parent)) {
         v.parent = rootRegion();
       }
-      if (v.anchors) v.anchors = v.anchors.map((a) => map.get(a)).filter(Boolean);
+      // A region has one initial, one shallow and one deep history pseudostate at most: a copy that would be a second is left out.
+      const problem = !map.has(src.parent) && regionProblem([v], v.parent);
+      if (problem) {
+        toast(problem);
+        map.delete(src.id);
+        continue;
+      }
       model.vertices.push(v);
       added.push(v);
     }
+    if (!added.length) return;
     for (const src of data.transitions || []) {
-      if (!map.has(src.source) || !map.has(src.target)) continue;
+      if (!map.has(src.source) || !map.has(src.target)) {
+        map.delete(src.id);
+        continue;
+      }
       const t = JSON.parse(JSON.stringify(src));
       t.id = map.get(src.id);
       // Copied by an earlier version: its action was called effect.
@@ -2223,6 +2303,7 @@ ${scene(true)}
       if (t.points) t.points = t.points.map((p) => ({ x: p.x + off.x, y: p.y + off.y }));
       model.transitions.push(t);
     }
+    for (const v of added) if (v.anchors) v.anchors = v.anchors.map((a) => map.get(a)).filter(Boolean);
     reindex();
     const addedIds = new Set(added.map((v) => v.id));
     const roots = added.filter((v) => !ancestors(v).some((a) => addedIds.has(a.id)));
@@ -2657,7 +2738,9 @@ ${scene(true)}
             // A group drops as a whole: into the region that holds all its members, or nowhere.
             if (v !== d.roots.find((r) => r.group === v.group)) continue;
             const rr = dropRegionOf(dropBox(v), exclude);
-            if (rr) for (const m of groupMembers(v.group)) m.parent = rr.id;
+            const problem = rr && regionProblem(groupMembers(v.group), rr.id);
+            if (problem) toast(problem);
+            else if (rr) for (const m of groupMembers(v.group)) m.parent = rr.id;
             continue;
           }
           if (v.type === 'entryPoint' || v.type === 'exitPoint') {
@@ -2670,7 +2753,9 @@ ${scene(true)}
             continue;
           }
           const rr = dropRegionOf(v, exclude);
-          if (rr) v.parent = rr.id;
+          const problem = rr && regionProblem([v], rr.id);
+          if (problem) toast(problem);
+          else if (rr) v.parent = rr.id;
         }
         commit({ props: true });
         break;
@@ -3149,7 +3234,14 @@ ${scene(true)}
   /** The selected elements (without a selected ancestor) and their groups, when they all lie in a composite state's region. */
   function leavingElements() {
     const roots = withGroupMates(selectionRoots());
-    return roots.length && roots.every((v) => !isCP(v) && regionOwner.get(v.parent)) ? roots : [];
+    if (!roots.length || !roots.every((v) => !isCP(v) && regionOwner.get(v.parent))) return [];
+    // Not when a region would get a second initial or history pseudostate.
+    const into = new Map();
+    for (const v of roots) {
+      const r = regionOwner.get(v.parent).parent;
+      into.set(r, [...(into.get(r) || []), v]);
+    }
+    return [...into].some(([r, vs]) => regionProblem(vs, r)) ? [] : roots;
   }
   const canLeaveParent = () => leavingElements().length > 0;
 
@@ -3531,7 +3623,8 @@ ${scene(true)}
     propsEl.append(h('h3', {}, TYPE_LABEL[v.type] || v.type));
     const group = SWAPPABLE.find((g) => g.includes(v.type));
     if (group) {
-      propsEl.append(selectField('Kind', v.type, group.map((t) => [t, TYPE_LABEL[t]]), (t) => {
+      // Only the kinds the file can hold this pseudostate as, with its transitions and region.
+      propsEl.append(selectField('Kind', v.type, group.filter((t) => !typeProblem(v, t)).map((t) => [t, TYPE_LABEL[t]]), (t) => {
         const c = center(v);
         const old = boxOf(v);
         v.type = t;
@@ -3598,6 +3691,17 @@ ${scene(true)}
       propsEl.append(selectField('Referenced state machine', current, options, (val) => {
         if (val && (v.regions || []).length) {
           toast('Remove the regions first: a submachine state cannot own regions.');
+          renderProps();
+          return;
+        }
+        const points = model.vertices.filter((p) => p.parent === v.id && p.type !== 'comment');
+        if (val && points.some((p) => p.type !== 'connectionPointRef')) {
+          toast('Remove the entry and exit points first: a submachine state has references to its submachine\'s points instead.');
+          renderProps();
+          return;
+        }
+        if (!val && points.some((p) => p.type === 'connectionPointRef')) {
+          toast('Remove the connection point references first: only a submachine state has them.');
           renderProps();
           return;
         }
@@ -3765,37 +3869,43 @@ ${scene(true)}
       t[k] = val;
       commit();
     };
+    // Leaving an initial or history pseudostate: the file holds its target and action only.
+    const start = isStart(s);
     propsEl.append(
       h('h3', {}, 'Transition'),
       h('div', { className: 'muted field' }, `${nm(s)} → ${nm(g)}`),
-      selectField('Kind', t.kind, [['external', 'External'], ['local', 'Local'], ['internal', 'Internal']], (val) => {
+    );
+    if (!start) propsEl.append(selectField('Kind', t.kind, [['external', 'External'], ['local', 'Local'], ['internal', 'Internal']], (val) => {
         t.kind = val;
         if (val === 'internal') {
           t.target = t.source;
           delete t.points;
         }
         commit({ props: true });
-      }),
-      colorField(t, 'the transition'),
-    );
+      }));
+    propsEl.append(colorField(t, 'the transition'));
     // Internal transitions drawn in their state's compartment take a single color.
     const inCompartment = t.kind === 'internal' && t.source === t.target && s && s.type === 'state';
     const item = (key, what) => (inCompartment ? undefined : colorOpt(t, key, what));
-    propsEl.append(
-      textField('Triggers', t.triggers.join(', '), set('triggers'), { check: CHECK.triggers, placeholder: 'event, after(500ms), after(2s)', color: item('triggers', 'the triggers') }),
-    );
-    if (model.kind === 'protocol') {
+    if (!start) {
       propsEl.append(
+        textField('Triggers', t.triggers.join(', '), set('triggers'), { check: CHECK.triggers, placeholder: 'event, after(500ms), after(2s)', color: item('triggers', 'the triggers') }),
+      );
+    }
+    if (model.kind === 'protocol') {
+      if (!start) propsEl.append(
         textField('Precondition', t.precondition, set('precondition'), { check: CHECK.condition, placeholder: 'e.g. isOpen()', color: item('precondition', 'the precondition') }),
         textField('Postcondition', t.postcondition, set('postcondition'), { check: CHECK.condition, placeholder: 'e.g. isClosed()', color: item('postcondition', 'the postcondition') }),
       );
     } else {
-      propsEl.append(
-        textField('Guard', t.guard, set('guard'), {
+      if (!start) {
+        propsEl.append(textField('Guard', t.guard, set('guard'), {
           check: (val) => checkText('guard', val, allowsElse(s)),
           placeholder: allowsElse(s) ? 'e.g. hasDisc() && !isJammed(), or else' : 'e.g. hasDisc() && !isJammed()',
           color: item('guard', 'the guard'),
-        }),
+        }));
+      }
+      propsEl.append(
         textField('Action', t.action, set('action'), { check: CHECK.actions, placeholder: 'e.g. notify(); log()', color: item('action', 'the action') }),
       );
     }
@@ -3808,7 +3918,7 @@ ${scene(true)}
       } }, 'Straighten'),
       h('button', { className: 'pbtn', onclick: () => {
         // Reversed, the target becomes the source: refused as drawing it that way would be.
-        if (!g || !s || connectProblem(g, s)) {
+        if (!g || !s || transitionProblem(t, g, s)) {
           toast('This transition cannot be reversed.');
           return;
         }
