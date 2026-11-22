@@ -1072,7 +1072,7 @@
           s += `<rect class="handle handle-${c}" data-handle="resize-${c}" x="${hx}" y="${hy}" width="9" height="9" rx="1.5"/>`;
         }
       }
-      if (v.type !== 'final' && v.type !== 'terminate') {
+      if (canStartFrom(v)) {
         const hx = v.x + v.w + 18;
         const hy = v.y + v.h / 2;
         s += `<circle class="connect-handle" data-handle="connect" cx="${hx}" cy="${hy}" r="7"><title>Drag to connect</title></circle>`;
@@ -2094,6 +2094,16 @@ ${scene(true)}
       commit({ props: true });
       return;
     }
+    // An initial or history pseudostate has one transition: drawn again, it moves to the new target (to the same one, nothing changes).
+    const existing = startTransition(source);
+    if (existing) {
+      selection = new Set([existing.id]);
+      if (existing.target === target.id) {
+        renderProps();
+        render();
+      } else reconnect(existing, 'target', target);
+      return;
+    }
     const problem = connectProblem(source, target);
     if (problem) {
       toast(problem);
@@ -2119,6 +2129,37 @@ ${scene(true)}
     return v && v.type === 'initial' ? ANCHOR_INITIAL : null;
   }
   const anchored = (id) => model.vertices.some((v) => v.type === 'comment' && (v.anchors || []).includes(id));
+
+  /** Can a transition be drawn from `v` (its ⊕ handle, the transition tool)? Not from a final state, a terminate or an entry reference. */
+  const canStartFrom = (v) => !(v.type === 'final' || v.type === 'terminate' || (v.type === 'connectionPointRef' && refKind(v) === 'entry'));
+  /** The one transition of an initial or history pseudostate, which drawing from it again moves to the new target. */
+  const startTransition = (v) => (isStart(v) ? model.transitions.find((t) => t.source === v.id) : undefined);
+
+  /** Can a connection drawn from `source` end on element `id` (a vertex, or a transition for a comment's anchor)? */
+  function canConnect(source, id) {
+    if (source.type === 'comment') return id !== source.id && (V.has(id) || T.has(id)) && !anchorProblem(id);
+    const target = V.get(id);
+    if (!target) return false;
+    if (target.type === 'comment') return !anchorProblem(source.id);
+    const existing = startTransition(source);
+    if (existing) return canReconnect(existing, 'target', target);
+    return !connectProblem(source, target);
+  }
+
+  /** Can the `end` ('source' or 'target') of `t` move to vertex `v`? */
+  function canReconnect(t, end, v) {
+    if (t[end] === v.id) return true;
+    const source = end === 'source' ? v : V.get(t.source);
+    const target = end === 'target' ? v : V.get(t.target);
+    return !!source && !!target && !transitionProblem(t, source, target);
+  }
+
+  /** Can `t` be reversed (its target becomes its source)? */
+  function canReverse(t) {
+    const s = V.get(t.source);
+    const g = V.get(t.target);
+    return !!s && !!g && !transitionProblem(t, g, s);
+  }
 
   /**
    * Why transition `t` can't go from `source` to `target` (reconnected or reversed), or null when it can: as drawing it
@@ -2278,9 +2319,7 @@ ${scene(true)}
         v.parent = rootRegion();
       }
       // A region has one initial, one shallow and one deep history pseudostate at most: a copy that would be a second is left out.
-      const problem = !map.has(src.parent) && regionProblem([v], v.parent);
-      if (problem) {
-        toast(problem);
+      if (!map.has(src.parent) && regionProblem([v], v.parent)) {
         map.delete(src.id);
         continue;
       }
@@ -2391,21 +2430,35 @@ ${scene(true)}
     return null;
   }
 
+  /** Width of a composite state's contour, in screen pixels: a press there takes the state, as its title bar does. */
+  const CONTOUR = 6;
+  /** Is `p` inside one of composite state `v`'s regions, away from its contour? There, a press is on empty canvas. */
+  function inRegionArea(v, p) {
+    const m = CONTOUR / view.zoom;
+    return p.x > v.x + m && p.x < v.x + v.w - m && p.y < v.y + v.h - m && regionRects(v).some((r) => inRect(r, p));
+  }
+
   /** Time and position of the last plain pointerdown, for double-click detection. */
   let lastDown = null;
+  /** Longest time between the two clicks of a double-click, in ms. */
+  const DOUBLE_CLICK = 500;
+  /** The properties window an Alt+click on a submachine state opens once no second click made it a double-click. */
+  let propsTimer = null;
 
   svg.addEventListener('pointerdown', (e) => {
     if (!model) return;
     svg.focus();
     commitInlineEdit();
     hideProblems();
+    clearTimeout(propsTimer);
+    propsTimer = null;
     const p = toWorld(e);
     let hit = hitTarget(e.target);
 
     if (e.button === 1 || e.button === 2 || spaceDown || tool) lastDown = null;
     if (e.button === 1 || e.button === 2 || spaceDown) {
       // A right-button press that doesn't move opens the context menu.
-      drag = { kind: 'pan', sx: e.clientX, sy: e.clientY, vx: view.x, vy: view.y, right: e.button === 2 && !spaceDown, moved: false, start: p, target: e.target };
+      drag = { kind: 'pan', sx: e.clientX, sy: e.clientY, vx: view.x, vy: view.y, right: e.button === 2 && !spaceDown, middle: e.button === 1 && !spaceDown, moved: false, start: p, target: e.target };
       svg.classList.add('panning');
       capture(e);
       e.preventDefault();
@@ -2415,8 +2468,9 @@ ${scene(true)}
     if (tool) {
       const def = TOOL_BY_ID.get(tool);
       if (tool === 'transition') {
-        if (hit.kind === 'vertex') startConnect(V.get(hit.id), p);
-        else toast('Start the transition on a state or pseudostate.');
+        if (hit.kind === 'vertex') {
+          if (canStartFrom(V.get(hit.id))) startConnect(V.get(hit.id), p);
+        } else toast('Start the transition on a state or pseudostate.');
       } else if (tool === 'region') {
         const s = hit.kind === 'vertex' ? V.get(hit.id) : stateAt(p, new Set());
         if (s && s.type === 'state') {
@@ -2431,15 +2485,37 @@ ${scene(true)}
       return;
     }
 
-    // A composite state moves by its title bar: its regions are empty canvas, for a selection band
-    // and for a double-click adding a state.
-    if (hit.kind === 'vertex' && regionRects(V.get(hit.id)).some((r) => inRect(r, p))) hit = { kind: 'empty' };
+    // A composite state moves by its title bar and its contour: its regions are empty canvas, for a selection band
+    // and for a double-click adding a state; a click there (without a drag) takes the state.
+    let area = null;
+    if (hit.kind === 'vertex' && inRegionArea(V.get(hit.id), p)) {
+      area = hit.id;
+      hit = { kind: 'empty' };
+    }
+
+    // Alt+click on an element opens its properties in a window (on a state, once released without moving: Alt+drag
+    // moves it off the grid; on a submachine state, once no second click made it an Alt+double-click).
+    const altClick = e.button === 0 && e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey && !tool;
+    if (altClick && (hit.kind === 'transition' || hit.kind === 'label')) {
+      lastDown = null;
+      e.preventDefault();
+      openPropsPop(hit.id, e.clientX, e.clientY);
+      return;
+    }
 
     // Double-clicks are detected here: the render below replaces the element under the pointer,
     // so the browser never fires dblclick on a diagram item.
-    const dbl = e.button === 0 && lastDown && e.timeStamp - lastDown.time < 500 && Math.hypot(e.clientX - lastDown.x, e.clientY - lastDown.y) < 5;
+    const dbl = e.button === 0 && lastDown && e.timeStamp - lastDown.time < DOUBLE_CLICK && Math.hypot(e.clientX - lastDown.x, e.clientY - lastDown.y) < 5;
     lastDown = dbl ? null : { time: e.timeStamp, x: e.clientX, y: e.clientY };
-    if (dbl && doubleClick(e, hit, p)) {
+    if (dbl && altClick && hit.kind === 'vertex') {
+      // Alt+double-click on a submachine state opens its submachine; on another element, it is an Alt+click.
+      const v = V.get(hit.id);
+      if (v.type === 'state' && v.submachine) {
+        e.preventDefault();
+        vscode.postMessage({ type: 'openSubmachine', href: v.submachine });
+        return;
+      }
+    } else if (dbl && doubleClick(e, hit, p)) {
       e.preventDefault();
       return;
     }
@@ -2492,12 +2568,15 @@ ${scene(true)}
           selection = new Set([id]);
         } else clickedSelected = true;
         renderProps();
-        if (hit.kind === 'vertex' && selection.has(id)) startMove(p, e.altKey, clickedSelected ? id : null);
+        if (hit.kind === 'vertex' && selection.has(id)) {
+          startMove(p, e.altKey, clickedSelected ? id : null);
+          if (altClick) drag.props = { id, x: e.clientX, y: e.clientY };
+        }
         break;
       }
       default:
         if (!(e.shiftKey || e.metaKey || e.ctrlKey)) selection.clear();
-        drag = { kind: 'band', start: p, cur: null, additive: e.shiftKey || e.metaKey || e.ctrlKey, base: new Set(selection) };
+        drag = { kind: 'band', start: p, cur: null, additive: e.shiftKey || e.metaKey || e.ctrlKey, base: new Set(selection), area, props: altClick ? { x: e.clientX, y: e.clientY } : null };
         renderProps();
     }
     if (drag) capture(e);
@@ -2581,7 +2660,10 @@ ${scene(true)}
           for (const r of drag.roots) fitInRegion(r, drag.boxes.get(r.id), e.altKey);
         }
         const exclude = new Set(drag.moving.keys());
-        const rr = lead && drag.roots.every((r) => !isCP(r)) ? dropRegionOf(dropBox(lead), exclude) || regionRects(regionOwner.get(lead.parent) || {}).find((r) => r.id === lead.parent) : null;
+        // A region that would get a second initial or history pseudostate isn't offered.
+        const into = lead && drag.roots.every((r) => !isCP(r)) ? dropRegionOf(dropBox(lead), exclude) : null;
+        const accepted = into && !regionProblem(lead.group ? groupMembers(lead.group) : [lead], into.id) ? into : null;
+        const rr = lead && drag.roots.every((r) => !isCP(r)) ? accepted || regionRects(regionOwner.get(lead.parent) || {}).find((r) => r.id === lead.parent) : null;
         drag.dropRegion = rr ? rr.id : null;
         drag.dropState = rr ? regionOwner.get(rr.id)?.id : null;
         break;
@@ -2660,13 +2742,16 @@ ${scene(true)}
       }
       case 'connect':
         drag.cur = p;
+        // Only where the connection can end: elsewhere it follows the pointer, and dropping it there draws nothing.
         drag.hover = vertexUnder(e);
-        if (drag.hover && !V.has(drag.hover) && drag.source.type !== 'comment') drag.hover = null;
+        if (drag.hover && !canConnect(drag.source, drag.hover)) drag.hover = null;
         break;
-      case 'reconnect':
+      case 'reconnect': {
         drag.cur = p;
-        drag.hover = connectableUnder(e);
+        const v = V.get(connectableUnder(e) || '');
+        drag.hover = v && canReconnect(drag.t, drag.end, v) ? v.id : null;
         break;
+      }
       case 'wp': {
         const q = e.altKey ? { x: p.x, y: p.y } : { x: snap(p.x), y: snap(p.y) };
         if (isLoop(drag.t)) moveLoopCorner(drag.t, V.get(drag.t.source), drag.index, q);
@@ -2720,9 +2805,27 @@ ${scene(true)}
         saveView();
         render();
         if (d.right && !d.moved) showContextMenu(d.target, e.clientX, e.clientY);
+        // A middle click (no drag) on an element opens its properties in a window, as Alt+click does.
+        if (d.middle && !d.moved && !tool) {
+          const hit = hitTarget(d.target);
+          const v = hit.kind === 'vertex' ? V.get(hit.id) : null;
+          if (v || hit.kind === 'transition' || hit.kind === 'label') openPropsPop(hit.id, e.clientX, e.clientY);
+        }
         break;
       case 'move':
         if (!d.moved) {
+          if (d.props) {
+            const { id, x, y } = d.props;
+            const v = V.get(id);
+            if (v && v.type === 'state' && v.submachine) {
+              propsTimer = setTimeout(() => {
+                propsTimer = null;
+                if (V.has(id)) openPropsPop(id, x, y);
+              }, DOUBLE_CLICK);
+              render();
+            } else openPropsPop(id, x, y);
+            break;
+          }
           if (d.clickedId) {
             selection = new Set([d.clickedId]);
             renderProps();
@@ -2738,9 +2841,7 @@ ${scene(true)}
             // A group drops as a whole: into the region that holds all its members, or nowhere.
             if (v !== d.roots.find((r) => r.group === v.group)) continue;
             const rr = dropRegionOf(dropBox(v), exclude);
-            const problem = rr && regionProblem(groupMembers(v.group), rr.id);
-            if (problem) toast(problem);
-            else if (rr) for (const m of groupMembers(v.group)) m.parent = rr.id;
+            if (rr && !regionProblem(groupMembers(v.group), rr.id)) for (const m of groupMembers(v.group)) m.parent = rr.id;
             continue;
           }
           if (v.type === 'entryPoint' || v.type === 'exitPoint') {
@@ -2753,9 +2854,7 @@ ${scene(true)}
             continue;
           }
           const rr = dropRegionOf(v, exclude);
-          const problem = rr && regionProblem([v], rr.id);
-          if (problem) toast(problem);
-          else if (rr) v.parent = rr.id;
+          if (rr && !regionProblem([v], rr.id)) v.parent = rr.id;
         }
         commit({ props: true });
         break;
@@ -2770,18 +2869,29 @@ ${scene(true)}
         break;
       case 'connect': {
         const target = vertexUnder(e);
-        if (target) connect(d.source, target);
+        if (target && canConnect(d.source, target)) connect(d.source, target);
         else render();
         toolDone();
         break;
       }
       case 'reconnect': {
         const v = V.get(connectableUnder(e) || '');
-        if (v) reconnect(d.t, d.end, v);
+        if (v && canReconnect(d.t, d.end, v)) reconnect(d.t, d.end, v);
         else render();
         break;
       }
       case 'band':
+        // A click in a composite state's area (no band drawn): the state, as a click on it.
+        if (d.area && (!d.cur || Math.hypot(d.cur.x - d.start.x, d.cur.y - d.start.y) * view.zoom < 3) && V.has(d.area)) {
+          if (d.props) {
+            openPropsPop(d.area, d.props.x, d.props.y);
+            break;
+          }
+          selection = new Set(d.base);
+          if (!d.additive) selection = new Set([d.area]);
+          else if (selection.has(d.area)) selection.delete(d.area);
+          else selection.add(d.area);
+        }
         renderProps();
         render();
         break;
@@ -2803,9 +2913,7 @@ ${scene(true)}
       if (isLoop(t)) return false; // a self-transition loop has no bend points but its corners
       addWaypoint(t, p);
     } else if (hit.kind === 'vertex') {
-      const v = V.get(hit.id);
-      if (v.type === 'state' && v.submachine && e.altKey) vscode.postMessage({ type: 'openSubmachine', href: v.submachine });
-      else startInlineEdit(v.id);
+      startInlineEdit(hit.id);
     } else if (hit.kind === 'empty') {
       createVertex('state', p);
     } else return false;
@@ -3171,7 +3279,7 @@ ${scene(true)}
   }
 
   // ---------------------------------------------------------------- properties window
-  /** The floating properties window opened from the context menu: `id` is the element it shows, null for the machine. */
+  /** The floating properties window opened from the context menu or with Alt+click: `id` is the element it shows, null for the machine. */
   let propsPop = null;
   document.addEventListener('pointerdown', (e) => {
     const target = /** @type {Node} */ (e.target);
@@ -3599,11 +3707,12 @@ ${scene(true)}
         ['Double-click', 'empty canvas to add a state; a name or label to edit it.'],
         ['Drag', 'the ⊕ handle of a selected element to draw a transition.'],
         ['Double-click', 'a transition to add a bend point, a bend point to remove it.'],
+        ['Alt+click', '(or middle-click) an element to edit its properties in a window; Alt+double-click a submachine state to open its machine.'],
         ['Drag', 'an end of a selected transition onto another element to reconnect it.'],
         ['Drag', 'a corner of a selected self-transition to reshape its loop; the far corner moves it to another corner of the state.'],
         ['Drop', 'an element entirely inside a region to nest it. It then stays in its region, which grows to hold it; right-click › Leave Parent takes it out.'],
         ['Drag', 'the line between two regions to resize the region before it.'],
-        ['Drag', 'a composite state by its title bar; dragging inside its regions selects what it encloses.'],
+        ['Drag', 'a composite state by its title bar or its border; dragging inside its regions selects what it encloses, a click there selects the state.'],
         ['Right-drag', 'Space+drag, middle-drag or two fingers pan; the wheel or a pinch zooms; F fits.'],
         ['Shift+click', 'a tool keeps it active.'],
         ['Label syntax', model.kind === 'protocol' ? '[isReady()] event / [isDone()]' : 'event, after(2s) [isReady() && !isBusy()] / doIt(); log()'],
@@ -3686,29 +3795,26 @@ ${scene(true)}
 
       propsEl.append(h('h4', {}, 'Submachine'));
       const current = v.submachine || '';
-      const options = [['', '(none: not a submachine state)'], ...machines.map((m) => [m.href, `${m.name} (${m.file})`])];
+      // Only what the file can hold: a state with regions or its own entry and exit points isn't offered a submachine,
+      // and a submachine state with connection point references isn't offered none.
+      const points = model.vertices.filter((p) => p.parent === v.id);
+      const canBeSub = !(v.regions || []).length && points.every((p) => p.type === 'connectionPointRef');
+      const canBePlain = !points.some((p) => p.type === 'connectionPointRef');
+      const options = [];
+      if (!current || canBePlain) options.push(['', '(none: not a submachine state)']);
+      if (current || canBeSub) options.push(...machines.map((m) => [m.href, `${m.name} (${m.file})`]));
       if (current && !machines.some((m) => m.href === current)) options.push([current, `${machineLabel(current)} (not found)`]);
       propsEl.append(selectField('Referenced state machine', current, options, (val) => {
-        if (val && (v.regions || []).length) {
-          toast('Remove the regions first: a submachine state cannot own regions.');
-          renderProps();
-          return;
-        }
-        const points = model.vertices.filter((p) => p.parent === v.id && p.type !== 'comment');
-        if (val && points.some((p) => p.type !== 'connectionPointRef')) {
-          toast('Remove the entry and exit points first: a submachine state has references to its submachine\'s points instead.');
-          renderProps();
-          return;
-        }
-        if (!val && points.some((p) => p.type === 'connectionPointRef')) {
-          toast('Remove the connection point references first: only a submachine state has them.');
-          renderProps();
-          return;
-        }
         if (val) v.submachine = val;
         else delete v.submachine;
         commit({ props: true });
       }));
+      if (!current && !canBeSub && machines.length) {
+        propsEl.append(h('div', { className: 'muted field' }, 'Remove its regions and its entry and exit points to make it a submachine state.'));
+      }
+      if (current && !canBePlain) {
+        propsEl.append(h('div', { className: 'muted field' }, 'Remove its connection point references to make it a plain state.'));
+      }
       if (!machines.length && !current) {
         propsEl.append(h('div', { className: 'muted field' }, 'No other state machine (.fsm) was found in the workspace.'));
       }
@@ -3916,18 +4022,16 @@ ${scene(true)}
         delete t.labelOffset;
         commit({ props: true });
       } }, 'Straighten'),
-      h('button', { className: 'pbtn', onclick: () => {
-        // Reversed, the target becomes the source: refused as drawing it that way would be.
-        if (!g || !s || transitionProblem(t, g, s)) {
-          toast('This transition cannot be reversed.');
-          return;
-        }
+    );
+    // Reversed, the target becomes the source: offered when it could be drawn that way.
+    if (canReverse(t)) {
+      propsEl.append(h('button', { className: 'pbtn', onclick: () => {
         [t.source, t.target] = [t.target, t.source];
         // A self-transition loop's bend points are its corners, in drawing order: reversed, they would reshape it.
         if (t.points && !isLoop(t)) t.points.reverse();
         commit({ props: true });
-      } }, 'Reverse'),
-    );
+      } }, 'Reverse'));
+    }
     const ti = issuesFor(t.id);
     if (ti) propsEl.append(ti);
   }
@@ -4041,7 +4145,7 @@ ${scene(true)}
       btn('export', 'Export as SVG', cmd('fsmEditor.exportSvg'), 'SVG'),
       btn('export', 'Export as PNG', cmd('fsmEditor.exportPng'), 'PNG'),
       h('span', { className: 'sep' }),
-      btn('json', 'Open as XMI text', cmd('fsmEditor.openAsText'), 'XMI'),
+      btn('json', 'Open as Text: the model file (JSON) in the text editor', cmd('fsmEditor.openAsText'), 'JSON'),
       h('span', { className: 'sep' }),
       (panelToggles.toolbox = btn('sideLeft', 'Toggle Toolbox', () => setPanel('toolbox', !panels.toolbox))),
       (panelToggles.props = btn('sideRight', 'Toggle Properties', () => setPanel('props', !panels.props))),
@@ -4080,7 +4184,6 @@ ${scene(true)}
       h('span', { className: w ? 'w' : '' }, `⚠ ${w}`), inf ? `  ℹ ${inf}` : '');
     statusEl.append(
       prob,
-      h('span', {}, `${model ? model.vertices.filter((v) => v.type === 'state').length : 0} states · ${model ? model.transitions.length : 0} transitions`),
       h('span', { className: 'spacer' }),
       trace ? h('span', { className: 'trace-status', title: 'Trace Player' }, `▶ Trace${trace.event ? ` · event ${trace.event}` : ''}`,
         ...trace.instances.filter((i) => i.color >= 0).map((i) => h('span', { className: `trace-key trace-c${i.color % TRACE_COLORS}` }, `● ${i.label}`))) : '',

@@ -98,6 +98,27 @@ describe('webview: mouse work', () => {
     await view.close();
   });
 
+  it('selects a composite state with a click in its area, and moves it by its border', async () => {
+    const view = await Webview.open(machine([
+      { name: 'C', type: 'state', initial: { target: 'C1' }, elements: [{ name: 'C1', type: 'state' }] },
+    ], { initial: { target: 'C' } }));
+    const c = named(view.model, 'C');
+    const selected = () => view.page.locator('#props h3').first().textContent();
+    // A click in its area, away from C1: C.
+    await view.page.mouse.click(...Object.values(await view.toScreen(c.x + c.w - 15, c.y + c.h - 15)) as [number, number]);
+    await view.page.waitForTimeout(100);
+    assert.equal(await selected(), 'State');
+    assert.equal(await view.field('Name').inputValue(), 'C');
+    // A click on empty canvas, then a drag from its left border: C moves.
+    await view.page.mouse.click(...Object.values(await view.toScreen(c.x - 60, c.y + c.h / 2)) as [number, number]);
+    const from = await view.toScreen(c.x + 1, c.y + c.h - 10);
+    await view.drag(from, { x: from.x + 47, y: from.y + 33 });
+    const moved = named(await view.nextEdit(0), 'C');
+    assert.ok(moved.x > c.x && moved.y > c.y, `moved (${c.x},${c.y} → ${moved.x},${moved.y})`);
+    assert.equal(named(view.model, 'C1').parent, moved.regions![0].id, 'C1 still inside');
+    await view.close();
+  });
+
   it('drops a state into a composite state, and takes it out with Leave Parent', async () => {
     const view = await Webview.open(machine([
       { name: 'A', type: 'state' },
@@ -329,6 +350,77 @@ describe('webview: properties panel', () => {
     m = await view.nextEdit(1);
     const refs = m.vertices.filter((v) => v.type === 'connectionPointRef' && v.parent === id);
     assert.deepEqual(refs.map((r) => r.ref).sort(), ['cancelled', 'failed', 'retry']);
+    await view.close();
+  });
+});
+
+describe('webview: Alt+click and middle click', () => {
+  const pop = (view: Webview) => view.page.locator('.props-pop');
+  const altClick = async (view: Webview, at: { x: number; y: number }) => {
+    await view.page.keyboard.down('Alt');
+    await view.page.mouse.click(at.x, at.y);
+    await view.page.keyboard.up('Alt');
+  };
+
+  it("opens an element's properties in a window; Alt+drag moves it off the grid instead", async () => {
+    const view = await Webview.open(small());
+    const a = named(view.model, 'A');
+    await altClick(view, await view.screenOf(a.id));
+    await pop(view).waitFor();
+    assert.equal(await pop(view).locator('h3').first().textContent(), 'State');
+    assert.equal(await pop(view).locator('.field input').first().inputValue(), 'A');
+    // A transition's, from its label.
+    await view.page.keyboard.press('Escape');
+    await altClick(view, await view.page.locator('[data-label="A#1"]').first().boundingBox().then((b) => ({ x: b!.x + b!.width / 2, y: b!.y + b!.height / 2 })));
+    await pop(view).waitFor();
+    assert.equal(await pop(view).locator('h3').first().textContent(), 'Transition');
+    await view.page.keyboard.press('Escape');
+    // Alt+drag: a move, no window.
+    const from = await view.screenOf(a.id);
+    await view.page.keyboard.down('Alt');
+    await view.drag(from, { x: from.x + 37, y: from.y + 23 });
+    await view.page.keyboard.up('Alt');
+    const moved = named(await view.nextEdit(0), 'A');
+    assert.ok(moved.x !== a.x && moved.y !== a.y, 'moved');
+    assert.equal(await pop(view).count(), 0, 'no window');
+    assert.equal(view.edits.length, 1);
+    await view.close();
+  });
+
+  it("a middle click opens an element's properties in a window; a middle drag pans", async () => {
+    const view = await Webview.open(small());
+    const a = named(view.model, 'A');
+    const at = await view.screenOf(a.id);
+    await view.page.mouse.click(at.x, at.y, { button: 'middle' });
+    await pop(view).waitFor();
+    assert.equal(await pop(view).locator('.field input').first().inputValue(), 'A');
+    await view.page.keyboard.press('Escape');
+    const before = await view.view();
+    await view.drag(at, { x: at.x + 60, y: at.y + 40 }, 'middle');
+    const after = await view.view();
+    assert.ok(after.x !== before.x && after.y !== before.y, 'panned');
+    assert.equal(await pop(view).count(), 0, 'no window');
+    assert.equal(view.edits.length, 0);
+    await view.close();
+  });
+
+  it('on a submachine state: opens the window once no second click came, and Alt+double-click opens the submachine', async () => {
+    const view = await Webview.open(machine([{ name: 'P', type: 'state', submachine: 'Payment.fsm' }], { initial: { target: 'P' } }), {
+      machines: { 'Payment.fsm': example('Payment') },
+    });
+    const at = await view.screenOf(named(view.model, 'P').id);
+    await view.page.keyboard.down('Alt');
+    await view.page.mouse.click(at.x, at.y);
+    await view.page.mouse.click(at.x, at.y);
+    await view.page.keyboard.up('Alt');
+    await view.until('the submachine opened', () => view.posted.some((m) => m.type === 'openSubmachine' && m.href === 'Payment.fsm'));
+    await view.page.waitForTimeout(700);
+    assert.equal(await pop(view).count(), 0, 'no window after a double-click');
+    await view.page.waitForTimeout(600); // no double-click with the next click
+    await altClick(view, at);
+    assert.equal(await pop(view).count(), 0, 'not yet');
+    await pop(view).waitFor({ timeout: 2000 });
+    assert.equal(view.posted.filter((m) => m.type === 'openSubmachine').length, 1, 'opened once');
     await view.close();
   });
 });

@@ -1,6 +1,6 @@
 /**
- * The webview doesn't offer what the file can't hold (media/editor.js): the fields, kinds and menu items it leaves
- * out, and the edits it refuses with a message, so that the writer never has to refuse one (`LostError`).
+ * The webview doesn't offer what the file can't hold (media/editor.js): the fields, kinds, handles, buttons, menu items
+ * and drop targets it leaves out, so that the writer never has to refuse an edit (`LostError`).
  */
 import assert from 'node:assert/strict';
 import { after, describe, it } from 'node:test';
@@ -53,8 +53,6 @@ async function noEdit(view: Webview, n: number, what: string): Promise<void> {
 }
 
 const INITIAL_ONLY = 'A transition leaving an initial pseudostate holds its target and an action only.';
-const HISTORY_ONLY = 'A transition leaving a history pseudostate holds its target and an action only.';
-const ANCHOR = 'A comment cannot be attached to an initial pseudostate or to its transition.';
 
 describe("webview: what the file can't hold is not offered", () => {
   it("shows only the action of an initial pseudostate's transition", async () => {
@@ -114,16 +112,45 @@ describe("webview: what the file can't hold is not offered", () => {
     await view.close();
   });
 
-  it('refuses to attach a comment to an initial pseudostate', async () => {
+  it('moves the transition of an initial pseudostate when it is drawn again, and offers no Reverse for it', async () => {
     const view = await Webview.open(sample());
-    await view.page.locator('[data-tool="transition"]').click();
-    await view.drag(await view.screenOf(named(view.model, 'note*').id), await view.screenOf(of(view.model, 'initial', rootRegion(view.model)).id));
-    await noEdit(view, 0, 'comment → initial');
-    assert.equal(await toast(view), ANCHOR);
+    const init = of(view.model, 'initial', rootRegion(view.model));
+    const handle = () => view.page.locator('[data-handle="connect"]').first().boundingBox().then((b) => ({ x: b!.x + b!.width / 2, y: b!.y + b!.height / 2 }));
+    // Room around the machine: C beside the properties panel.
+    await view.page.locator('#canvas').focus();
+    await view.page.keyboard.press('ControlOrMeta+-');
+    await view.page.keyboard.press('ControlOrMeta+-');
+    // Drawn again to the same state, A: nothing, and no message.
+    await view.select(init.id);
+    await view.drag(await handle(), await view.screenOf(named(view.model, 'A').id));
+    await noEdit(view, 0, 'to the same state');
+    assert.ok(await view.page.locator('#toast').isHidden(), 'no message');
+    // To C (inside its bottom right corner, clear of C1 and the labels): its one transition goes to C.
+    const c = named(view.model, 'C');
+    await view.select(init.id);
+    await view.drag(await handle(), await view.toScreen(c.x + c.w - 8, c.y + c.h - 8));
+    const m = await view.nextEdit(0);
+    assert.deepEqual(leaving(m, init.id).map((t) => t.target), [named(m, 'C').id]);
+    assert.equal(leaving(m, init.id)[0].action, 'start()', 'its action kept');
+    assert.ok(await view.page.locator('#toast').isHidden(), 'no message');
+    await view.select(leaving(view.model, init.id)[0].id);
+    assert.equal(await view.page.locator('#props button', { hasText: 'Reverse' }).count(), 0, 'no Reverse');
+    await view.select(leaving(view.model, named(view.model, 'A').id)[0].id);
+    assert.equal(await view.page.locator('#props button', { hasText: 'Reverse' }).count(), 1, "Reverse for A's transition");
     await view.close();
   });
 
-  it("refuses to drop an initial pseudostate into a region that has one, and leaves out Leave Parent", async () => {
+  it("doesn't attach a comment to an initial pseudostate", async () => {
+    const view = await Webview.open(sample());
+    await view.page.locator('[data-tool="transition"]').click();
+    const hint = await toast(view);
+    await view.drag(await view.screenOf(named(view.model, 'note*').id), await view.screenOf(of(view.model, 'initial', rootRegion(view.model)).id));
+    await noEdit(view, 0, 'comment → initial');
+    assert.equal(await toast(view), hint, "no message but the tool's hint");
+    await view.close();
+  });
+
+  it("doesn't drop an initial pseudostate into a region that has one, and leaves out Leave Parent", async () => {
     const view = await Webview.open(sample());
     const c = named(view.model, 'C');
     const init = of(view.model, 'initial', rootRegion(view.model));
@@ -134,10 +161,18 @@ describe("webview: what the file can't hold is not offered", () => {
     await view.drag({ x: se.x + 4, y: se.y + 4 }, { x: se.x + 4 + 120 * zoom, y: se.y + 4 + 120 * zoom });
     const grown = named(await view.nextEdit(0), 'C');
     await view.select(init.id);
-    await view.drag(await view.screenOf(init.id), await view.toScreen(grown.x + grown.w - 40, grown.y + grown.h - 40));
+    // While dragged over C's region, C isn't marked as where it drops.
+    const from = await view.screenOf(init.id);
+    const to = await view.toScreen(grown.x + grown.w - 40, grown.y + grown.h - 40);
+    await view.page.mouse.move(from.x, from.y);
+    await view.page.mouse.down();
+    await view.page.mouse.move((from.x + to.x) / 2, (from.y + to.y) / 2, { steps: 4 });
+    await view.page.mouse.move(to.x, to.y, { steps: 4 });
+    assert.equal(await view.page.locator(`#world g.vertex.drop-target[data-id="${c.id}"]`).count(), 0, 'C not marked');
+    await view.page.mouse.up();
     const m = await view.nextEdit(1);
     assert.equal(m.vertices.find((v) => v.id === init.id)!.parent, rootRegion(m), 'still at the top level');
-    assert.equal(await toast(view), 'This region already has an initial pseudostate.');
+    assert.ok(await view.page.locator('#toast').isHidden(), 'no message');
     // C's initial pseudostate can't leave C: the machine's region has one.
     const inner = of(m, 'initial', c.regions![0].id);
     await view.select(inner.id);
@@ -150,39 +185,51 @@ describe("webview: what the file can't hold is not offered", () => {
 
   it('leaves out a pasted initial pseudostate that would be a second in its region', async () => {
     const view = await Webview.open(sample());
-    await view.select(of(view.model, 'initial', rootRegion(view.model)).id);
-    const data = await view.page.evaluate(() => {
+    /** Copies the selection and pastes it, as the keyboard does; gives what was copied. */
+    const paste = () => view.page.evaluate(() => {
       const w = globalThis as any;
       const copy = new w.DataTransfer();
       w.document.dispatchEvent(new w.ClipboardEvent('copy', { clipboardData: copy, bubbles: true, cancelable: true }));
-      const paste = new w.DataTransfer();
-      paste.setData('text/plain', copy.getData('text/plain'));
-      w.document.dispatchEvent(new w.ClipboardEvent('paste', { clipboardData: paste, bubbles: true, cancelable: true }));
+      const data = new w.DataTransfer();
+      data.setData('text/plain', copy.getData('text/plain'));
+      w.document.dispatchEvent(new w.ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
       return copy.getData('text/plain') as string;
     });
-    assert.equal(JSON.parse(data).vertices[0].type, 'initial');
+    const init = of(view.model, 'initial', rootRegion(view.model));
+    await view.select(init.id);
+    assert.equal(JSON.parse(await paste()).vertices[0].type, 'initial');
     await noEdit(view, 0, 'paste');
-    assert.equal(await toast(view), 'This region already has an initial pseudostate.');
+    assert.ok(await view.page.locator('#toast').isHidden(), 'no message');
+    // With A: A is pasted, the initial pseudostate and its transition are left out.
+    const a = named(view.model, 'A');
+    const p = await view.screenOf(a.id);
+    await view.page.keyboard.down('Shift');
+    await view.page.mouse.click(p.x, p.y);
+    await view.page.keyboard.up('Shift');
+    await paste();
+    const m = await view.nextEdit(0);
+    assert.ok(m.vertices.some((v) => v.name === 'A2'), 'A2 pasted');
+    assert.equal(m.vertices.filter((v) => v.type === 'initial' && v.parent === rootRegion(m)).length, 1);
     await view.close();
   });
 
-  it("refuses a submachine for a state with entry or exit points, and none for a state with references", async () => {
+  it("offers a submachine only to a state without regions or its own points, and none only without references", async () => {
     const view = await Webview.open(machine([
       { name: 'S', type: 'state', points: [{ name: 'p', type: 'entryPoint' }] },
       { name: 'P', type: 'state', submachine: 'Payment.fsm', points: [{ name: 'retry', type: 'entryPoint' }] },
+      { name: 'Q', type: 'state' },
     ], { initial: { target: 'S' } }), { machines: { 'Payment.fsm': example('Payment') } });
+    const options = () => view.field('Referenced state machine').locator('option').evaluateAll((os) => os.map((o) => (o as unknown as { value: string }).value));
     await view.select(named(view.model, 'S').id);
-    await view.field('Referenced state machine').selectOption('Payment.fsm');
-    await noEdit(view, 0, 'S as a submachine state');
-    assert.match((await toast(view)) ?? '', /^Remove the entry and exit points first/);
+    assert.deepEqual(await options(), ['']);
     await view.select(named(view.model, 'P').id);
-    await view.field('Referenced state machine').selectOption('');
-    await noEdit(view, 0, 'P without its submachine');
-    assert.match((await toast(view)) ?? '', /^Remove the connection point references first/);
+    assert.deepEqual(await options(), ['Payment.fsm']);
+    await view.select(named(view.model, 'Q').id);
+    assert.deepEqual(await options(), ['', 'Payment.fsm']);
     await view.close();
   });
 
-  it('refuses to reconnect or reverse a transition with a trigger onto a history pseudostate', async () => {
+  it("doesn't reconnect a transition with a trigger onto a history pseudostate, or reverse one into it", async () => {
     const view = await Webview.open(sample());
     const c1 = named(view.model, 'C1');
     const history = of(view.model, 'shallowHistory');
@@ -192,12 +239,10 @@ describe("webview: what the file can't hold is not offered", () => {
     const end = (await view.page.locator(`[data-end="${tick.id}:source"]`).first().boundingBox())!;
     await view.drag({ x: end.x + end.width / 2, y: end.y + end.height / 2 }, await view.screenOf(history.id));
     await noEdit(view, 0, 'reconnect');
-    assert.equal(await toast(view), HISTORY_ONLY);
-    // C1 → C.history on back, reversed.
+    assert.ok(await view.page.locator('#toast').isHidden(), 'no message');
+    // C1 → C.history on back: no Reverse.
     await view.select(back.id);
-    await view.page.locator('#props button', { hasText: 'Reverse' }).click();
-    await noEdit(view, 0, 'reverse');
-    assert.equal(await toast(view), 'This transition cannot be reversed.');
+    assert.equal(await view.page.locator('#props button', { hasText: 'Reverse' }).count(), 0);
     await view.close();
   });
 });

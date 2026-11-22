@@ -72,7 +72,7 @@ export async function toolchain(): Promise<Toolchain | string> {
 }
 
 export interface Case {
-  /** File name → model or XMI text. Every one is generated. */
+  /** File name → model or file text. Every one is generated. */
   machines: Record<string, FsmModel | string>;
 }
 
