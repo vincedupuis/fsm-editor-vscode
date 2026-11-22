@@ -1,6 +1,6 @@
 /**
  * fsm-editor-common (github.com/vincedupuis/fsm-editor-common, Rust) built as WebAssembly (common/common.wasm): the
- * file half of the editions, written once. Reading and writing a machine's two files, converting old (XMI) files,
+ * file services of the editions, written once. Reading and writing a machine's two files, converting old (XMI) files,
  * validation, the text grammar's checks, comparing and merging, code generation (fsm-cli's). Its interface is JSON
  * requests (`schemas/api.schema.json`): one function per `fn`, texts and models in, texts and models out.
  *
