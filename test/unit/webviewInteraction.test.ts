@@ -189,6 +189,20 @@ describe('webview: mouse work', () => {
     assert.deepEqual([b2.x - b.x, b2.y - b.y], [a2.x - a.x, a2.y - a.y], 'B moved with A');
     await view.close();
   });
+
+  it("attaches a comment to the state when dropped on an internal transition's line", async () => {
+    const view = await Webview.open(machine([
+      { name: 'S', type: 'state', entry: 'a()', transitions: [{ type: 'internal', trigger: 'tick', action: 'b()' }] },
+      { name: 'note*', type: 'comment', text: 'n' },
+    ]));
+    const s = named(view.model, 'S');
+    // The compartment's second line, tick / b(): LINE_H (14) below entry / a(), under the name (NAME_H, 24).
+    const n = view.edits.length;
+    await view.page.locator('[data-tool="transition"]').click();
+    await view.drag(await view.screenOf(named(view.model, 'note*').id), await view.toScreen(s.x + 20, s.y + 24 + 14 + 10));
+    assert.deepEqual(named(await view.nextEdit(n), 'note*').anchors, [s.id]);
+    await view.close();
+  });
 });
 
 describe('webview: zoom and pan', () => {

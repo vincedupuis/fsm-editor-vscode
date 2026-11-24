@@ -1024,7 +1024,9 @@
   function renderAnchors(v) {
     let s = '';
     for (const a of v.anchors || []) {
-      const target = V.get(a);
+      // An internal transition drawn in its state's compartment: the line goes to the state.
+      const t = T.get(a);
+      const target = V.get(a) || (t && t.kind === 'internal' && t.source === t.target && V.get(t.source)?.type === 'state' ? V.get(t.source) : null);
       let p = null;
       if (target) p = center(target);
       else if (T.has(a)) {
