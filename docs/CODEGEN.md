@@ -6,6 +6,7 @@ FSM Editor turns `.fsm` state machines into source code with [Jinja](https://jin
 - [From VS Code](#from-vs-code)
 - [From the command line](#from-the-command-line)
 - [The bundled templates](#the-bundled-templates)
+- [UML semantics](#uml-semantics)
 - [Tracing](#tracing)
 - [Writing a template](#writing-a-template)
 
@@ -54,6 +55,25 @@ fsm write "models/**/*.fsm" --template sml --out src/generated --check
 ## The bundled templates
 
 `ts` writes TypeScript without dependencies, `sml` C++17 for [Boost.SML](https://github.com/boost-ext/sml). fsm-cli's [docs/CODEGEN.md](https://github.com/vincedupuis/fsm-cli/blob/main/docs/CODEGEN.md) describes the files they write and how to use them, what the Boost.SML template works around, the [code model](https://github.com/vincedupuis/fsm-cli/blob/main/docs/CODEGEN.md#code-model-reference) a template receives, and the [semantics of the generated code](https://github.com/vincedupuis/fsm-cli/blob/main/docs/CODEGEN.md#semantics-of-the-generated-code).
+
+## UML semantics
+
+The generated code follows UML's run-to-completion semantics, with these choices where UML leaves room or the tool simplifies:
+
+| UML | Generated code |
+| --- | --- |
+| Conflicting transitions in orthogonal regions: the choice among them isn't specified | The first transition selected fires; a transition whose source has been left meanwhile is skipped. |
+| Order of the actions of orthogonal regions isn't specified | Regions are exited and entered in document order. |
+| Junction: static conditional branch | Expanded into one transition per path with the guards combined, so a transition only fires when a complete path is enabled. |
+| Choice with no enabled branch: ill-formed | The generated code throws an error. |
+| Guards on the transitions leaving an entry point | None: all of them are taken, like a fork's, and the validator reports a guard there. |
+| A region last exited through its final state, re-entered through history | Default entry, as if there were no history. |
+| Protocol violations are left to the implementation | `onConstraintViolation('precondition', …)` when an event finds no transition because a precondition is false. Postconditions are checked after the transition, invariants after every step. |
+| Do activities run concurrently with the state | `start…()`/`stop…()` calls. Their end is reported with `activityDone()`, which completes the state. |
+
+The Boost.SML template keeps these semantics, with one exception: Boost.SML fires the transitions of orthogonal regions region after region, so when several regions react to the same event, a later region's guards are evaluated after the earlier regions' transitions fired. The template warns where this can happen.
+
+It stops with an error, and nothing is written, where Boost.SML can't express the machine: a transition between top-level regions, a local transition of a state with several regions, and names that would not compile (see fsm-cli's [docs/CODEGEN.md](https://github.com/vincedupuis/fsm-cli/blob/main/docs/CODEGEN.md#the-boostsml-template)).
 
 ## Tracing
 

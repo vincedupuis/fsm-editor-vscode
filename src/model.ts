@@ -120,6 +120,8 @@ export interface FsmModel {
   version: 1;
   name: string;
   kind: 'behavioral' | 'protocol';
+  /** The name of the classifier the machine belongs to. */
+  context?: string;
   documentation?: string;
   regions: Region[];
   vertices: Vertex[];
@@ -171,11 +173,11 @@ export interface MachineInfo {
 /** What is known about the machines referenced by submachine states, keyed by href. */
 export type SubmachineInfo = Record<string, { found: boolean; name?: string; file?: string; points: ConnectionPointInfo[] }>;
 
-export function defaultModel(name = 'StateMachine'): FsmModel {
+export function defaultModel(name = 'StateMachine', kind: FsmModel['kind'] = 'behavioral'): FsmModel {
   return {
     version: 1,
     name,
-    kind: 'behavioral',
+    kind,
     documentation: '',
     regions: [{ id: 'r_root', name: '' }],
     vertices: [

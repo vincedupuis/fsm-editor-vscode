@@ -70,24 +70,23 @@ Text that breaks the rules is refused as you type, and the validator flags probl
 
 ![A guard 'volume > 3' refused with an explanation, and a warning that the state Standby can never be entered](images/validation.png)
 
-See **[docs/UML-CONFORMANCE.md](docs/UML-CONFORMANCE.md)** for:
-- the supported features and the text syntax;
+See **[docs/UML-CONFORMANCE.md](docs/UML-CONFORMANCE.md)** for what is supported, different and not supported of UML 2.5.1, and **[docs/REFERENCE.md](docs/REFERENCE.md)** for:
+- the text syntax;
 - how to use submachines and connection point references;
 - how the model and layout are stored, and how files of earlier versions (XMI) are converted;
-- where and why the tool deviates from UML 2.5.1;
 - every validation rule;
-- what the SVG and PNG exports contain.
+- what colors apply to, and what the SVG and PNG exports contain.
 
 ## Using the editor
 
 - **Add elements**: click a toolbox item and then the canvas, or drag it onto the canvas. Drop an element entirely inside a region to nest it. A composite state moves by its title bar: dragging inside its regions draws a selection band. Double-click empty canvas to add a state.
 - **Nesting**: an element inside a composite state stays in its region. Dragging or resizing it past the region's border grows the region, its state and the states around it, and moving back during the same drag shrinks them again. Right-click it and choose *Leave Parent* to move it up one level, to the region holding its state. Overlapping elements get a warning on the diagram.
-- **Transitions**: select an element and drag its ⊕ handle to the target, or use the Transition tool (T). Drawing from a comment attaches the comment instead. Drag an end of a selected transition onto another element to move its source or target there.
+- **Transitions**: select an element and drag its ⊕ handle to the target, or use the Transition tool (T). Drawing from a comment attaches the comment instead: to an element or a transition, to a composite state's region (inside it, away from its elements), or to the state machine (empty canvas). Drag an end of a selected transition onto another element to move its source or target there.
 - **Labels**: double-click a name or transition label to edit it in place. The transition syntax is `event, after(2s) [isReady() && !isBusy()] / doIt(); log()`.
 - **Routing**: double-click a transition to add a bend point, double-click a bend point to remove it, and drag labels to move them.
 - **Regions**: use the Add Region tool (R) or the properties panel. Each region has its own size: drag the line between two regions to resize the one before it. Resizing the state on the side of its first or last region resizes that region.
 - **Groups**: select elements in the same region, right-click one of them and choose *Group*, or press G. Selecting a member of a group shows a dotted rectangle around the group, and dragging it moves the whole group, into a composite state's region as well. *Ungroup*, or G again, dissolves the groups of the selected elements. A click selects a single member, for its properties, Delete or Copy. Groups are flat: grouping elements of different groups merges them into one.
-- **Extract to Submachine**: select elements of one region, or one composite state, right-click one of them and choose *Extract to Submachine…*. They move to a new state machine file next to this one, and a submachine state referencing it takes their place, with connection points for the transitions that crossed the boundary. See the [conformance doc](docs/UML-CONFORMANCE.md#submachines-and-connection-point-references).
+- **Extract to Submachine**: select elements of one region, or one composite state, right-click one of them and choose *Extract to Submachine…*. They move to a new state machine file next to this one, and a submachine state referencing it takes their place, with connection points for the transitions that crossed the boundary. See the [reference](docs/REFERENCE.md#submachines-and-connection-point-references).
 - **Align**: select elements, right-click one of them and choose *Align Horizontally* (on its horizontal center line) or *Align Vertically* (on its vertical one). Points on a state's border don't align. The elements keep their regions: a composite state grows when its region no longer holds them. An element that is the only selected member of its group brings the whole group along; select several members of a group, or the anchor's group, to align them within it.
 - **Colors**: in the properties panel, *Color* colors the selected element, and the swatch beside an entry, exit, do, deferrable events, invariant, trigger, guard or action field colors just that text. A composite state has a *Title color* (its outline, text and header) and a *Background color* (its regions) instead. *Default* removes the color.
 - **View**: right-drag, middle-drag or Space+drag pans, the mouse wheel zooms, two fingers on a trackpad pan and pinching zooms, F fits the diagram.
@@ -96,7 +95,7 @@ See **[docs/UML-CONFORMANCE.md](docs/UML-CONFORMANCE.md)** for:
 - **Editing**: Delete removes the selection. Ctrl/Cmd+C/X/V copies, cuts and pastes, including between diagrams. Ctrl/Cmd+D duplicates. *Cut*, *Copy* and *Paste* are also in the context menu, which pastes where you right-clicked. Undo and redo are VS Code's own, over the model and its layout: a move is undone like any other change, and saving writes both files.
 - **Shortcuts**: S state, X final, I initial, H history, C choice, J junction, N comment, T transition, R region, G group/ungroup, V/Esc select. Shift+click a tool to keep it active.
 
-Commands (Command Palette → "FSM"): *New State Machine*, *New Untitled State Machine*, *Generate Code…*, *Open Trace…*, *Export as SVG*, *Export as PNG*, *Open as Text*, *Open in FSM Editor*, *Compare as Diagrams*. *New Untitled State Machine* is also *State Machine* in **File › New File…**.
+Commands (Command Palette → "FSM"): *New State Machine*, *New Untitled State Machine*, *Generate Code…*, *Open Trace…*, *Export as SVG*, *Export as PNG*, *Open as Text*, *Open in FSM Editor*, *Compare as Diagrams*. *New Untitled State Machine* is also *State Machine* in **File › New File…**. Both new-machine commands ask its kind, behavioral or protocol, chosen once: the properties panel shows it, and only the `type` of the model file changes it.
 
 ## Files
 
@@ -119,7 +118,7 @@ A machine `Order` is `Order.fsm`, the model, and `Order.fsm.layout` beside it, t
     …
 ```
 
-Elements are identified by their names, which are unique in the machine and have no spaces. Elements you don't name (choices, final states, comments…) get a generated name ending with `*`, which the diagram doesn't show. *Open as Text* opens the model file in the text editor, checked and completed against the format's JSON Schema; the diagram follows the text (when the diagram has unsaved changes, which the file doesn't hold yet, it offers to save them first). A file that isn't valid JSON, or has the wrong shape, shows its problems with their lines instead of the diagram. A model and a layout file that disagree (a hand edit, a merge, a lost layout file) are reconciled: elements without a place are placed automatically, and nothing in the model is ever dropped. The format is described in [fsm-cli's README](https://github.com/vincedupuis/fsm-cli#the-fsm-file-format) and in [docs/UML-CONFORMANCE.md](docs/UML-CONFORMANCE.md#file-format).
+Elements are identified by their names, which are unique in the machine and have no spaces. Elements you don't name (choices, final states, comments…) get a generated name ending with `*`, which the diagram doesn't show. *Open as Text* opens the model file in the text editor, checked and completed against the format's JSON Schema; the diagram follows the text (when the diagram has unsaved changes, which the file doesn't hold yet, it offers to save them first). A file that isn't valid JSON, or has the wrong shape, shows its problems with their lines instead of the diagram. A model and a layout file that disagree (a hand edit, a merge, a lost layout file) are reconciled: elements without a place are placed automatically, and nothing in the model is ever dropped. The format is described in [fsm-cli's README](https://github.com/vincedupuis/fsm-cli#the-fsm-file-format) and in [docs/REFERENCE.md](docs/REFERENCE.md#file-format).
 
 Files of earlier versions (XMI 2.5.1 with UML DI) still open, unchanged (opening one doesn't mark it as changed, so auto save leaves it alone): saving one writes the new format, converting the files linked to it by submachine states at the same time, and says what was renamed or left out.
 
@@ -159,5 +158,6 @@ Package with `npm run package`, which produces a `.vsix` file.
 - `scripts/build-common.mjs`: builds them from `../fsm-editor-common` and `../fsm-cli`
 - `test/unit/`: unit and code generation tests run by `npm run test:unit`
 - `test/web/`: browser smoke test run by `npm run test:web`
-- `docs/UML-CONFORMANCE.md`: supported UML features, deviations, validation rules and export mappings
+- `docs/UML-CONFORMANCE.md`: what is supported, different and not supported of UML
+- `docs/REFERENCE.md`: text syntax, submachines, file format, validation rules, colors and exports
 - `docs/CODEGEN.md`: code generation, templates and the code model

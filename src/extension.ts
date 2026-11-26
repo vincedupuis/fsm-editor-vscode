@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { GenerateArgs, generateCode } from './codegenCommand';
 import { FsmEditorProvider, layoutUriOf, stateOfModel } from './fsmEditorProvider';
 import { initCommon, isOldFormat } from './common';
-import { defaultModel } from './model';
+import { FsmModel, defaultModel } from './model';
 import { TracePlayer } from './trace/player';
 import { basename, encodeText, extname } from './util';
 import { errorsShown, showError } from './errors';
@@ -51,6 +51,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<FsmEdi
     vscode.commands.registerCommand('fsmEditor.openTrace', (uri?: vscode.Uri, uris?: vscode.Uri[]) => player.open(uris?.length ? uris : uri ? [uri] : undefined)),
 
     vscode.commands.registerCommand('fsmEditor.new', async (folder?: vscode.Uri) => {
+      const kind = await pickKind();
+      if (!kind) return;
       const name = await vscode.window.showInputBox({
         prompt: 'Name of the new state machine',
         value: 'StateMachine',
@@ -71,13 +73,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<FsmEdi
       } catch {
         // does not exist yet
       }
-      const files = stateOfModel(defaultModel(name));
+      const files = stateOfModel(defaultModel(name, kind));
       await vscode.workspace.fs.writeFile(uri, encodeText(files.modelText));
       await vscode.workspace.fs.writeFile(layoutUriOf(uri), encodeText(files.layoutText!));
       await vscode.commands.executeCommand('vscode.openWith', uri, FsmEditorProvider.viewType);
     }),
 
-    vscode.commands.registerCommand('fsmEditor.newUntitled', async () => {
+    // The kind is asked, or given (`'behavioral'` or `'protocol'`, for the tests).
+    vscode.commands.registerCommand('fsmEditor.newUntitled', async (given?: unknown) => {
+      const kind = given === 'behavioral' || given === 'protocol' ? given : await pickKind();
+      if (!kind) return;
       // An untitled document next to the workspace's files, so Save proposes that folder.
       const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
       const untitled = (name: string) =>
@@ -95,6 +100,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<FsmEdi
       let name = 'StateMachine';
       for (let n = 2; await taken(`${name}.fsm`); n++) name = `StateMachine${n}`;
       // The diagram makes the new machine (defaultModel) for an untitled file; saving asks where to put it.
+      provider.setUntitledKind(untitled(`${name}.fsm`), kind);
       await vscode.commands.executeCommand('vscode.openWith', untitled(`${name}.fsm`), FsmEditorProvider.viewType);
     }),
 
@@ -239,4 +245,13 @@ async function saveExport(source: vscode.Uri, ext: string, filters: Record<strin
   if (given) return;
   const open = await vscode.window.showInformationMessage(`Exported to ${basename(target.path)}.`, 'Open');
   if (open) await vscode.commands.executeCommand('vscode.open', target);
+}
+
+/** Asks the kind of a new machine, chosen once: the diagram doesn't change it. */
+async function pickKind(): Promise<FsmModel['kind'] | undefined> {
+  const items: (vscode.QuickPickItem & { machineKind: FsmModel['kind'] })[] = [
+    { label: 'Behavioral state machine', detail: 'What an object does: states with behaviors, transitions with guards and actions.', machineKind: 'behavioral' },
+    { label: 'Protocol state machine', detail: 'What its callers may do: transitions with preconditions and postconditions.', machineKind: 'protocol' },
+  ];
+  return (await vscode.window.showQuickPick(items, { title: 'New State Machine', placeHolder: 'The kind of the new state machine' }))?.machineKind;
 }

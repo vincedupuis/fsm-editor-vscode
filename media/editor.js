@@ -108,6 +108,8 @@
     },
   ];
   const TOOL_BY_ID = new Map(TOOLS.flatMap((g) => g.items).map((t) => [t.id, t]));
+  /** Whether the machine may have what tool `id` makes: a protocol state machine has no history pseudostates. */
+  const toolAllowed = (id) => !(model && model.kind === 'protocol' && (id === 'shallowHistory' || id === 'deepHistory'));
 
   // ---------------------------------------------------------------- state
   /** @type {any} */ let model = null;
@@ -268,7 +270,8 @@
       if (e.type === 'entryPoint' || e.type === 'exitPoint') {
         const owner = V.get(e.parent);
         const mates = model.vertices.filter((p) => p !== e && (p.type === 'entryPoint' || p.type === 'exitPoint') && (owner ? p.parent === owner.id : !V.has(p.parent)));
-        if (mates.some((p) => p.name === n) || n === 'history' || n === 'deepHistory') return { ok: false, error: `'${n}' can't name this point: ${n === 'history' || n === 'deepHistory' ? 'it names history pseudostates' : 'another point of its state has it'}.` };
+        const reserved = n === 'initial' || n === 'history' || n === 'deepHistory';
+        if (mates.some((p) => p.name === n) || reserved) return { ok: false, error: `'${n}' can't name this point: ${reserved ? 'it names initial and history pseudostates' : 'another point of its state has it'}.` };
         return { ok: true, value: n };
       }
       if (usedNames(e === model ? null : e).has(n) && !(e === model && n === model.name)) return { ok: false, error: `'${n}' is already used in this state machine: names are unique.` };
@@ -330,12 +333,16 @@
     if (model.kind === 'protocol') {
       const m = /^\s*(?:\[([^\]]*)\])?([^/]*?)\s*(?:\/\s*\[([^\]]*)\])?\s*$/.exec(text);
       if (!m) return { error: 'Write the label as [precondition] event / [postcondition].' };
-      const [pre, trig, post] = await Promise.all([checkText('condition', m[1]), checkText('triggers', m[2]), checkText('condition', m[3])]);
+      const branch = allowsElse(V.get(t.source));
+      const [pre, trig, post] = await Promise.all([checkText(branch ? 'guard' : 'condition', m[1], branch), checkText('triggers', m[2]), checkText('condition', m[3])]);
       if (!pre.ok) return { error: `Precondition: ${pre.error}` };
       if (!trig.ok) return { error: `Trigger: ${trig.error}` };
       if (!post.ok) return { error: `Postcondition: ${post.error}` };
       const s = V.get(t.source);
       if (isStart(s) && (pre.value || trig.value.length || post.value)) return { error: startOnly(s) };
+      if (trig.value.length && !takesTriggers(s, V.get(t.target))) return { error: NO_TRIGGERS };
+      if (pre.value && !takesGuard(s, V.get(t.target))) return { error: noGuard() };
+      if (pre.value === 'else' && elseTaken(s, t)) return { error: elseTakenMessage(s) };
       return {
         apply: (x) => {
           x.precondition = pre.value;
@@ -357,6 +364,9 @@
     if (!action.ok) return { error: `Action: ${action.error}` };
     const s = V.get(t.source);
     if (isStart(s) && (trig.value.length || guard.value)) return { error: startOnly(s) };
+    if (trig.value.length && !takesTriggers(s, V.get(t.target))) return { error: NO_TRIGGERS };
+    if (guard.value && !takesGuard(s, V.get(t.target))) return { error: noGuard() };
+    if (guard.value === 'else' && elseTaken(s, t)) return { error: elseTakenMessage(s) };
     return {
       apply: (x) => {
         x.triggers = trig.value;
@@ -1024,9 +1034,9 @@
   function renderAnchors(v) {
     let s = '';
     for (const a of v.anchors || []) {
-      // An internal transition drawn in its state's compartment: the line goes to the state.
+      // An internal transition drawn in its state's compartment: the line goes to the state; a region: to its area.
       const t = T.get(a);
-      const target = V.get(a) || (t && t.kind === 'internal' && t.source === t.target && V.get(t.source)?.type === 'state' ? V.get(t.source) : null);
+      const target = V.get(a) || regionRectOf(a) || (t && t.kind === 'internal' && t.source === t.target && V.get(t.source)?.type === 'state' ? V.get(t.source) : null);
       let p = null;
       if (target) p = center(target);
       else if (T.has(a)) {
@@ -1511,6 +1521,7 @@ ${scene(true)}
 
   // ---------------------------------------------------------------- tools
   function setTool(id, sticky = false) {
+    if (id && !toolAllowed(id)) return;
     tool = id && tool === id && !sticky ? null : id;
     toolSticky = !!tool && sticky;
     for (const el of toolboxEl.querySelectorAll('.tb-item')) {
@@ -1555,6 +1566,10 @@ ${scene(true)}
           v.ref = pick.id;
           v.pointKind = pick.kind;
         }
+      }
+      if (s && v.type !== 'connectionPointRef' && !(s.regions || []).length) {
+        toast(`Only composite states have entry and exit points: add a region to '${shown(s.name) || 'the state'}' first.`);
+        return;
       }
       if (s) {
         v.parent = s.id;
@@ -1648,6 +1663,11 @@ ${scene(true)}
   }
 
   function removeRegion(state, regionId) {
+    // Its last region: the state would keep entry or exit points that only composite states have.
+    if ((state.regions || []).length === 1 && model.vertices.some((p) => p.parent === state.id && (p.type === 'entryPoint' || p.type === 'exitPoint'))) {
+      toast(`'${shown(state.name) || 'The state'}' has entry or exit points, which only composite states have: remove them first.`);
+      return;
+    }
     const doomed = new Set();
     for (const v of model.vertices) {
       if (v.parent === regionId) {
@@ -2045,7 +2065,7 @@ ${scene(true)}
   function removeVertices(ids, transitionIds = new Set()) {
     model.vertices = model.vertices.filter((v) => !ids.has(v.id));
     model.transitions = model.transitions.filter((t) => !transitionIds.has(t.id) && !ids.has(t.source) && !ids.has(t.target));
-    const alive = new Set([...model.vertices.map((v) => v.id), ...model.transitions.map((t) => t.id)]);
+    const alive = new Set([...model.vertices.map((v) => v.id), ...model.transitions.map((t) => t.id), ...allRegions().map((r) => r.id), MACHINE]);
     for (const v of model.vertices) {
       // An anchor that named nothing in the file (U+E001/U+E002 and its reference) is kept as it is.
       if (v.anchors) v.anchors = v.anchors.filter((a) => alive.has(a) || /^[\ue001\ue002]/.test(a));
@@ -2072,11 +2092,6 @@ ${scene(true)}
   function connect(source, targetId) {
     if (source.type === 'comment') {
       if (targetId === source.id) return;
-      const problem = anchorProblem(targetId);
-      if (problem) {
-        toast(problem);
-        return;
-      }
       source.anchors = source.anchors || [];
       if (!source.anchors.includes(targetId)) source.anchors.push(targetId);
       selection = new Set([source.id]);
@@ -2086,11 +2101,6 @@ ${scene(true)}
     const target = V.get(targetId);
     if (!target) return;
     if (target.type === 'comment') {
-      const problem = anchorProblem(source.id);
-      if (problem) {
-        toast(problem);
-        return;
-      }
       target.anchors = target.anchors || [];
       if (!target.anchors.includes(source.id)) target.anchors.push(source.id);
       commit({ props: true });
@@ -2111,7 +2121,8 @@ ${scene(true)}
       toast(problem);
       return;
     }
-    const t = { id: uid('t'), source: source.id, target: target.id, kind: 'external', triggers: [], guard: '', action: '' };
+    // UML: a transition leaving an entry point is local.
+    const t = { id: uid('t'), source: source.id, target: target.id, kind: source.type === 'entryPoint' ? 'local' : 'external', triggers: [], guard: '', action: '' };
     model.transitions.push(t);
     selection = new Set([t.id]);
     commit({ props: true });
@@ -2123,26 +2134,105 @@ ${scene(true)}
   /** Does `t` have triggers, a guard, conditions or a kind other than external? */
   const beyondAction = (t) => !!((t.triggers || []).length || t.guard || t.precondition || t.postcondition || (t.kind || 'external') !== 'external');
   const startOnly = (v) => `A transition leaving a${v.type === 'initial' ? 'n initial' : ' history'} pseudostate holds its target and an action only.`;
-  const ANCHOR_INITIAL = 'A comment cannot be attached to an initial pseudostate or to its transition.';
-  /** Why a comment can't be attached to element `id` (the file doesn't name an initial pseudostate or its transition), or null. */
-  function anchorProblem(id) {
-    const t = T.get(id);
-    const v = t ? V.get(t.source) : V.get(id);
-    return v && v.type === 'initial' ? ANCHOR_INITIAL : null;
+  /** May a transition from `source` to `target` have triggers? Only one leaving a state (a pseudostate's are taken at once), and not into a join. */
+  const takesTriggers = (source, target) => !!source && source.type === 'state' && !(target && target.type === 'join');
+  const NO_TRIGGERS = 'A transition leaving a pseudostate, or entering a join, cannot have triggers.';
+  /**
+   * May a transition from `source` to `target` have a guard (a precondition, in a protocol machine)? Not one leaving an
+   * initial or history pseudostate, a fork or an entry point (whose transitions are all taken), or entering a join.
+   */
+  const takesGuard = (source, target) =>
+    !!source && !isStart(source) && source.type !== 'fork' && source.type !== 'entryPoint' && !(target && target.type === 'join');
+  const noGuard = () => `A transition leaving a fork or an entry point, or entering a join, cannot have a ${model.kind === 'protocol' ? 'precondition' : 'guard'}.`;
+  /** The region of `state` (null: the machine's top-level regions) holding `v`, itself or through the states around it. */
+  function stateRegionOf(v, state) {
+    for (const w of [v, ...ancestors(v)]) {
+      if (state ? regionOwner.get(w.parent) === state : model.regions.some((r) => r.id === w.parent)) return w.parent;
+    }
+    return null;
   }
-  const anchored = (id) => model.vertices.some((v) => v.type === 'comment' && (v.anchors || []).includes(id));
+  /**
+   * The kinds transition `t` can be, its own included: external; internal, leaving a state; local, from a composite
+   * state or an entry point to what it contains.
+   */
+  function kindOptions(t) {
+    const s = V.get(t.source);
+    const local = localOk(s, V.get(t.target));
+    // UML: a transition leaving an entry point is local, never external.
+    const external = !s || s.type !== 'entryPoint';
+    return ['external', 'local', 'internal'].filter((k) => k === (t.kind || 'external') || (k === 'external' && external) || (k === 'local' && local) || (k === 'internal' && !!s && s.type === 'state'));
+  }
+  /** May a transition from `s` to `g` be local: from a composite state or an entry point to what it contains? */
+  function localOk(s, g) {
+    // The machine's own entry point: everything is inside the machine.
+    if (s && s.type === 'entryPoint' && !V.has(s.parent)) return !!g;
+    const container = s && (s.type === 'entryPoint' ? s.parent : s.id);
+    return !!s && ((s.type === 'state' && (s.regions || []).length > 0) || s.type === 'entryPoint') && !!g && (g === s || isInside(g, container));
+  }
+  const ELSE_ONLY = '[else] is only allowed on transitions leaving a choice or junction.';
+  /** A comment's anchor to the state machine itself (which has no id of its own). */
+  const MACHINE = '';
+  /** Every region: the machine's and its states'. */
+  const allRegions = () => [...model.regions, ...model.vertices.flatMap((v) => v.regions || [])];
+  /** The area of region `id` of a composite state, or null (the machine's regions have none). */
+  function regionRectOf(id) {
+    const owner = regionOwner.get(id);
+    const r = owner && regionRects(owner).find((x) => x.id === id);
+    // A box like a state's, for the anchor's line to end on its border.
+    return r ? { ...r, type: 'state' } : null;
+  }
+  /** What a comment's connection ends on under the pointer: an element or a transition, the region of a composite state around it, or the state machine on empty canvas. */
+  function anchorTargetUnder(e, p) {
+    const id = vertexUnder(e);
+    const v = id && V.get(id);
+    if (v && v.type === 'state' && (v.regions || []).length && inRegionArea(v, p)) return regionRects(v).find((r) => inRect(r, p))?.id ?? id;
+    return id || MACHINE;
+  }
+  /** Does another branch of choice or junction `s` than `t` have [else] (its guard, or in a protocol machine its precondition)? */
+  const elseTaken = (s, t) => model.transitions.some((x) => x !== t && x.source === s.id && ((model.kind === 'protocol' ? x.precondition : x.guard) || '').trim() === 'else');
+  const elseTakenMessage = (s) => `This ${TYPE_LABEL[s.type].toLowerCase()} already has an [else] branch.`;
+  /** The transitions leaving an entry or exit point that break its rule (inside its state; outside it), with the message. */
+  function pointViolations() {
+    const out = new Map();
+    for (const t of model.transitions) {
+      const p = V.get(t.source);
+      const g = V.get(t.target);
+      const s = p && (p.type === 'entryPoint' || p.type === 'exitPoint') ? V.get(p.parent) : null;
+      if (!s || !g) continue;
+      const nm = (x) => `'${shown(x.name) || TYPE_LABEL[x.type]}'`;
+      const inside = isInside(g, s.id);
+      if (p.type === 'entryPoint' && !inside) out.set(t.id, `${nm(g)} is the target of entry point '${shown(p.name)}': it stays inside ${nm(s)}.`);
+      if (p.type === 'exitPoint' && (g === s || inside)) out.set(t.id, `${nm(g)} is the target of exit point '${shown(p.name)}': it stays outside ${nm(s)}.`);
+    }
+    return out;
+  }
+  /** Why moving vertices to the regions of `moves` (vertex → region id) would break the rule of a point's transition, or null. */
+  function moveProblem(moves) {
+    const before = pointViolations();
+    const old = new Map([...moves.keys()].map((v) => [v, v.parent]));
+    for (const [v, r] of moves) v.parent = r;
+    reindex();
+    const after = pointViolations();
+    for (const [v, r] of old) v.parent = r;
+    reindex();
+    return [...after].find(([id]) => !before.has(id))?.[1] ?? null;
+  }
 
-  /** Can a transition be drawn from `v` (its ⊕ handle, the transition tool)? Not from a final state, a terminate or an entry reference. */
-  const canStartFrom = (v) => !(v.type === 'final' || v.type === 'terminate' || (v.type === 'connectionPointRef' && refKind(v) === 'entry'));
+  /**
+   * Can a transition be drawn from `v` (its ⊕ handle, the transition tool)? Not from a final state, a terminate, an entry
+   * reference or an exit point of the state machine.
+   */
+  const canStartFrom = (v) =>
+    !(v.type === 'final' || v.type === 'terminate' || (v.type === 'connectionPointRef' && refKind(v) === 'entry') || (v.type === 'exitPoint' && !V.has(v.parent)));
   /** The one transition of an initial or history pseudostate, which drawing from it again moves to the new target. */
   const startTransition = (v) => (isStart(v) ? model.transitions.find((t) => t.source === v.id) : undefined);
 
   /** Can a connection drawn from `source` end on element `id` (a vertex, or a transition for a comment's anchor)? */
   function canConnect(source, id) {
-    if (source.type === 'comment') return id !== source.id && (V.has(id) || T.has(id)) && !anchorProblem(id);
+    if (source.type === 'comment') return id !== source.id && (V.has(id) || T.has(id) || id === MACHINE || allRegions().some((r) => r.id === id));
     const target = V.get(id);
     if (!target) return false;
-    if (target.type === 'comment') return !anchorProblem(source.id);
+    if (target.type === 'comment') return true;
     const existing = startTransition(source);
     if (existing) return canReconnect(existing, 'target', target);
     return !connectProblem(source, target);
@@ -2171,8 +2261,14 @@ ${scene(true)}
     const problem = connectProblem(source, target, t);
     if (problem) return problem;
     if (t.kind === 'internal' && source !== target) return 'An internal transition stays on its state.';
+    if (t.kind === 'local' && !localOk(source, target)) return 'A local transition goes from a composite state or an entry point to what it contains.';
+    if (source.type === 'entryPoint' && t.kind !== 'local') return 'A transition leaving an entry point is local.';
     if (isStart(source) && beyondAction(t)) return startOnly(source);
-    if (source.type === 'initial' && anchored(t.id)) return ANCHOR_INITIAL;
+    if ((t.guard || '').trim() === 'else' && !allowsElse(source)) return ELSE_ONLY;
+    if (model.kind === 'protocol' && (t.precondition || '').trim() === 'else' && !allowsElse(source)) return ELSE_ONLY;
+    if (allowsElse(source) && ((model.kind === 'protocol' ? t.precondition : t.guard) || '').trim() === 'else' && elseTaken(source, t)) return elseTakenMessage(source);
+    if ((t.triggers || []).length && !takesTriggers(source, target)) return NO_TRIGGERS;
+    if ((t.guard || (model.kind === 'protocol' && t.precondition)) && !takesGuard(source, target)) return noGuard();
     return null;
   }
 
@@ -2197,11 +2293,21 @@ ${scene(true)}
     const outs = model.transitions.filter((t) => t.source === v.id);
     const as = { ...v, type };
     if (type === 'terminate' && outs.length) return 'A terminate cannot have outgoing transitions.';
+    if (type === 'fork' || type === 'join' || type === 'entryPoint' || type === 'exitPoint') {
+      const ins = model.transitions.filter((t) => t.target === v.id);
+      for (const t of outs) {
+        const problem = transitionProblem(t, as, V.get(t.target) || as);
+        if (problem) return problem;
+      }
+      for (const t of ins) {
+        const problem = V.get(t.source) ? transitionProblem(t, V.get(t.source), as) : null;
+        if (problem) return problem;
+      }
+    }
     if (!isStart(as)) return null;
     if (type === 'initial' && model.transitions.some((t) => t.target === v.id)) return 'An initial pseudostate cannot be the target of a transition.';
     if (outs.length > 1) return `A${type === 'initial' ? 'n initial pseudostate' : ' history pseudostate'} has one transition only.`;
     if (outs.some(beyondAction)) return startOnly(as);
-    if (type === 'initial' && (anchored(v.id) || outs.some((t) => anchored(t.id)))) return ANCHOR_INITIAL;
     return regionProblem([as], v.parent);
   }
 
@@ -2217,6 +2323,26 @@ ${scene(true)}
       return `A ${TYPE_LABEL[source.type].toLowerCase()} cannot have outgoing transitions.`;
     }
     if (target.type === 'initial') return 'An initial pseudostate cannot be the target of a transition.';
+    if (source.type === 'fork' && target.type !== 'state' && target.type !== 'final') return 'A transition leaving a fork must target a state.';
+    if (target.type === 'join' && source.type !== 'state') return 'A transition entering a join must come from a state.';
+    const others = (ts) => ts.filter((t) => t !== moving && !(drag && drag.kind === 'reconnect' && drag.t === t));
+    if (source.type === 'fork' && others(model.transitions.filter((t) => t.source === source.id)).some((t) => V.get(t.target)?.parent === target.parent)) {
+      return 'The targets of a fork are in different orthogonal regions.';
+    }
+    if (target.type === 'join' && others(model.transitions.filter((t) => t.target === target.id)).some((t) => V.get(t.source)?.parent === source.parent)) {
+      return 'The sources of a join are in different orthogonal regions.';
+    }
+    if (source.type === 'exitPoint' && !V.has(source.parent)) return 'An exit point of the state machine has no outgoing transitions: the submachine state using it continues from its reference.';
+    if (source.type === 'entryPoint' && V.has(source.parent) && !isInside(target, source.parent)) return 'A transition leaving an entry point goes to a vertex inside its state.';
+    if (source.type === 'exitPoint' && V.has(source.parent) && (target.id === source.parent || isInside(target, source.parent))) return 'A transition leaving an exit point goes to a vertex outside its state.';
+    if (target.type === 'connectionPointRef' && refKind(target) === 'entry' && (source.id === target.parent || isInside(source, target.parent))) return 'A transition into an entry reference comes from outside its submachine state.';
+    if (source.type === 'entryPoint') {
+      // One transition into each region of its state (of the machine, for the machine's own).
+      const state = V.get(source.parent) || null;
+      const region = stateRegionOf(target, state);
+      const others = model.transitions.filter((t) => t.source === source.id && t !== moving && !(drag && drag.kind === 'reconnect' && drag.t === t));
+      if (region && others.some((t) => V.get(t.target) && stateRegionOf(V.get(t.target), state) === region)) return 'An entry point has one transition into each region.';
+    }
     if (source.type === 'initial' || source.type === 'shallowHistory' || source.type === 'deepHistory') {
       const others = model.transitions.filter((t) => t.source === source.id && t !== moving && !(drag && drag.kind === 'reconnect' && drag.t === t));
       if (others.length) return `A${source.type === 'initial' ? 'n initial pseudostate' : ' history pseudostate'} has one transition only.`;
@@ -2745,8 +2871,8 @@ ${scene(true)}
       case 'connect':
         drag.cur = p;
         // Only where the connection can end: elsewhere it follows the pointer, and dropping it there draws nothing.
-        drag.hover = vertexUnder(e);
-        if (drag.hover && !canConnect(drag.source, drag.hover)) drag.hover = null;
+        drag.hover = drag.source.type === 'comment' ? anchorTargetUnder(e, p) : vertexUnder(e);
+        if (drag.hover !== null && !canConnect(drag.source, drag.hover)) drag.hover = null;
         break;
       case 'reconnect': {
         drag.cur = p;
@@ -2843,7 +2969,11 @@ ${scene(true)}
             // A group drops as a whole: into the region that holds all its members, or nowhere.
             if (v !== d.roots.find((r) => r.group === v.group)) continue;
             const rr = dropRegionOf(dropBox(v), exclude);
-            if (rr && !regionProblem(groupMembers(v.group), rr.id)) for (const m of groupMembers(v.group)) m.parent = rr.id;
+            if (rr && !regionProblem(groupMembers(v.group), rr.id)) {
+              const problem = moveProblem(new Map(groupMembers(v.group).map((m) => [m, rr.id])));
+              if (problem) toast(problem);
+              else for (const m of groupMembers(v.group)) m.parent = rr.id;
+            }
             continue;
           }
           if (v.type === 'entryPoint' || v.type === 'exitPoint') {
@@ -2856,7 +2986,11 @@ ${scene(true)}
             continue;
           }
           const rr = dropRegionOf(v, exclude);
-          if (rr && !regionProblem([v], rr.id)) v.parent = rr.id;
+          if (rr && !regionProblem([v], rr.id)) {
+            const problem = rr.id !== v.parent ? moveProblem(new Map([[v, rr.id]])) : null;
+            if (problem) toast(problem);
+            else v.parent = rr.id;
+          }
         }
         commit({ props: true });
         break;
@@ -2870,8 +3004,8 @@ ${scene(true)}
         else render();
         break;
       case 'connect': {
-        const target = vertexUnder(e);
-        if (target && canConnect(d.source, target)) connect(d.source, target);
+        const target = d.source.type === 'comment' ? anchorTargetUnder(e, toWorld(e)) : vertexUnder(e);
+        if (target !== null && canConnect(d.source, target)) connect(d.source, target);
         else render();
         toolDone();
         break;
@@ -2998,7 +3132,7 @@ ${scene(true)}
   });
   wrap.addEventListener('drop', (e) => {
     const id = e.dataTransfer?.getData('application/x-fsm-tool');
-    if (!id || !model) return;
+    if (!id || !model || !toolAllowed(id)) return;
     e.preventDefault();
     createVertex(id, toWorld(e));
   });
@@ -3359,6 +3493,11 @@ ${scene(true)}
   function leaveParent() {
     const roots = leavingElements();
     if (!roots.length) return;
+    const problem = moveProblem(new Map(roots.map((v) => [v, regionOwner.get(v.parent).parent])));
+    if (problem) {
+      toast(problem);
+      return;
+    }
     for (const v of roots) v.parent = regionOwner.get(v.parent).parent;
     commit({ props: true });
   }
@@ -3695,10 +3834,14 @@ ${scene(true)}
     propsEl.append(
       h('h3', {}, 'State Machine'),
       textField('Name', model.name, set('name'), { check: nameCheck(model) }),
-      selectField('Kind', model.kind, [['behavioral', 'Behavioral state machine'], ['protocol', 'Protocol state machine']], (v) => {
-        model.kind = v;
-        commit({ props: true });
-      }),
+      // Chosen when the machine is created.
+      h('div', { className: 'field' }, h('label', {}, 'Kind'), h('div', { className: 'muted' }, model.kind === 'protocol' ? 'Protocol state machine' : 'Behavioral state machine')),
+      textField('Context', model.context, set('context'), { check: CHECK.name, placeholder: 'e.g. DoorController' }),
+      // The machine's region, when it has one: it can be named (several are named in the file only).
+      ...(model.regions.length === 1 ? [textField('Region', shown(model.regions[0].name), (val) => {
+        model.regions[0].name = val;
+        commit();
+      }, { check: nameCheck(model.regions[0]), placeholder: 'no name' })] : []),
       textField('Documentation', model.documentation, set('documentation'), { multiline: true, rows: 4 }),
     );
     const mi = issuesFor('');
@@ -3734,8 +3877,8 @@ ${scene(true)}
     propsEl.append(h('h3', {}, TYPE_LABEL[v.type] || v.type));
     const group = SWAPPABLE.find((g) => g.includes(v.type));
     if (group) {
-      // Only the kinds the file can hold this pseudostate as, with its transitions and region.
-      propsEl.append(selectField('Kind', v.type, group.filter((t) => !typeProblem(v, t)).map((t) => [t, TYPE_LABEL[t]]), (t) => {
+      // Only the kinds the file can hold this pseudostate as, with its transitions and region, and the machine can have.
+      propsEl.append(selectField('Kind', v.type, group.filter((t) => !typeProblem(v, t) && (t === v.type || toolAllowed(t))).map((t) => [t, TYPE_LABEL[t]]), (t) => {
         const c = center(v);
         const old = boxOf(v);
         v.type = t;
@@ -3757,19 +3900,20 @@ ${scene(true)}
         v.text = val;
         commit();
       }, { multiline: true, rows: 5 }));
-      const anchors = (v.anchors || []).map((a) => V.get(a) || T.get(a)).filter(Boolean);
+      const anchors = (v.anchors || []).map((a) => V.get(a) || T.get(a) || (a === MACHINE ? { id: MACHINE, machine: true } : null) || allRegions().find((r) => r.id === a)).filter(Boolean);
       propsEl.append(h('h4', {}, 'Annotated elements'));
       if (!anchors.length) propsEl.append(h('div', { className: 'muted' }, 'Drag the ⊕ handle onto an element to attach this comment.'));
       for (const a of anchors) {
         propsEl.append(h('div', { className: 'row' },
-          h('span', { style: 'flex:1' }, a.source ? `Transition ${transitionLabel(a) || ''}` : shown(a.name) || TYPE_LABEL[a.type]),
+          h('span', { style: 'flex:1' }, a.machine ? 'The state machine' : a.source ? `Transition ${transitionLabel(a) || ''}` : a.type ? shown(a.name) || TYPE_LABEL[a.type] : `Region ${shown(a.name) || '(unnamed)'}`),
           h('button', { className: 'pbtn icon', title: 'Detach', onclick: () => {
             v.anchors = v.anchors.filter((x) => x !== a.id);
             commit({ props: true });
           } }, '✕'),
         ));
       }
-    } else {
+    } else if (!isStart(v)) {
+      // Initial and history pseudostates have no name in the file.
       propsEl.append(textField('Name', shown(v.name), (val) => {
         v.name = val;
         commit();
@@ -3788,9 +3932,10 @@ ${scene(true)}
       propsEl.append(
         textField('Stereotype', v.stereotype, set('stereotype'), { check: CHECK.name, placeholder: 'e.g. Critical' }),
         h('h4', {}, 'Behaviors'),
-        textField('entry /', v.entry, set('entry'), { check: CHECK.actions, placeholder: 'e.g. start(); log()', color: colorOpt(v, 'entry', 'entry') }),
-        textField('exit /', v.exit, set('exit'), { check: CHECK.actions, placeholder: 'e.g. stop()', color: colorOpt(v, 'exit', 'exit') }),
-        textField('do /', v.doActivity, set('doActivity'), { check: CHECK.actions, placeholder: 'e.g. poll()', color: colorOpt(v, 'doActivity', 'do') }),
+        // A protocol state machine's states have no entry, exit or do behaviors (shown when they do, to remove them).
+        ...(model.kind !== 'protocol' || v.entry ? [textField('entry /', v.entry, set('entry'), { check: CHECK.actions, placeholder: 'e.g. start(); log()', color: colorOpt(v, 'entry', 'entry') })] : []),
+        ...(model.kind !== 'protocol' || v.exit ? [textField('exit /', v.exit, set('exit'), { check: CHECK.actions, placeholder: 'e.g. stop()', color: colorOpt(v, 'exit', 'exit') })] : []),
+        ...(model.kind !== 'protocol' || v.doActivity ? [textField('do /', v.doActivity, set('doActivity'), { check: CHECK.actions, placeholder: 'e.g. poll()', color: colorOpt(v, 'doActivity', 'do') })] : []),
         textField('Deferrable events', (v.deferrable || []).join(', '), set('deferrable'), { check: CHECK.events, placeholder: 'evA, evB', color: colorOpt(v, 'deferrable', 'the deferrable events') }),
         textField('State invariant', v.invariant, set('invariant'), { check: CHECK.condition, placeholder: 'e.g. isRunning() && !isFaulty()', color: colorOpt(v, 'invariant', 'the state invariant') }),
       );
@@ -3828,9 +3973,8 @@ ${scene(true)}
       if (!v.submachine) {
         propsEl.append(h('h4', {}, (v.regions || []).length > 1 ? 'Orthogonal regions' : 'Regions'));
         (v.regions || []).forEach((r, i) => {
-          const input = h('input', { type: 'text', placeholder: v.regions.length > 1 ? `Region ${i + 1}` : 'no name (one region)' });
+          const input = h('input', { type: 'text', placeholder: v.regions.length > 1 ? `Region ${i + 1}` : 'no name' });
           input.value = shown(r.name);
-          input.disabled = v.regions.length < 2;
           input.addEventListener('change', () => {
             const ok = nameCheck(r)(input.value);
             if (!ok.ok) {
@@ -3983,7 +4127,10 @@ ${scene(true)}
       h('h3', {}, 'Transition'),
       h('div', { className: 'muted field' }, `${nm(s)} → ${nm(g)}`),
     );
-    if (!start) propsEl.append(selectField('Kind', t.kind, [['external', 'External'], ['local', 'Local'], ['internal', 'Internal']], (val) => {
+    // Only the kinds the transition can be, and triggers only where it can have them (or has them, to remove them).
+    const KIND_LABEL = { external: 'External', local: 'Local', internal: 'Internal' };
+    const kinds = kindOptions(t);
+    if (!start && kinds.length > 1) propsEl.append(selectField('Kind', t.kind, kinds.map((k) => [k, KIND_LABEL[k]]), (val) => {
         t.kind = val;
         if (val === 'internal') {
           t.target = t.source;
@@ -3995,20 +4142,30 @@ ${scene(true)}
     // Internal transitions drawn in their state's compartment take a single color.
     const inCompartment = t.kind === 'internal' && t.source === t.target && s && s.type === 'state';
     const item = (key, what) => (inCompartment ? undefined : colorOpt(t, key, what));
-    if (!start) {
+    if (!start && (takesTriggers(s, g) || t.triggers.length)) {
       propsEl.append(
         textField('Triggers', t.triggers.join(', '), set('triggers'), { check: CHECK.triggers, placeholder: 'event, after(500ms), after(2s)', color: item('triggers', 'the triggers') }),
       );
     }
     if (model.kind === 'protocol') {
+      // A protocol transition's precondition is its guard: `else` on a choice's or junction's branch.
+      if (takesGuard(s, g) || t.precondition) propsEl.append(
+        textField('Precondition', t.precondition, set('precondition'), {
+          check: (val) => (allowsElse(s) && String(val).trim() === 'else' && elseTaken(s, t) ? Promise.resolve({ ok: false, error: elseTakenMessage(s) }) : allowsElse(s) ? checkText('guard', val, true) : CHECK.condition(val)),
+          placeholder: allowsElse(s) ? 'e.g. isOpen(), or else' : 'e.g. isOpen()',
+          color: item('precondition', 'the precondition'),
+        }),
+      );
       if (!start) propsEl.append(
-        textField('Precondition', t.precondition, set('precondition'), { check: CHECK.condition, placeholder: 'e.g. isOpen()', color: item('precondition', 'the precondition') }),
         textField('Postcondition', t.postcondition, set('postcondition'), { check: CHECK.condition, placeholder: 'e.g. isClosed()', color: item('postcondition', 'the postcondition') }),
       );
+      // A protocol transition has no guard or action: shown when it has one, to remove it.
+      if (t.guard) propsEl.append(textField('Guard', t.guard, set('guard'), { check: (val) => checkText('guard', val, allowsElse(s)), color: item('guard', 'the guard') }));
+      if (t.action) propsEl.append(textField('Action', t.action, set('action'), { check: CHECK.actions, color: item('action', 'the action') }));
     } else {
-      if (!start) {
+      if (takesGuard(s, g) || t.guard) {
         propsEl.append(textField('Guard', t.guard, set('guard'), {
-          check: (val) => checkText('guard', val, allowsElse(s)),
+          check: (val) => (allowsElse(s) && String(val).trim() === 'else' && elseTaken(s, t) ? Promise.resolve({ ok: false, error: elseTakenMessage(s) }) : checkText('guard', val, allowsElse(s))),
           placeholder: allowsElse(s) ? 'e.g. hasDisc() && !isJammed(), or else' : 'e.g. hasDisc() && !isJammed()',
           color: item('guard', 'the guard'),
         }));
@@ -4016,6 +4173,9 @@ ${scene(true)}
       propsEl.append(
         textField('Action', t.action, set('action'), { check: CHECK.actions, placeholder: 'e.g. notify(); log()', color: item('action', 'the action') }),
       );
+      // Pre/postconditions only count in a protocol state machine: shown when the transition has them, to remove them.
+      if (t.precondition) propsEl.append(textField('Precondition', t.precondition, set('precondition'), { check: CHECK.condition, color: item('precondition', 'the precondition') }));
+      if (t.postcondition) propsEl.append(textField('Postcondition', t.postcondition, set('postcondition'), { check: CHECK.condition, color: item('postcondition', 'the postcondition') }));
     }
     propsEl.append(h('h4', {}, 'Routing'));
     propsEl.append(
@@ -4172,6 +4332,8 @@ ${scene(true)}
   }
 
   function renderToolbarState() {
+    for (const el of toolboxEl.querySelectorAll('.tb-item')) el.hidden = !toolAllowed(el.getAttribute('data-tool'));
+    if (tool && !toolAllowed(tool)) setTool(null);
     if (zoomLabel) zoomLabel.textContent = `${Math.round(view.zoom * 100)}%`;
     if (titleLabel && model) titleLabel.textContent = `${model.kind === 'protocol' ? '{protocol} ' : ''}${model.name || 'State machine'}`;
   }

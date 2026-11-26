@@ -99,7 +99,7 @@ export const CASES: { name: string; machine: string; steps: Step[] }[] = [
   {
     name: 'transitions', machine: 'MediaPlayer', steps: [
       { op: 'label', transition: 'Stopped#1', text: 'play [ready()] / start()' },
-      { op: 'kind', transition: 'Paused#2', kind: 'local' },
+      { op: 'kind', transition: 'Paused#2', kind: 'internal' },
       { op: 'straighten', transition: 'Paused#4' },
       { op: 'reverse', transition: 'Stereo#1' },
     ],

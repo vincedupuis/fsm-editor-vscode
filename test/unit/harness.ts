@@ -88,7 +88,9 @@ export class ModelBuilder {
 
   t(source: string, target: string, extra: Partial<Transition> = {}): string {
     const id = extra.id ?? `t${++this.n}`;
-    this.model.transitions.push({ id, source, target, kind: 'external', triggers: [], guard: '', action: '', ...extra });
+    // UML: a transition leaving an entry point is local, as the editor draws it.
+    const kind = this.model.vertices.find((v) => v.id === source)?.type === 'entryPoint' ? 'local' : 'external';
+    this.model.transitions.push({ id, source, target, kind, triggers: [], guard: '', action: '', ...extra });
     return id;
   }
 

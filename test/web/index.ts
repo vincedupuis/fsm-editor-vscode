@@ -251,15 +251,19 @@ export async function run(): Promise<void> {
   await scenario('new-state-machine', async () => {
     // File › New File… › State Machine.
     assert(contributes.menus['file/newFile']?.some((m) => m.command === 'fsmEditor.newUntitled'), 'State Machine is in File › New File…');
-    await command('fsmEditor.newUntitled');
-    const tab = await waitFor('the untitled diagram', () => {
-      const input = activeTab()?.input;
-      return input instanceof vscode.TabInputCustom && input.uri.scheme === 'untitled' ? input : undefined;
-    });
-    assert(tab.viewType === VIEW_TYPE && tab.uri.path.endsWith('/StateMachine.fsm'), 'it opens in the diagram editor');
-    const model = await waitFor('the new machine', () => api.openModel(tab.uri));
-    assert(model.name === 'StateMachine' && model.vertices.some((v) => v.type === 'initial') && model.vertices.some((v) => v.type === 'state' && v.name === 'Idle'), `the template's machine: ${model.vertices.map((v) => v.name || v.type)}`);
-    await command('workbench.action.revertAndCloseActiveEditor');
+    // The kind is asked; given here (`'behavioral'` or `'protocol'`).
+    for (const kind of ['behavioral', 'protocol'] as const) {
+      await command('fsmEditor.newUntitled', kind);
+      const tab = await waitFor('the untitled diagram', () => {
+        const input = activeTab()?.input;
+        return input instanceof vscode.TabInputCustom && input.uri.scheme === 'untitled' ? input : undefined;
+      });
+      assert(tab.viewType === VIEW_TYPE && tab.uri.path.endsWith('/StateMachine.fsm'), 'it opens in the diagram editor');
+      const model = await waitFor('the new machine', () => api.openModel(tab.uri));
+      assert(model.name === 'StateMachine' && model.vertices.some((v) => v.type === 'initial') && model.vertices.some((v) => v.type === 'state' && v.name === 'Idle'), `the template's machine: ${model.vertices.map((v) => v.name || v.type)}`);
+      assert(model.kind === kind, `a ${kind} machine: ${model.kind}`);
+      await command('workbench.action.revertAndCloseActiveEditor');
+    }
   });
 
   // ---------------------------------------------------------------- Problems

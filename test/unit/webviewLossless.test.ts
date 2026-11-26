@@ -140,13 +140,50 @@ describe("webview: what the file can't hold is not offered", () => {
     await view.close();
   });
 
-  it("doesn't attach a comment to an initial pseudostate", async () => {
+  it('puts no entry point on a simple state, and removes no last region of a state with points', async () => {
+    const view = await Webview.open(machine([
+      { name: 'A', type: 'state' },
+      { name: 'C', type: 'state', points: [{ name: 'in', type: 'entryPoint', transitions: [{ type: 'local', target: 'C1' }] }], initial: { target: 'C1' }, elements: [{ name: 'C1', type: 'state' }] },
+    ], { initial: { target: 'A' } }));
+    const a = named(view.model, 'A');
+    await view.page.locator('[data-tool="entryPoint"]').click();
+    await view.page.mouse.click(...Object.values(await view.toScreen(a.x, a.y + a.h / 2)) as [number, number]);
+    await noEdit(view, 0, 'an entry point on a simple state');
+    assert.match((await toast(view)) ?? "", /Only composite states have entry and exit points/);
+    await view.select(named(view.model, 'C').id);
+    await view.page.locator('#props button[title="Remove region and its contents"]').click();
+    await noEdit(view, 0, "C's last region");
+    assert.match((await toast(view)) ?? "", /has entry or exit points/);
+    await view.close();
+  });
+
+  it('attaches a comment to an initial pseudostate, a region and the machine, which the file names', async () => {
     const view = await Webview.open(sample());
-    await view.page.locator('[data-tool="transition"]').click();
-    const hint = await toast(view);
-    await view.drag(await view.screenOf(named(view.model, 'note*').id), await view.screenOf(of(view.model, 'initial', rootRegion(view.model)).id));
-    await noEdit(view, 0, 'comment → initial');
-    assert.equal(await toast(view), hint, "no message but the tool's hint");
+    await view.page.locator('#canvas').focus();
+    await view.page.keyboard.press('ControlOrMeta+-');
+    await view.page.keyboard.press('ControlOrMeta+-');
+    const note = named(view.model, 'note*');
+    const init = of(view.model, 'initial', rootRegion(view.model));
+    const c = named(view.model, 'C');
+    const tool = async () => view.page.locator('[data-tool="transition"]').click();
+    await tool();
+    await view.drag(await view.screenOf(note.id), await view.screenOf(init.id));
+    let m = await view.nextEdit(0);
+    // C's region, in its bottom right corner, clear of C1.
+    await tool();
+    await view.drag(await view.screenOf(note.id), await view.toScreen(c.x + c.w - 12, c.y + c.h - 12));
+    m = await view.nextEdit(1);
+    // Empty canvas: the machine.
+    const right = Math.max(...view.model.vertices.map((v) => v.x + v.w));
+    await tool();
+    await view.drag(await view.screenOf(note.id), await view.toScreen(right + 150, note.y));
+    m = await view.nextEdit(2);
+    // Ids follow names: C's region, unnamed, got a generated name to be referenced, and its id with it.
+    assert.deepEqual(named(m, 'note*').anchors, [init.id, named(m, 'C').regions![0].id, '']);
+    const file = JSON.parse(view.files.at(-1)!.model);
+    const comment = file.elements.find((e: { name: string }) => e.name === 'note*');
+    // C's region, unnamed, gets a generated name, which references it.
+    assert.deepEqual(comment.anchors, ['M.initial', 'region1*', 'M']);
     await view.close();
   });
 
@@ -226,6 +263,87 @@ describe("webview: what the file can't hold is not offered", () => {
     assert.deepEqual(await options(), ['Payment.fsm']);
     await view.select(named(view.model, 'Q').id);
     assert.deepEqual(await options(), ['', 'Payment.fsm']);
+    await view.close();
+  });
+
+  it('draws no transition from a fork to a pseudostate, nor a second one from an entry point into a region', async () => {
+    const view = await Webview.open(machine([
+      { name: 'A', type: 'state', transitions: [{ type: 'external', target: 'f*' }] },
+      { name: 'f*', type: 'fork', transitions: [{ type: 'external', target: 'X' }, { type: 'external', target: 'Y' }] },
+      {
+        name: 'C', type: 'state', points: [{ name: 'in', type: 'entryPoint', transitions: [{ type: 'local', target: 'X' }] }], regions: [
+          { name: 'r1', elements: [{ name: 'X', type: 'state' }, { name: 'X2', type: 'state' }] },
+          { name: 'r2', elements: [{ name: 'Y', type: 'state' }] },
+        ],
+      },
+      { name: 'ch*', type: 'choice', transitions: [{ type: 'external', target: 'A' }] },
+    ], { initial: { target: 'A' } }));
+    const handle = () => view.page.locator('[data-handle="connect"]').first().boundingBox().then((b) => ({ x: b!.x + b!.width / 2, y: b!.y + b!.height / 2 }));
+    await view.select('f*');
+    await view.drag(await handle(), await view.screenOf('ch*'));
+    await noEdit(view, 0, 'fork to a choice');
+    await view.select('C.in');
+    await view.drag(await handle(), await view.screenOf('X2'));
+    await noEdit(view, 0, 'a second transition into r1');
+    await view.select('C.in');
+    await view.drag(await handle(), await view.screenOf('Y'));
+    assert.ok(leaving(await view.nextEdit(0), 'C.in').some((t) => t.target === 'Y'), 'one into r2');
+    await view.close();
+  });
+
+  it("draws no transition from an entry point out of its state, from an exit point into it, or from the machine's exit point", async () => {
+    const view = await Webview.open(machine([
+      { name: 'A', type: 'state' },
+      { name: 'C', type: 'state', points: [{ name: 'in', type: 'entryPoint' }, { name: 'out', type: 'exitPoint' }], elements: [{ name: 'X', type: 'state' }] },
+    ], { initial: { target: 'A' }, points: [{ name: 'stop', type: 'exitPoint' }] }));
+    const handle = () => view.page.locator('[data-handle="connect"]').first().boundingBox().then((b) => ({ x: b!.x + b!.width / 2, y: b!.y + b!.height / 2 }));
+    await view.select('C.in');
+    await view.drag(await handle(), await view.screenOf('A'));
+    await noEdit(view, 0, 'entry point to outside its state');
+    await view.select('C.out');
+    await view.drag(await handle(), await view.screenOf('X'));
+    await noEdit(view, 0, 'exit point to inside its state');
+    await view.select('C.in');
+    await view.drag(await handle(), await view.screenOf('X'));
+    assert.ok(leaving(await view.nextEdit(0), 'C.in').some((t) => t.target === 'X'), 'entry point to inside its state');
+    await view.select('M.stop');
+    assert.equal(await view.page.locator('[data-handle="connect"]').count(), 0, "no handle on the machine's exit point");
+    await view.close();
+  });
+
+  it('offers no name to initial and history pseudostates', async () => {
+    const view = await Webview.open(sample());
+    await view.select(of(view.model, 'initial', rootRegion(view.model)).id);
+    assert.ok(!(await labels(view)).includes('Name'), 'initial');
+    await view.select(of(view.model, 'shallowHistory').id);
+    assert.ok(!(await labels(view)).includes('Name'), 'history');
+    await view.select(of(view.model, 'choice').id);
+    assert.ok((await labels(view)).includes('Name'), 'choice');
+    await view.close();
+  });
+
+  it("shows a protocol transition's guard and action, and a behavioral one's conditions, only to remove them", async () => {
+    let view = await Webview.open(machine([
+      { name: 'A', type: 'state', transitions: [{ type: 'external', trigger: 'go', guard: 'g()', action: 'a()', target: 'A' }, { type: 'external', trigger: 'up', target: 'A' }] },
+    ], { type: 'protocol', initial: { target: 'A' } }));
+    let [t, u] = leaving(view.model, 'A');
+    await view.select(u.id);
+    for (const hidden of ['Guard', 'Action']) assert.ok(!(await labels(view)).includes(hidden), `protocol: no ${hidden}`);
+    await view.select(t.id);
+    for (const shown of ['Guard', 'Action']) assert.ok((await labels(view)).includes(shown), `protocol: ${shown} shown`);
+    await view.field('Action').fill('');
+    await view.field('Action').press('Enter');
+    assert.equal(leaving(await view.nextEdit(0), 'A')[0].action, '', 'action removed');
+    await view.close();
+
+    view = await Webview.open(machine([
+      { name: 'A', type: 'state', transitions: [{ type: 'external', trigger: 'go', precondition: 'p()', target: 'A' }, { type: 'external', trigger: 'up', target: 'A' }] },
+    ], { initial: { target: 'A' } }));
+    [t, u] = leaving(view.model, 'A');
+    await view.select(u.id);
+    assert.ok(!(await labels(view)).includes('Precondition'), 'behavioral: no Precondition');
+    await view.select(t.id);
+    assert.ok((await labels(view)).includes('Precondition'), 'behavioral: Precondition shown');
     await view.close();
   });
 

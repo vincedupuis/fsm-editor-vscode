@@ -252,7 +252,8 @@ export function extractSubmachine(model: FsmModel, selected: string[], name: str
       if (!refId) {
         const entry = point(fresh(machineIds, 'v'), 'entryPoint', pointName(`to${targetName(ix.vertices.get(t.target))}`), region.id);
         entries.push(entry);
-        machineTransitions.push(plain(fresh(machineIds, 't'), entry.id, t.target));
+        // UML: a transition leaving an entry point is local.
+        machineTransitions.push(plain(fresh(machineIds, 't'), entry.id, t.target, 'local'));
         const ref = reference(fresh(parentIds, 'v'), state.id, entry.id, 'entry');
         entryRefs.push(ref);
         entryRefFor.set(t.target, (refId = ref.id));
@@ -367,7 +368,7 @@ const point = (id: string, type: 'entryPoint' | 'exitPoint', name: string, paren
 const reference = (id: string, parent: string, ref: string, pointKind: 'entry' | 'exit'): Vertex =>
   ({ id, type: 'connectionPointRef', name: '', parent, x: 0, y: 0, w: POINT, h: POINT, ref, pointKind });
 
-const plain = (id: string, source: string, target: string): Transition => ({ id, source, target, kind: 'external', triggers: [], guard: '', action: '' });
+const plain = (id: string, source: string, target: string, kind: Transition['kind'] = 'external'): Transition => ({ id, source, target, kind, triggers: [], guard: '', action: '' });
 
 function allRegionIds(m: FsmModel): string[] {
   return [...m.regions.map((r) => r.id), ...m.vertices.flatMap((v) => (v.regions ?? []).map((r) => r.id))];

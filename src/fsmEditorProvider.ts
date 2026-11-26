@@ -197,6 +197,13 @@ export class FsmEditorProvider implements vscode.CustomEditorProvider<FsmDocumen
   private traceHighlights = new Map<string, TraceView>();
   /** The open documents, by URI. */
   private readonly documents = new Map<string, FsmDocument>();
+  /** The kind of the machine an untitled document opened next makes (`newUntitled`). */
+  private readonly untitledKinds = new Map<string, FsmModel['kind']>();
+
+  /** Untitled document `uri`, opened next, makes a machine of `kind`. */
+  setUntitledKind(uri: vscode.Uri, kind: FsmModel['kind']): void {
+    this.untitledKinds.set(uri.toString(), kind);
+  }
   /** The open diagrams, for the diff and merge sessions that link them. */
   private readonly panes = new Set<Pane>();
   private readonly mergeFiles = new MergeFiles();
@@ -269,7 +276,9 @@ export class FsmEditorProvider implements vscode.CustomEditorProvider<FsmDocumen
     const readonly = uri.scheme !== 'untitled' && vscode.workspace.fs.isWritableFileSystem(uri.scheme) === false;
     let doc: FsmDocument;
     if (uri.scheme === 'untitled') {
-      const s = stateOfModel(defaultModel(basename(uri.path, '.fsm') || 'StateMachine'));
+      const kind = this.untitledKinds.get(uri.toString()) ?? 'behavioral';
+      this.untitledKinds.delete(uri.toString());
+      const s = stateOfModel(defaultModel(basename(uri.path, '.fsm') || 'StateMachine', kind));
       doc = new FsmDocument(uri, s, false);
       // Nothing on disk: the first save writes everything.
       doc.saved = { modelText: '', lines: new Map() };

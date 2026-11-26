@@ -65,7 +65,7 @@ describe('Marketplace listing', () => {
 
   it("has a README whose links and images resolve", () => {
     assert.deepEqual(brokenLinks(join(root, 'README.md')), []);
-    for (const doc of ['docs/CODEGEN.md', 'docs/UML-CONFORMANCE.md']) assert.deepEqual(brokenLinks(join(root, doc)), [], doc);
+    for (const doc of ['docs/CODEGEN.md', 'docs/REFERENCE.md', 'docs/UML-CONFORMANCE.md']) assert.deepEqual(brokenLinks(join(root, doc)), [], doc);
   });
 
   it("has a name the Visual Studio edition's listing doesn't use", (t) => {

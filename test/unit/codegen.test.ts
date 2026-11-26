@@ -412,6 +412,32 @@ describe('semantics', () => {
     assert.deepEqual(rec.take(), ['isClosed', '!invariant: Closed']);
   });
 
+  it("protocol machines select a branch by its precondition, and check the branch's postcondition", async () => {
+    const b = new ModelBuilder('Valve', 'protocol');
+    const closed = b.state('Closed');
+    const wide = b.state('Wide');
+    const ajar = b.state('Ajar');
+    const c = b.vertex('choice');
+    b.init(closed);
+    b.t(closed, c, { triggers: ['open'] });
+    b.t(c, wide, { precondition: 'isWide()', postcondition: 'isOpen()' });
+    b.t(c, ajar, { precondition: 'else' });
+    b.t(wide, closed, { triggers: ['close'] });
+    b.t(ajar, closed, { triggers: ['close'] });
+    const { Valve } = await load({ 'Valve.fsm': b.model });
+    const rec = recorder();
+    const m = new Valve(rec.actions);
+    m.start();
+    m.dispatch('open'); // isWide() is false: the else branch
+    assert.deepEqual(rec.take(), ['isWide']);
+    assert.deepEqual(m.activeStates, ['Ajar']);
+    m.dispatch('close');
+    rec.conditions.isWide = true;
+    m.dispatch('open'); // the first branch; its postcondition isOpen() is false
+    assert.deepEqual(rec.take(), ['isWide', 'isOpen', '!postcondition: choice -> Wide']);
+    assert.deepEqual(m.activeStates, ['Wide']);
+  });
+
   it('enters each top-level region once through an entry point targeting another top-level region', async () => {
     const sub = new ModelBuilder('Sub');
     sub.model.regions = [{ id: 'r1', name: 'one' }, { id: 'r2', name: 'two' }];

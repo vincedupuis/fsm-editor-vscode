@@ -17,6 +17,20 @@ function machine(elements: unknown[], extra: Record<string, unknown> = {}): FsmM
   return r.model;
 }
 
+/** A → fork → X, Y (the regions of C); X, Y → join → A; C's entry point in → X; a choice → A. */
+const segments = (type = 'behavioral') => machine([
+  { name: 'A', type: 'state', transitions: [{ type: 'external', target: 'f*' }] },
+  { name: 'f*', type: 'fork', transitions: [{ type: 'external', target: 'X' }, { type: 'external', target: 'Y' }] },
+  {
+    name: 'C', type: 'state', points: [{ name: 'in', type: 'entryPoint', transitions: [{ type: 'local', target: 'X' }] }], regions: [
+      { name: 'r1', elements: [{ name: 'X', type: 'state', transitions: [{ type: 'external', target: 'j*' }] }] },
+      { name: 'r2', elements: [{ name: 'Y', type: 'state', transitions: [{ type: 'external', target: 'j*' }] }] },
+    ],
+  },
+  { name: 'j*', type: 'join', transitions: [{ type: 'external', target: 'A' }] },
+  { name: 'ch*', type: 'choice', transitions: [{ type: 'external', target: 'A' }] },
+], { type, initial: { target: 'A' } });
+
 /** A, B and the transition A#1 (A → B on go). */
 const small = () => machine([
   { name: 'A', type: 'state', transitions: [{ type: 'external', trigger: 'go', target: 'B' }] },
@@ -318,12 +332,128 @@ describe('webview: properties panel', () => {
     let t = view.model.transitions.find((x) => x.id === 'A#1')!;
     assert.deepEqual([t.triggers, t.guard, t.action], [['go', 'after(2s)'], 'ready() && !busy()', 'notify(); log()']);
     const n = view.edits.length;
-    await view.field('Kind').selectOption('local');
+    const kinds = await view.field('Kind').locator('option').evaluateAll((os) => os.map((o) => (o as unknown as { value: string }).value));
+    assert.deepEqual(kinds, ['external', 'internal'], 'no local transition out of a simple state');
+    await view.field('Kind').selectOption('internal');
     t = (await view.nextEdit(n)).transitions.find((x) => x.id === 'A#1')!;
-    assert.equal(t.kind, 'local');
+    assert.equal(t.kind, 'internal');
     await fill(view, 'Guard', 'else');
     await view.page.waitForTimeout(200);
     assert.ok(await view.field('Guard').evaluate((e) => e.classList.contains('invalid')), 'else is refused out of a choice');
+    await view.close();
+  });
+
+  it('offers a transition leaving a pseudostate no triggers and no other kind', async () => {
+    const view = await Webview.open(machine([
+      { name: 'A', type: 'state', transitions: [{ type: 'external', trigger: 'go', target: 'c*' }] },
+      { name: 'c*', type: 'choice', transitions: [{ type: 'external', guard: 'ok()', target: 'A' }] },
+    ], { initial: { target: 'A' } }));
+    await view.select('c*#1');
+    for (const label of ['Kind', 'Triggers']) assert.equal(await view.field(label).count(), 0, label);
+    assert.equal(await view.field('Guard').count(), 1, 'the guard');
+    await view.page.locator('#canvas').focus();
+    await view.page.keyboard.press('Enter');
+    await view.page.locator('.inline-edit').fill('go [ok()]');
+    const n = view.edits.length;
+    await view.page.locator('.inline-edit').press('Enter');
+    await view.page.waitForTimeout(200);
+    assert.equal(view.edits.length, n, 'a trigger in the label is refused');
+    await view.close();
+  });
+
+  it('offers no guard or triggers on a transition leaving a fork or an entry point, or entering a join', async () => {
+    for (const type of ['behavioral', 'protocol']) {
+      const view = await Webview.open(segments(type));
+      const guard = type === 'protocol' ? 'Precondition' : 'Guard';
+      for (const id of ['f*#1', 'X#1', 'C.in#1']) {
+        await view.select(id);
+        assert.equal(await view.field(guard).count(), 0, `${type}: no ${guard} on ${id}`);
+        assert.equal(await view.field('Triggers').count(), 0, `${type}: no Triggers on ${id}`);
+      }
+      // Nor in the label of X → join.
+      for (const text of ['[ok()]', 'go']) {
+        await view.select('X#1');
+        await view.page.locator('#canvas').focus();
+        await view.page.keyboard.press('Enter');
+        await view.page.locator('.inline-edit').fill(text);
+        const n = view.edits.length;
+        await view.page.locator('.inline-edit').press('Enter');
+        await view.page.waitForTimeout(200);
+        assert.equal(view.edits.length, n, `${type}: ${text} refused`);
+        await view.page.keyboard.press('Escape');
+      }
+      await view.close();
+    }
+  });
+
+  it("names the machine's only region and a state's, and refuses a second [else] branch", async () => {
+    const view = await Webview.open(machine([
+      { name: 'A', type: 'state', transitions: [{ type: 'external', trigger: 'go', target: 'c*' }], initial: { target: 'A1' }, elements: [{ name: 'A1', type: 'state' }] },
+      { name: 'c*', type: 'choice', transitions: [{ type: 'external', guard: 'else', target: 'A' }, { type: 'external', target: 'A' }] },
+    ], { initial: { target: 'A' } }));
+    let n = view.edits.length;
+    await fill(view, 'Region', 'main');
+    assert.equal((await view.nextEdit(n)).regions[0].name, 'main');
+    await view.select(named(view.model, 'A').id);
+    const input = view.page.locator('#props .row.field input').first();
+    n = view.edits.length;
+    await input.fill('inner');
+    await input.press('Enter');
+    assert.equal(named(await view.nextEdit(n), 'A').regions![0].name, 'inner');
+    // Written as named regions, in `regions`.
+    const file = JSON.parse(view.files.at(-1)!.model);
+    assert.equal(file.regions[0].name, 'main');
+    assert.equal(file.regions[0].elements.find((e: { name: string }) => e.name === 'A').regions[0].name, 'inner');
+    await view.select('c*#2');
+    n = view.edits.length;
+    await fill(view, 'Guard', 'else');
+    await view.page.waitForTimeout(200);
+    assert.equal(view.edits.length, n, 'a second [else] is refused');
+    assert.equal(await view.fieldError('Guard'), 'This choice already has an [else] branch.');
+    await view.close();
+  });
+
+  it("edits the machine's context, and refuses one that isn't a name", async () => {
+    const view = await Webview.open(small());
+    let n = view.edits.length;
+    await fill(view, 'Context', 'DoorController');
+    assert.equal((await view.nextEdit(n)).context, 'DoorController');
+    n = view.edits.length;
+    await fill(view, 'Context', 'Door controller');
+    await view.page.waitForTimeout(200);
+    assert.equal(view.edits.length, n, 'no edit');
+    assert.notEqual(await view.fieldError('Context'), '', 'its message');
+    await view.close();
+  });
+
+  it('offers a protocol machine nothing it cannot have: history, state behaviors, guards, actions, else out of a branch', async () => {
+    const view = await Webview.open(machine([
+      { name: 'A', type: 'state', transitions: [{ type: 'external', trigger: 'go', target: 'c*' }] },
+      { name: 'c*', type: 'choice', transitions: [{ type: 'external', precondition: 'ok()', target: 'B' }, { type: 'external', target: 'A' }] },
+      { name: 'B', type: 'state' },
+    ], { type: 'protocol', initial: { target: 'A' } }));
+    const tool = (id: string) => view.page.locator(`#toolbox .tb-item[data-tool="${id}"]`);
+    assert.equal(await tool('shallowHistory').isVisible(), false, 'no shallow history tool');
+    assert.equal(await tool('deepHistory').isVisible(), false, 'no deep history tool');
+    assert.equal(await tool('choice').isVisible(), true, 'the other tools');
+    await view.page.keyboard.press('h');
+    assert.equal(await tool('shallowHistory').evaluate((e) => e.classList.contains('active')), false, 'nor its key');
+    await view.select('c*');
+    const kinds = await view.field('Kind').locator('option').evaluateAll((os) => os.map((o) => (o as unknown as { value: string }).value));
+    assert.ok(kinds.includes('junction') && !kinds.includes('shallowHistory') && !kinds.includes('deepHistory'), kinds.join());
+    await view.select(named(view.model, 'A').id);
+    for (const label of ['entry /', 'exit /', 'do /']) assert.equal(await view.field(label).count(), 0, label);
+    assert.equal(await view.field('State invariant').count(), 1, 'the invariant');
+    await view.select('A#1');
+    for (const label of ['Guard', 'Action']) assert.equal(await view.field(label).count(), 0, label);
+    let n = view.edits.length;
+    await fill(view, 'Precondition', 'else');
+    await view.page.waitForTimeout(200);
+    assert.equal(view.edits.length, n, 'else is refused out of a branch');
+    await view.select('c*#2');
+    n = view.edits.length;
+    await fill(view, 'Precondition', 'else');
+    assert.equal((await view.nextEdit(n)).transitions.find((t) => t.id === 'c*#2')!.precondition, 'else', 'else on a branch');
     await view.close();
   });
 
